@@ -1,0 +1,1213 @@
+```dataviewjs
+(async () => {
+    try {
+        const JSON_FILENAME = "Workspace_Items.json";
+        const TASK_NOTE_BINDINGS_FILENAME = "Workspace_TaskNoteBindings.json";
+        const TASK_NOTE_BINDINGS_SCHEMA_VERSION = "1.0";
+        const TASK_COMMENTS_FILENAME = "Workspace_TaskComments.json";
+        const TASK_COMMENTS_SCHEMA_VERSION = "1.0";
+        const WORKSPACE_SCHEMA_VERSION = "1.0";
+        const ROOT_KEY = "__root__";
+        const EVA_NOTES_CANDIDATE_PATHS = [
+            "EVA_Notes.json",
+            "data/EVA_Notes.json"
+        ];
+
+        const currentDvFile = (typeof dv.current === "function" ? dv.current()?.file : null) || null;
+        const activeFile = app.workspace?.getActiveFile?.() || null;
+        const currentFilePath = currentDvFile?.path || activeFile?.path || "";
+        const currentFolder = currentDvFile?.folder || activeFile?.parent?.path || "";
+        const resolveLocalPath = (filename) => currentFolder ? `${currentFolder}/${filename}` : filename;
+        const DATA_PATH = resolveLocalPath(JSON_FILENAME);
+        const TASK_NOTE_BINDINGS_PATH = resolveLocalPath(TASK_NOTE_BINDINGS_FILENAME);
+        const TASK_COMMENTS_PATH = resolveLocalPath(TASK_COMMENTS_FILENAME);
+
+        const nowString = () => moment().format("YYYY-MM-DD HH:mm:ss");
+        const generateId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        const clone = (obj) => JSON.parse(JSON.stringify(obj || {}));
+        const parentKey = (parentId) => (parentId === null || parentId === undefined || String(parentId).trim() === "") ? ROOT_KEY : String(parentId).trim();
+        const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+        if (window.workspaceTreeCurrentDragId === undefined) window.workspaceTreeCurrentDragId = null;
+        if (window.workspaceTreePromptBusy === undefined) window.workspaceTreePromptBusy = false;
+
+        const defaultWorkspaceData = () => ({
+            schemaVersion: WORKSPACE_SCHEMA_VERSION,
+            lastModified: nowString(),
+            itemsById: {},
+            childrenByParent: { [ROOT_KEY]: [] }
+        });
+
+        const ensureUniqueIds = (arr) => {
+            const out = [];
+            const seen = new Set();
+            for (const raw of Array.isArray(arr) ? arr : []) {
+                const id = String(raw || "").trim();
+                if (!id || seen.has(id)) continue;
+                out.push(id);
+                seen.add(id);
+            }
+            return out;
+        };
+
+        const sanitizeWorkspaceData = (raw) => {
+            const base = defaultWorkspaceData();
+            const incomingItems = raw && raw.itemsById && typeof raw.itemsById === "object" ? raw.itemsById : {};
+            const incomingChildren = raw && raw.childrenByParent && typeof raw.childrenByParent === "object" ? raw.childrenByParent : {};
+
+            const itemsById = {};
+            Object.keys(incomingItems).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const item = incomingItems[rawId] || {};
+                const title = normalizeText(item.title || item.content || item.name || "");
+                if (!title) return;
+                let parentId = null;
+                if (item.parentId !== undefined && item.parentId !== null && String(item.parentId).trim() !== "") {
+                    parentId = String(item.parentId).trim();
+                }
+                itemsById[id] = {
+                    id,
+                    title,
+                    parentId,
+                    isCollapsed: !!item.isCollapsed,
+                    createdAt: item.createdAt || item.created || nowString(),
+                    updatedAt: item.updatedAt || nowString()
+                };
+            });
+
+            const childrenByParent = {};
+            childrenByParent[ROOT_KEY] = [];
+            const assigned = new Set();
+
+            Object.keys(incomingChildren).forEach((pKeyRaw) => {
+                const pKey = String(pKeyRaw || "").trim();
+                if (!pKey) return;
+                const normalizedParent = pKey === ROOT_KEY ? ROOT_KEY : pKey;
+                const list = ensureUniqueIds(incomingChildren[pKeyRaw]).filter((id) => !!itemsById[id]);
+                if (list.length === 0) return;
+                childrenByParent[normalizedParent] = list.slice();
+                list.forEach((id) => {
+                    assigned.add(id);
+                    itemsById[id].parentId = normalizedParent === ROOT_KEY ? null : normalizedParent;
+                });
+            });
+
+            Object.values(itemsById).forEach((item) => {
+                if (item.parentId && !itemsById[item.parentId]) item.parentId = null;
+                const pKey = parentKey(item.parentId);
+                if (!childrenByParent[pKey]) childrenByParent[pKey] = [];
+                if (!assigned.has(item.id)) childrenByParent[pKey].push(item.id);
+            });
+
+            Object.keys(childrenByParent).forEach((key) => {
+                childrenByParent[key] = ensureUniqueIds(childrenByParent[key]).filter((id) => !!itemsById[id]);
+            });
+            if (!childrenByParent[ROOT_KEY]) childrenByParent[ROOT_KEY] = [];
+
+            return {
+                schemaVersion: WORKSPACE_SCHEMA_VERSION,
+                lastModified: nowString(),
+                itemsById,
+                childrenByParent
+            };
+        };
+
+        const loadWorkspaceData = async () => {
+            try {
+                if (await app.vault.adapter.exists(DATA_PATH)) {
+                    const content = await app.vault.adapter.read(DATA_PATH);
+                    return sanitizeWorkspaceData(JSON.parse(content));
+                }
+            } catch (e) {
+                console.error("加载 Workspace 数据失败:", e);
+            }
+            return sanitizeWorkspaceData(defaultWorkspaceData());
+        };
+
+        const saveWorkspaceData = async (data) => {
+            const safe = sanitizeWorkspaceData(data);
+            const jsonString = JSON.stringify(safe, null, 2);
+            const file = app.vault.getAbstractFileByPath(DATA_PATH);
+            if (file) {
+                await app.vault.modify(file, jsonString);
+            } else {
+                await app.vault.create(DATA_PATH, jsonString);
+            }
+            return safe;
+        };
+
+        const loadTaskNoteBindings = async () => {
+            try {
+                if (await app.vault.adapter.exists(TASK_NOTE_BINDINGS_PATH)) {
+                    const content = await app.vault.adapter.read(TASK_NOTE_BINDINGS_PATH);
+                    const data = JSON.parse(content);
+                    if (data && typeof data.bindings === "object" && !Array.isArray(data.bindings)) return data.bindings;
+                }
+            } catch (e) {
+                console.error("加载任务笔记绑定失败:", e);
+            }
+            return {};
+        };
+
+        const saveTaskNoteBindings = async (bindings) => {
+            const data = {
+                schemaVersion: TASK_NOTE_BINDINGS_SCHEMA_VERSION,
+                lastModified: nowString(),
+                bindings: bindings || {}
+            };
+            const jsonString = JSON.stringify(data, null, 2);
+            const file = app.vault.getAbstractFileByPath(TASK_NOTE_BINDINGS_PATH);
+            if (file) {
+                await app.vault.modify(file, jsonString);
+            } else {
+                await app.vault.create(TASK_NOTE_BINDINGS_PATH, jsonString);
+            }
+        };
+
+        const loadTaskComments = async () => {
+            try {
+                if (await app.vault.adapter.exists(TASK_COMMENTS_PATH)) {
+                    const content = await app.vault.adapter.read(TASK_COMMENTS_PATH);
+                    const data = JSON.parse(content);
+                    if (data && typeof data.comments === "object" && !Array.isArray(data.comments)) return data.comments;
+                }
+            } catch (e) {
+                console.error("加载任务评论失败:", e);
+            }
+            return {};
+        };
+
+        const saveTaskComments = async (comments) => {
+            const data = {
+                schemaVersion: TASK_COMMENTS_SCHEMA_VERSION,
+                lastModified: nowString(),
+                comments: comments || {}
+            };
+            const jsonString = JSON.stringify(data, null, 2);
+            const file = app.vault.getAbstractFileByPath(TASK_COMMENTS_PATH);
+            if (file) {
+                await app.vault.modify(file, jsonString);
+            } else {
+                await app.vault.create(TASK_COMMENTS_PATH, jsonString);
+            }
+        };
+
+        let WORKSPACE_DATA = await loadWorkspaceData();
+        let TASK_NOTE_BINDINGS = await loadTaskNoteBindings();
+        let TASK_COMMENTS = await loadTaskComments();
+        let renderViewFn = null;
+
+        try {
+            if (!await app.vault.adapter.exists(DATA_PATH)) WORKSPACE_DATA = await saveWorkspaceData(WORKSPACE_DATA);
+            if (!await app.vault.adapter.exists(TASK_NOTE_BINDINGS_PATH)) await saveTaskNoteBindings(TASK_NOTE_BINDINGS);
+            if (!await app.vault.adapter.exists(TASK_COMMENTS_PATH)) await saveTaskComments(TASK_COMMENTS);
+        } catch (e) {
+            console.error("初始化 Workspace 数据文件失败:", e);
+            new Notice(`⚠️ 初始化数据文件失败: ${e.message}`);
+        }
+
+        class QuickPrompt extends obsidian.Modal {
+            constructor(app, title, placeholder, onSubmit, defaultValue = "") {
+                super(app);
+                this.titleStr = title;
+                this.placeholder = placeholder;
+                this.defaultValue = defaultValue;
+                this.onSubmit = onSubmit;
+                this.resolved = false;
+            }
+            resolve(value) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onSubmit(value);
+            }
+            onOpen() {
+                const { contentEl } = this;
+                contentEl.createEl("h3", { text: this.titleStr });
+                const input = contentEl.createEl("input", { type: "text", value: this.defaultValue });
+                input.placeholder = this.placeholder;
+                input.style.width = "100%";
+                input.focus();
+                input.selectionStart = input.value.length;
+                input.selectionEnd = input.value.length;
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:15px;" } });
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(null);
+                    this.close();
+                };
+                const okBtn = actions.createEl("button", { text: "确定", cls: "mod-cta" });
+                const submit = () => {
+                    const val = normalizeText(input.value);
+                    if (!val) return;
+                    this.resolve(val);
+                    this.close();
+                };
+                okBtn.onclick = submit;
+                input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.contentEl.empty();
+            }
+        }
+
+        class ConfirmModal extends obsidian.Modal {
+            constructor(app, title, message, onResolve) {
+                super(app);
+                this.titleStr = title;
+                this.message = message;
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            onOpen() {
+                const { contentEl } = this;
+                contentEl.createEl("h3", { text: this.titleStr });
+                const msg = contentEl.createEl("div");
+                msg.innerHTML = this.message;
+                msg.style.marginBottom = "18px";
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;" } });
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(false);
+                    this.close();
+                };
+                const okBtn = actions.createEl("button", { text: "确认", cls: "mod-cta" });
+                okBtn.onclick = () => {
+                    this.resolve(true);
+                    this.close();
+                };
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(false);
+                this.contentEl.empty();
+            }
+        }
+
+        class VaultNotePickerModal extends obsidian.Modal {
+            constructor(app, noteIndex, currentNotePath, onChoose) {
+                super(app);
+                this.noteIndex = noteIndex || [];
+                this.currentNotePath = currentNotePath || null;
+                this.onChoose = onChoose;
+                this.resolved = false;
+                this.filtered = [];
+                this.activeIndex = 0;
+                this.maxRows = 240;
+                const normalizePath = (p) => String(p || "").trim().replace(/^\/+/, "").replace(/\.md$/i, "").toLowerCase();
+                this.currentNoteItem = this.currentNotePath
+                    ? this.noteIndex.find(i => normalizePath(i.path) === normalizePath(this.currentNotePath)) || null
+                    : null;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onChoose(result);
+            }
+            normalizeQuery(query) {
+                return String(query || "").trim().toLowerCase();
+            }
+            filterIndex(query) {
+                const q = this.normalizeQuery(query);
+                if (!q) return this.noteIndex.slice(0, this.maxRows);
+                const terms = q.split(/\s+/).filter(Boolean);
+                const matched = [];
+                for (const item of this.noteIndex) {
+                    const hay = `${item.search || ""} ${item.basenameLower || ""} ${item.pathLower || ""}`.toLowerCase();
+                    let ok = true;
+                    for (const term of terms) {
+                        if (!hay.includes(term)) { ok = false; break; }
+                    }
+                    if (ok) matched.push(item);
+                    if (matched.length >= this.maxRows * 2) break;
+                }
+                matched.sort((a, b) => {
+                    const aStrong = a.basenameLower.startsWith(terms[0]) || a.pathLower.startsWith(terms[0]);
+                    const bStrong = b.basenameLower.startsWith(terms[0]) || b.pathLower.startsWith(terms[0]);
+                    if (aStrong !== bStrong) return aStrong ? -1 : 1;
+                    return a.basename.localeCompare(b.basename, "zh");
+                });
+                return matched.slice(0, this.maxRows);
+            }
+            renderList(listEl, statEl, query) {
+                listEl.empty();
+                this.filtered = this.filterIndex(query);
+                if (this.activeIndex >= this.filtered.length) this.activeIndex = Math.max(0, this.filtered.length - 1);
+                statEl.textContent = `共 ${this.filtered.length} 条结果`;
+                if (this.filtered.length === 0) {
+                    listEl.createEl("div", { text: "无匹配笔记", attr: { style: "padding:12px;color:var(--text-muted);text-align:center;" } });
+                    return;
+                }
+                this.filtered.forEach((item, idx) => {
+                    const active = idx === this.activeIndex;
+                    const row = listEl.createEl("div", {
+                        attr: {
+                            style: `display:flex;flex-direction:column;gap:2px;padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;border:1px solid ${active ? 'var(--interactive-accent)' : 'var(--background-modifier-border)'};background:${active ? 'var(--background-modifier-hover)' : 'var(--background-secondary)'};`
+                        }
+                    });
+                    row.createEl("div", { text: `📝 ${item.basename}`, attr: { style: "font-weight:600;" } });
+                    row.createEl("small", { text: item.path, attr: { style: "color:var(--text-muted);" } });
+                    row.onclick = () => {
+                        this.resolve(item);
+                        this.close();
+                    };
+                    row.onmouseenter = () => { this.activeIndex = idx; };
+                });
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "1100px";
+                this.modalEl.style.width = "92vw";
+                this.modalEl.style.height = "80vh";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.style.display = "flex";
+                contentEl.style.flexDirection = "column";
+                contentEl.style.height = "100%";
+                contentEl.style.gap = "8px";
+
+                contentEl.createEl("h3", { text: "🔗 绑定已有笔记（EVA 索引优先）" });
+
+                if (this.currentNotePath) {
+                    const cur = contentEl.createEl("div", { attr: { style: "padding:8px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);" } });
+                    cur.createEl("div", { text: `当前绑定: ${this.currentNoteItem?.basename || this.currentNotePath}`, attr: { style: "font-weight:600;" } });
+                    cur.createEl("small", { text: this.currentNotePath, attr: { style: "color:var(--text-muted);" } });
+                    const btns = cur.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:8px;" } });
+                    const openCurBtn = btns.createEl("button", { text: "打开当前绑定" });
+                    openCurBtn.onclick = () => { this.resolve({ kind: "current", path: this.currentNotePath }); this.close(); };
+                    const clearBtn = btns.createEl("button", { text: "清除绑定" });
+                    clearBtn.onclick = () => { this.resolve({ kind: "clear", path: this.currentNotePath }); this.close(); };
+                }
+
+                const input = contentEl.createEl("input", {
+                    type: "text",
+                    attr: {
+                        placeholder: "输入关键词筛选，或直接输入文件名（不带 .md）后手动绑定",
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;"
+                    }
+                });
+                if (this.currentNoteItem) input.value = this.currentNoteItem.basename;
+                const manualHint = contentEl.createEl("div", {
+                    text: "可手动绑定：输入完整文件名（可含路径，不带 .md）后，点“绑定输入内容”或按 Enter（无选中项时）。",
+                    attr: { style: "color:var(--text-muted);font-size:12px;" }
+                });
+                const stat = contentEl.createEl("div", { text: "", attr: { style: "color:var(--text-muted);font-size:12px;" } });
+                const listEl = contentEl.createEl("div", { attr: { style: "flex:1;overflow:auto;border:1px solid var(--background-modifier-border);border-radius:8px;padding:8px;background:var(--background-primary);" } });
+                const render = () => this.renderList(listEl, stat, input.value || "");
+                input.addEventListener("input", () => { this.activeIndex = 0; render(); });
+                const submitManual = () => {
+                    const raw = String(input.value || "").trim();
+                    if (!raw) return;
+                    this.resolve({ kind: "manual", raw });
+                    this.close();
+                };
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        if (this.activeIndex < this.filtered.length - 1) this.activeIndex++;
+                        render();
+                    } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        if (this.activeIndex > 0) this.activeIndex--;
+                        render();
+                    } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        const selected = this.filtered[this.activeIndex];
+                        if (selected) {
+                            this.resolve(selected);
+                            this.close();
+                        } else {
+                            submitManual();
+                        }
+                    }
+                });
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;" } });
+                const manualBtn = actions.createEl("button", { text: "绑定输入内容" });
+                manualBtn.onclick = () => submitManual();
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => { this.resolve(null); this.close(); };
+                render();
+                input.focus();
+                input.selectionStart = input.value.length;
+                input.selectionEnd = input.value.length;
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.modalEl.style.height = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.height = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
+        class TaskCommentModal extends obsidian.Modal {
+            constructor(app, title, defaultValue, onResolve) {
+                super(app);
+                this.titleStr = title;
+                this.defaultValue = defaultValue || "";
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "1100px";
+                this.modalEl.style.width = "92vw";
+                this.modalEl.style.height = "78vh";
+                this.contentEl.style.display = "flex";
+                this.contentEl.style.flexDirection = "column";
+                this.contentEl.style.height = "100%";
+                this.contentEl.style.gap = "10px";
+
+                this.contentEl.createEl("h3", { text: this.titleStr });
+                this.contentEl.createEl("div", { text: "可写长评论，列表中展示前 20 字摘要。", attr: { style: "color:var(--text-muted);font-size:12px;" } });
+                const textarea = this.contentEl.createEl("textarea", {
+                    text: this.defaultValue,
+                    attr: { style: "width:100%;flex:1;min-height:420px;resize:none;padding:12px;line-height:1.6;border-radius:8px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);" }
+                });
+                textarea.placeholder = "记录思路、补充信息、执行细节...";
+                textarea.focus();
+                textarea.selectionStart = textarea.value.length;
+                textarea.selectionEnd = textarea.value.length;
+
+                const counter = this.contentEl.createEl("div", { attr: { style: "text-align:right;color:var(--text-muted);font-size:12px;" } });
+                const updateCounter = () => { counter.textContent = `${textarea.value.length} 字`; };
+                textarea.addEventListener("input", updateCounter);
+                updateCounter();
+
+                const actions = this.contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;" } });
+                const clearBtn = actions.createEl("button", { text: "清空评论" });
+                clearBtn.onclick = () => { this.resolve({ action: "clear" }); this.close(); };
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => { this.resolve(null); this.close(); };
+                const saveBtn = actions.createEl("button", { text: "保存评论", cls: "mod-cta" });
+                saveBtn.onclick = () => { this.resolve({ action: "save", value: textarea.value }); this.close(); };
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.modalEl.style.height = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.height = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
+        const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
+        const confirm = (title, message) => new Promise((resolve) => new ConfirmModal(app, title, message, resolve).open());
+        const noteSelector = (noteIndex, currentNotePath = null) => new Promise(r => new VaultNotePickerModal(app, noteIndex, currentNotePath, r).open());
+        const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
+        const runWithPromptLock = async (workFn) => {
+            if (window.workspaceTreePromptBusy) return null;
+            window.workspaceTreePromptBusy = true;
+            try {
+                return await workFn();
+            } finally {
+                window.workspaceTreePromptBusy = false;
+            }
+        };
+
+        const buildVaultIndexFromFiles = (files) => {
+            return files.map((f) => ({
+                path: f.path,
+                basename: f.basename,
+                basenameLower: f.basename.toLowerCase(),
+                pathLower: f.path.toLowerCase(),
+                search: `${f.basename.toLowerCase()} ${f.path.toLowerCase()}`
+            })).sort((a, b) => a.basename.localeCompare(b.basename, "zh"));
+        };
+
+        const buildVaultIndexFromEvaNotes = (evaNotes) => {
+            const items = [];
+            Object.values(evaNotes || {}).forEach((note) => {
+                const path = typeof note?.file_path === "string" ? note.file_path : null;
+                if (!path) return;
+                const fileName = typeof note?.file_name === "string" ? note.file_name : path.split("/").pop();
+                const basename = (fileName || path).replace(/\.md$/i, "");
+                const title = typeof note?.title === "string" ? note.title : "";
+                const pathLower = path.toLowerCase();
+                const basenameLower = basename.toLowerCase();
+                items.push({
+                    path,
+                    basename,
+                    basenameLower,
+                    pathLower,
+                    search: `${basenameLower} ${pathLower} ${title.toLowerCase()}`.trim()
+                });
+            });
+            return items.sort((a, b) => a.basename.localeCompare(b.basename, "zh"));
+        };
+
+        const loadEvaNoteIndex = async () => {
+            const candidates = [resolveLocalPath("EVA_Notes.json")].concat(EVA_NOTES_CANDIDATE_PATHS);
+            const seen = new Set();
+            for (const path of candidates) {
+                const normalized = String(path || "").trim();
+                if (!normalized || seen.has(normalized)) continue;
+                seen.add(normalized);
+                try {
+                    if (!await app.vault.adapter.exists(normalized)) continue;
+                    const content = await app.vault.adapter.read(normalized);
+                    const parsed = JSON.parse(content);
+                    if (parsed && parsed.notes && typeof parsed.notes === "object") {
+                        const items = buildVaultIndexFromEvaNotes(parsed.notes);
+                        if (items.length > 0) {
+                            const aliasMap = new Map();
+                            for (const item of items) {
+                                const full = String(item.path || "").trim().replace(/^\/+/, "");
+                                const noExt = full.replace(/\.md$/i, "");
+                                const base = noExt.split("/").pop() || noExt;
+                                if (!full) continue;
+                                aliasMap.set(full.toLowerCase(), full);
+                                aliasMap.set(noExt.toLowerCase(), full);
+                                aliasMap.set(base.toLowerCase(), full);
+                            }
+                            window.workspaceEvaNoteAliasCache = {
+                                builtAt: Date.now(),
+                                sourcePath: normalized,
+                                aliasMap
+                            };
+                            return { path: normalized, items };
+                        }
+                    }
+                } catch (e) {
+                    console.error("读取 EVA_Notes.json 失败:", normalized, e);
+                }
+            }
+            return null;
+        };
+
+        const getVaultNoteIndex = async () => {
+            if (!window.workspaceVaultNoteIndexCache) {
+                window.workspaceVaultNoteIndexCache = { items: [], builtAt: 0, source: "none", sourcePath: null };
+            }
+            const cache = window.workspaceVaultNoteIndexCache;
+            const now = Date.now();
+            if (cache.items.length > 0 && (now - cache.builtAt) <= 30000) return cache.items;
+
+            const eva = await loadEvaNoteIndex();
+            if (eva && eva.items.length > 0) {
+                cache.items = eva.items;
+                cache.builtAt = now;
+                cache.source = "eva";
+                cache.sourcePath = eva.path;
+                return cache.items;
+            }
+
+            const markdownFiles = app.vault.getMarkdownFiles();
+            cache.items = buildVaultIndexFromFiles(markdownFiles);
+            cache.builtAt = now;
+            cache.source = "vault";
+            cache.sourcePath = null;
+            return cache.items;
+        };
+
+        const sanitizeNoteInput = (raw) => {
+            const text = String(raw || "").trim();
+            if (!text) return "";
+            return text
+                .replace(/^\[\[/, "")
+                .replace(/\]\]$/, "")
+                .split("|")[0]
+                .split("#")[0]
+                .trim();
+        };
+
+        const resolveExistingNoteFile = (rawPath) => {
+            const clean = sanitizeNoteInput(rawPath);
+            if (!clean) return null;
+            const sourcePath = currentFilePath;
+            const normalizedClean = clean.replace(/^\/+/, "");
+            const noExt = normalizedClean.replace(/\.md$/i, "");
+            const withExt = normalizedClean.endsWith(".md") ? normalizedClean : `${normalizedClean}.md`;
+            const lowerClean = normalizedClean.toLowerCase();
+            const lowerNoExt = noExt.toLowerCase();
+            const lowerWithExt = withExt.toLowerCase();
+
+            if (!window.workspaceResolvedNoteFileCache || (Date.now() - window.workspaceResolvedNoteFileCache.builtAt) > 30000) {
+                window.workspaceResolvedNoteFileCache = { builtAt: Date.now(), map: new Map() };
+            }
+            const resolvedCache = window.workspaceResolvedNoteFileCache.map;
+            const cacheKey = lowerWithExt || lowerClean;
+            if (resolvedCache.has(cacheKey)) return resolvedCache.get(cacheKey);
+
+            const aliasMap = window.workspaceEvaNoteAliasCache?.aliasMap || new Map();
+            const aliasedPath = aliasMap.get(lowerClean)
+                || aliasMap.get(lowerWithExt)
+                || aliasMap.get(lowerNoExt)
+                || aliasMap.get(lowerNoExt.split("/").pop())
+                || normalizedClean;
+            const aliasedNoExt = aliasedPath.replace(/\.md$/i, "");
+
+            const hit = app.vault.getAbstractFileByPath(normalizedClean)
+                || app.vault.getAbstractFileByPath(withExt)
+                || app.vault.getAbstractFileByPath(aliasedPath)
+                || app.metadataCache.getFirstLinkpathDest(normalizedClean, sourcePath)
+                || app.metadataCache.getFirstLinkpathDest(noExt, sourcePath)
+                || app.metadataCache.getFirstLinkpathDest(aliasedNoExt, sourcePath)
+                || null;
+            resolvedCache.set(cacheKey, hit || null);
+            return hit;
+        };
+
+        const resolveExistingNotePath = (rawPath) => {
+            const file = resolveExistingNoteFile(rawPath);
+            return file ? file.path : null;
+        };
+
+        const getItemById = (id) => WORKSPACE_DATA.itemsById[String(id || "").trim()] || null;
+        const getChildrenIds = (parentId) => (WORKSPACE_DATA.childrenByParent[parentKey(parentId)] || []).slice();
+        const hasChildren = (id) => getChildrenIds(id).length > 0;
+        const getBoundNotePathById = (id) => {
+            const key = String(id || "").trim();
+            const raw = TASK_NOTE_BINDINGS?.[key];
+            if (typeof raw === "string" && raw.trim()) return raw.trim();
+            return null;
+        };
+        const getTaskCommentById = (id) => {
+            const key = String(id || "").trim();
+            const text = TASK_COMMENTS?.[key];
+            return typeof text === "string" ? text : "";
+        };
+        const summarizeComment = (text, maxLen = 20) => {
+            const clean = String(text || "").replace(/\s+/g, " ").trim();
+            if (!clean) return "";
+            return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen)}...`;
+        };
+
+        const updateWorkspaceData = async (operationFn) => {
+            const next = sanitizeWorkspaceData(clone(WORKSPACE_DATA));
+            operationFn(next);
+            const saved = await saveWorkspaceData(next);
+            WORKSPACE_DATA = saved;
+            if (renderViewFn) renderViewFn();
+        };
+
+        const updateTaskNoteBindings = async (operationFn) => {
+            const next = { ...(TASK_NOTE_BINDINGS || {}) };
+            operationFn(next);
+            try {
+                await saveTaskNoteBindings(next);
+                TASK_NOTE_BINDINGS = next;
+                if (renderViewFn) renderViewFn();
+            } catch (e) {
+                console.error("保存任务笔记绑定失败:", e);
+                new Notice(`❌ 保存绑定失败: ${e.message}`);
+            }
+        };
+
+        const updateTaskComments = async (operationFn) => {
+            const next = { ...(TASK_COMMENTS || {}) };
+            operationFn(next);
+            try {
+                await saveTaskComments(next);
+                TASK_COMMENTS = next;
+                if (renderViewFn) renderViewFn();
+            } catch (e) {
+                console.error("保存任务评论失败:", e);
+                new Notice(`❌ 保存评论失败: ${e.message}`);
+            }
+        };
+
+        const removeIdFromChildrenMap = (childrenByParent, id) => {
+            Object.keys(childrenByParent || {}).forEach((pKey) => {
+                const list = Array.isArray(childrenByParent[pKey]) ? childrenByParent[pKey] : [];
+                childrenByParent[pKey] = list.filter((x) => x !== id);
+            });
+        };
+
+        const collectSubtreeIds = (data, startId) => {
+            const ids = [];
+            const seen = new Set();
+            const stack = [String(startId || "").trim()];
+            while (stack.length > 0) {
+                const id = stack.pop();
+                if (!id || seen.has(id) || !data.itemsById[id]) continue;
+                seen.add(id);
+                ids.push(id);
+                const children = data.childrenByParent[id] || [];
+                children.forEach((childId) => stack.push(childId));
+            }
+            return ids;
+        };
+
+        const wouldCreateCycle = (data, draggedId, nextParentId) => {
+            let cursor = nextParentId;
+            while (cursor) {
+                if (cursor === draggedId) return true;
+                const parent = data.itemsById[cursor]?.parentId || null;
+                cursor = parent;
+            }
+            return false;
+        };
+
+        const addItem = async (parentId = null) => {
+            const title = await runWithPromptLock(() => prompt(parentId ? "添加子条目" : "添加根条目", "输入条目名称"));
+            if (!title) return;
+            const id = generateId();
+            await updateWorkspaceData((data) => {
+                data.itemsById[id] = {
+                    id,
+                    title,
+                    parentId,
+                    isCollapsed: false,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                const pKey = parentKey(parentId);
+                if (!data.childrenByParent[pKey]) data.childrenByParent[pKey] = [];
+                data.childrenByParent[pKey].push(id);
+            });
+        };
+
+        const renameItem = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            const newTitle = await runWithPromptLock(() => prompt("重命名条目", "输入新名称", item.title || ""));
+            if (!newTitle) return;
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[id];
+                if (!target) return;
+                target.title = newTitle;
+                target.updatedAt = nowString();
+            });
+            new Notice("✅ 已重命名");
+        };
+
+        const deleteItem = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            const idsToDelete = collectSubtreeIds(WORKSPACE_DATA, id);
+            if (idsToDelete.length === 0) return;
+            const msg = idsToDelete.length > 1
+                ? `确定删除 <b>${item.title}</b> 及其 <b>${idsToDelete.length - 1}</b> 个子条目吗？`
+                : `确定删除 <b>${item.title}</b> 吗？`;
+            const ok = await confirm("确认删除", msg);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                idsToDelete.forEach((targetId) => {
+                    removeIdFromChildrenMap(data.childrenByParent, targetId);
+                    delete data.childrenByParent[targetId];
+                    delete data.itemsById[targetId];
+                });
+            });
+            await updateTaskNoteBindings((bindings) => {
+                idsToDelete.forEach((targetId) => delete bindings[targetId]);
+            });
+            await updateTaskComments((comments) => {
+                idsToDelete.forEach((targetId) => delete comments[targetId]);
+            });
+            new Notice(`🗑️ 已删除 ${idsToDelete.length} 个条目`);
+        };
+
+        const toggleCollapse = async (id) => {
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[id];
+                if (!target) return;
+                target.isCollapsed = !target.isCollapsed;
+                target.updatedAt = nowString();
+            });
+        };
+
+        const openBoundNote = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            const boundPath = getBoundNotePathById(id);
+            if (!boundPath) {
+                new Notice("ℹ️ 该条目尚未绑定笔记，请先点击 📝/🔗");
+                return;
+            }
+            const file = resolveExistingNoteFile(boundPath);
+            if (!file) {
+                new Notice("⚠️ 绑定的笔记不存在，请重新绑定");
+                return;
+            }
+            await app.workspace.getLeaf(true).openFile(file);
+        };
+
+        const bindItemNote = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            const currentNotePath = getBoundNotePathById(id);
+            const noteIndex = await getVaultNoteIndex();
+            let selected = null;
+            try {
+                selected = await noteSelector(noteIndex, currentNotePath);
+            } catch (e) {
+                console.error("打开绑定面板失败:", e);
+                new Notice(`❌ 打开绑定面板失败: ${e.message}`);
+                return;
+            }
+
+            if (!selected) {
+                new Notice("ℹ️ 已取消绑定");
+                return;
+            }
+            if (selected && typeof selected === "object" && selected.item) selected = selected.item;
+
+            if (selected.kind === "current") {
+                const currentFile = resolveExistingNoteFile(selected.path);
+                if (currentFile) await app.workspace.getLeaf(true).openFile(currentFile);
+                else new Notice("⚠️ 当前绑定文件不存在，请重新绑定");
+                return;
+            }
+
+            if (selected.kind === "clear") {
+                await updateTaskNoteBindings((bindings) => { delete bindings[id]; });
+                new Notice("🗑️ 已清除笔记绑定");
+                return;
+            }
+
+            let targetPath = selected.path || selected.file_path || selected.filePath || selected.notePath || null;
+            if (!targetPath && selected.kind === "manual") targetPath = selected.raw || null;
+            if (!targetPath && typeof selected === "string") targetPath = selected;
+            targetPath = resolveExistingNotePath(targetPath);
+            if (!targetPath) {
+                new Notice("⚠️ 未匹配到现有笔记。请检查文件名/路径是否正确（不带 .md）");
+                return;
+            }
+            await updateTaskNoteBindings((bindings) => { bindings[id] = targetPath; });
+            const file = app.vault.getAbstractFileByPath(targetPath);
+            new Notice(`🔗 已绑定笔记: ${file ? file.basename : targetPath}`);
+        };
+
+        const editTaskComment = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            const currentComment = getTaskCommentById(id);
+            const result = await taskCommentEditor(`🗒️ 评论：${item.title}`, currentComment);
+            if (!result) return;
+            if (result.action === "clear") {
+                await updateTaskComments((comments) => { delete comments[id]; });
+                new Notice("🧹 已清空评论");
+                return;
+            }
+            if (result.action === "save") {
+                const finalText = String(result.value || "");
+                if (!finalText.trim()) {
+                    await updateTaskComments((comments) => { delete comments[id]; });
+                    new Notice("🧹 评论为空，已清空");
+                } else {
+                    await updateTaskComments((comments) => { comments[id] = finalText; });
+                    new Notice("💾 评论已保存");
+                }
+            }
+        };
+
+        const moveItem = async (draggedIdRaw, targetIdRaw, position) => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            const dragged = getItemById(draggedId);
+            const target = getItemById(targetId);
+            if (!dragged || !target) return;
+
+            let nextParentId = null;
+            if (position === "child") nextParentId = target.id;
+            else nextParentId = target.parentId || null;
+
+            if (wouldCreateCycle(WORKSPACE_DATA, dragged.id, nextParentId)) {
+                new Notice("⚠️ 无效操作：不能把条目移动到自己的子级链路中");
+                return;
+            }
+
+            await updateWorkspaceData((data) => {
+                const draggedItem = data.itemsById[dragged.id];
+                const targetItem = data.itemsById[target.id];
+                if (!draggedItem || !targetItem) return;
+
+                removeIdFromChildrenMap(data.childrenByParent, dragged.id);
+                draggedItem.parentId = nextParentId;
+                draggedItem.updatedAt = nowString();
+
+                const pKey = parentKey(nextParentId);
+                if (!data.childrenByParent[pKey]) data.childrenByParent[pKey] = [];
+                const siblings = data.childrenByParent[pKey];
+
+                if (position === "child") {
+                    siblings.push(dragged.id);
+                    return;
+                }
+
+                const targetIdx = siblings.indexOf(target.id);
+                if (targetIdx < 0) {
+                    siblings.push(dragged.id);
+                    return;
+                }
+                const insertAt = position === "before" ? targetIdx : targetIdx + 1;
+                siblings.splice(insertAt, 0, dragged.id);
+            });
+            new Notice("✅ 已调整层级");
+        };
+
+        const moveItemToRoot = async (draggedIdRaw) => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            if (!draggedId) return;
+            const dragged = getItemById(draggedId);
+            if (!dragged) return;
+            if (dragged.parentId === null) return;
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[draggedId];
+                if (!target) return;
+                removeIdFromChildrenMap(data.childrenByParent, draggedId);
+                target.parentId = null;
+                target.updatedAt = nowString();
+                if (!data.childrenByParent[ROOT_KEY]) data.childrenByParent[ROOT_KEY] = [];
+                data.childrenByParent[ROOT_KEY].push(draggedId);
+            });
+            new Notice("✅ 已移动到根层");
+        };
+
+        const getLevelBackground = (level) => {
+            const palette = [
+                "rgba(52, 152, 219, 0.06)",
+                "rgba(46, 204, 113, 0.08)",
+                "rgba(241, 196, 15, 0.09)",
+                "rgba(230, 126, 34, 0.09)",
+                "rgba(231, 76, 60, 0.08)",
+                "rgba(155, 89, 182, 0.08)"
+            ];
+            if (!Number.isFinite(level) || level < 0) return palette[0];
+            return palette[level % palette.length];
+        };
+
+        const renderItemLine = (container, item, level, chain) => {
+            const hasKids = hasChildren(item.id);
+            const boundPath = getBoundNotePathById(item.id);
+            const boundFile = boundPath ? resolveExistingNoteFile(boundPath) : null;
+            const commentText = getTaskCommentById(item.id);
+            const commentSummary = summarizeComment(commentText, 20);
+            const levelBg = getLevelBackground(level);
+
+            const line = container.createEl("div", {
+                cls: "workspace-item-line",
+                attr: {
+                    style: `margin-left:${level * 26}px; background:${levelBg};`
+                }
+            });
+            line.draggable = true;
+            line.addEventListener("dragstart", (e) => {
+                e.stopPropagation();
+                window.workspaceTreeCurrentDragId = item.id;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", item.id);
+                setTimeout(() => line.classList.add("is-dragging"), 0);
+            });
+            line.addEventListener("dragend", (e) => {
+                e.stopPropagation();
+                window.workspaceTreeCurrentDragId = null;
+                line.classList.remove("is-dragging");
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+            });
+            line.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const draggedId = window.workspaceTreeCurrentDragId;
+                if (!draggedId || draggedId === item.id) return;
+                const rect = line.getBoundingClientRect();
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                if ((e.clientX - rect.left) > 42) line.classList.add("drag-over-child");
+                else if ((e.clientY - rect.top) < rect.height / 2) line.classList.add("drag-over-top");
+                else line.classList.add("drag-over-bottom");
+            });
+            line.addEventListener("dragleave", (e) => {
+                e.stopPropagation();
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+            });
+            line.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const draggedId = window.workspaceTreeCurrentDragId;
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                if (!draggedId || draggedId === item.id) return;
+                const rect = line.getBoundingClientRect();
+                let position = "after";
+                if ((e.clientX - rect.left) > 42) position = "child";
+                else if ((e.clientY - rect.top) < rect.height / 2) position = "before";
+                await moveItem(draggedId, item.id, position);
+            });
+
+            const left = line.createEl("div", { cls: "workspace-line-left" });
+            const dragHandle = left.createEl("span", { text: "⋮⋮", cls: "workspace-drag-handle" });
+            dragHandle.title = "拖拽调整位置";
+            const collapseBtn = left.createEl("span", {
+                text: hasKids ? (item.isCollapsed ? "▶" : "▼") : "•",
+                cls: `workspace-collapse ${hasKids ? "clickable" : "dot"}`
+            });
+            if (hasKids) collapseBtn.onclick = (e) => { e.stopPropagation(); toggleCollapse(item.id); };
+
+            const content = line.createEl("div", { cls: "workspace-line-content" });
+            const titleLink = content.createEl("a", {
+                text: item.title,
+                cls: "internal-link workspace-title-link",
+                attr: { "data-href": boundPath || "", href: boundPath || "", target: "_blank", rel: "noopener" }
+            });
+            titleLink.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await openBoundNote(item.id);
+            };
+            if (commentSummary) {
+                content.createEl("span", {
+                    text: `💬 ${commentSummary}`,
+                    cls: "workspace-comment-summary",
+                    attr: { title: commentText }
+                });
+            }
+            if (boundPath) {
+                const boundLabel = boundFile ? boundFile.basename : "绑定失效";
+                content.createEl("span", {
+                    text: `🔗 ${boundLabel}`,
+                    cls: "workspace-bound-label",
+                    attr: { title: boundPath }
+                });
+            }
+
+            const actions = line.createEl("div", { cls: "workspace-line-actions" });
+            const addChildBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: "添加子条目" } });
+            addChildBtn.onclick = (e) => { e.stopPropagation(); addItem(item.id); };
+            const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: "重命名" } });
+            renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(item.id); };
+            const bindBtn = actions.createEl("span", {
+                text: boundPath ? "🔗" : "📝",
+                cls: "workspace-action-btn",
+                attr: { title: boundPath ? "修改/清除绑定" : "绑定笔记（EVA 索引优先）" }
+            });
+            bindBtn.onclick = async (e) => { e.stopPropagation(); await bindItemNote(item.id); };
+            const commentBtn = actions.createEl("span", {
+                text: commentText ? "💬" : "🗒️",
+                cls: "workspace-action-btn",
+                attr: { title: commentText ? "编辑评论（已填写）" : "添加评论" }
+            });
+            commentBtn.onclick = async (e) => { e.stopPropagation(); await editTaskComment(item.id); };
+            const deleteBtn = actions.createEl("span", { text: "🗑️", cls: "workspace-action-btn", attr: { title: "删除条目（含子树）" } });
+            deleteBtn.onclick = async (e) => { e.stopPropagation(); await deleteItem(item.id); };
+
+            if (hasKids && !item.isCollapsed) {
+                if (chain.has(item.id)) {
+                    const loopWarn = container.createEl("div", { text: "⚠️ 检测到循环引用，已停止渲染该分支", cls: "workspace-loop-warn", attr: { style: `margin-left:${(level + 1) * 26}px;` } });
+                    loopWarn.style.marginBottom = "4px";
+                } else {
+                    const nextChain = new Set(chain);
+                    nextChain.add(item.id);
+                    renderTree(container, item.id, level + 1, nextChain);
+                }
+            }
+        };
+
+        const renderTree = (container, parentId = null, level = 0, chain = new Set()) => {
+            const ids = getChildrenIds(parentId);
+            ids.forEach((id) => {
+                const item = getItemById(id);
+                if (!item) return;
+                renderItemLine(container, item, level, chain);
+            });
+        };
+
+        const renderView = () => {
+            dv.container.innerHTML = "";
+            dv.container.createEl("style", {
+                text: `
+                .workspace-wrap { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 14px; background: var(--background-primary-alt); }
+                .workspace-header { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+                .workspace-title { margin:0; font-size:1.1em; font-weight:700; color:var(--text-normal); }
+                .workspace-subtitle { color:var(--text-muted); font-size:12px; }
+                .workspace-main-btn { background:var(--interactive-accent); color:var(--text-on-accent); border:none; border-radius:6px; padding:6px 14px; font-weight:600; cursor:pointer; }
+                .workspace-main-btn:hover { filter:brightness(1.05); }
+                .workspace-root-drop-zone { margin-bottom:10px; border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
+                .workspace-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
+                .workspace-item-line { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; margin-bottom:4px; border:1px solid var(--background-modifier-border); transition:filter .15s,border-color .15s; user-select:none; }
+                .workspace-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
+                .workspace-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
+                .workspace-item-line.drag-over-top { border-top:3px solid #2ecc71; }
+                .workspace-item-line.drag-over-bottom { border-bottom:3px solid #2ecc71; }
+                .workspace-item-line.drag-over-child { background:rgba(46,204,113,.15); border-left:3px solid #2ecc71; }
+                .workspace-line-left { display:flex; align-items:center; gap:6px; width:58px; flex-shrink:0; align-self:flex-start; padding-top:2px; }
+                .workspace-drag-handle { color:var(--text-faint); cursor:grab; letter-spacing:-1px; }
+                .workspace-collapse { width:14px; text-align:center; color:var(--text-muted); user-select:none; }
+                .workspace-collapse.clickable { cursor:pointer; }
+                .workspace-collapse.dot { opacity:.4; }
+                .workspace-line-content { flex:1; min-width:0; display:flex; align-items:flex-start; flex-wrap:wrap; gap:6px 8px; overflow:visible; }
+                .workspace-bound-label { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; flex-shrink:0; }
+                .workspace-title-link { font-weight:600; color:var(--text-normal); min-width:0; flex:1 1 100%; white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word; }
+                .workspace-title-link:hover { color:var(--interactive-accent); text-decoration:underline; }
+                .workspace-comment-summary { font-size:12px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+                .workspace-line-actions { display:flex; align-items:center; gap:7px; flex-shrink:0; align-self:flex-start; padding-top:2px; }
+                .workspace-action-btn { cursor:pointer; font-size:14px; opacity:.85; }
+                .workspace-action-btn:hover { opacity:1; transform:translateY(-1px); }
+                .workspace-loop-warn { color:#c0392b; font-size:12px; padding:3px 6px; }
+                .workspace-empty { color:var(--text-faint); font-style:italic; padding:8px 4px; }
+                `
+            });
+
+            const wrap = dv.container.createEl("div", { cls: "workspace-wrap" });
+            const header = wrap.createEl("div", { cls: "workspace-header" });
+            const headerLeft = header.createEl("div");
+            headerLeft.createEl("h3", { text: "🧩 Workspace 树状条目视图", cls: "workspace-title" });
+            headerLeft.createEl("div", {
+                text: `数据文件: ${JSON_FILENAME} / ${TASK_NOTE_BINDINGS_FILENAME} / ${TASK_COMMENTS_FILENAME}`,
+                cls: "workspace-subtitle"
+            });
+            const addRootBtn = header.createEl("button", { text: "＋ 添加根条目", cls: "workspace-main-btn" });
+            addRootBtn.onclick = () => addItem(null);
+
+            const rootDropZone = wrap.createEl("div", { cls: "workspace-root-drop-zone", text: "↥ 拖拽到这里设为根条目（顶层）" });
+            rootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                if (!window.workspaceTreeCurrentDragId) return;
+                rootDropZone.classList.add("drag-over");
+            });
+            rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
+            rootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                rootDropZone.classList.remove("drag-over");
+                if (!window.workspaceTreeCurrentDragId) return;
+                await moveItemToRoot(window.workspaceTreeCurrentDragId);
+            });
+
+            const list = wrap.createEl("div");
+            const roots = getChildrenIds(null);
+            if (roots.length === 0) {
+                list.createEl("div", { text: "_暂无条目，点击上方按钮先创建一个_", cls: "workspace-empty" });
+            } else {
+                renderTree(list, null, 0, new Set());
+            }
+        };
+
+        let renderQueued = false;
+        renderViewFn = () => {
+            if (renderQueued) return;
+            renderQueued = true;
+            setTimeout(() => {
+                renderQueued = false;
+                renderView();
+            }, 0);
+        };
+
+        renderViewFn();
+    } catch (e) {
+        console.error("[Workspace] 初始化失败:", e);
+        dv.container.innerHTML = "";
+        dv.container.createEl("div", {
+            text: `❌ Workspace 初始化失败: ${e.message}`,
+            attr: {
+                style: "padding:12px; border:1px solid var(--text-error); border-radius:8px; color:var(--text-error); background:var(--background-secondary);"
+            }
+        });
+    }
+})();
+```
