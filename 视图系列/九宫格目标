@@ -1,0 +1,1042 @@
+```dataviewjs
+// ============================================================
+// 🏵️ 曼陀罗时空整合系统 (v2.5 分类增强版)
+// 核心：九宫格 + 评价补卡 + 无限层级汇总 + 节点分类 + 详情Modal
+// ============================================================
+
+// --- 0. 配置与初始化 ---
+const DB_FILE = "Mandala_Database.json";
+const LOG_FILE = "Mandala_Logs.json";
+const TYPE_FILE = "Mandala_Types.json";
+const DEFAULT_DB = { root: { id: "root", title: "核心目标", children: {} } };
+const DEFAULT_LOGS = [];
+const currentFolder = dv.current().file.folder;
+// 规范化路径，避免 // 或反斜杠导致 getAbstractFileByPath 找不到文件
+const normalizePathSafe = (p) => p.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\//, "");
+const DB_PATH = normalizePathSafe(`${currentFolder}/${DB_FILE}`);
+const LOG_PATH = normalizePathSafe(`${currentFolder}/${LOG_FILE}`);
+const TYPE_PATH = normalizePathSafe(`${currentFolder}/${TYPE_FILE}`);
+
+// --- 0.1 节点类型配置 ---
+// 默认类型（可在“类型管理”里修改名称/颜色/emoji）
+const DEFAULT_NODE_TYPES = {
+    default:    { name: "普通",     color: "#9ca3af", icon: "📦" },   // 未分类
+    category:   { name: "待细分",   color: "#6366f1", icon: "📁" },   // 还需往下拆
+    milestone:  { name: "里程碑",   color: "#f59e0b", icon: "🏆" },   // 一次性结果
+    project:    { name: "项目",     color: "#3b82f6", icon: "📋" },   // 阶段性产出
+    habit:      { name: "习惯",     color: "#10b981", icon: "🔄" },   // 高频动作
+    compound:   { name: "复利积累", color: "#22c55e", icon: "🪴" },   // 长期复利/练功
+    maintenance:{ name: "维护运营", color: "#8b5cf6", icon: "🛠" },   // 保养/持续运营
+    block:      { name: "堵点", color: "#ef4444", icon: "🪠" },   // 需要清除的阻碍
+    backlog:    { name: "种子/想法", color: "#eab308", icon: "💡" }   // 还未启动的想法
+};
+let nodeTypes = {};
+const safeHexColor = (value, fallback = "#9ca3af") => {
+    const hex = (value || "").trim();
+    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex) ? hex : fallback;
+};
+const toTypeId = (value) => {
+    const normalized = (value || "")
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9_-]/g, "");
+    return normalized || `type_${Date.now().toString(36)}`;
+};
+const ensureUniqueTypeId = (baseId, dict) => {
+    let finalId = baseId;
+    let i = 1;
+    while (dict[finalId]) {
+        finalId = `${baseId}_${i}`;
+        i++;
+    }
+    return finalId;
+};
+const mergeTypeConfigs = (rawTypes) => {
+    const merged = {};
+    Object.entries(DEFAULT_NODE_TYPES).forEach(([typeId, cfg]) => {
+        merged[typeId] = { ...cfg };
+    });
+    if (rawTypes && typeof rawTypes === "object" && !Array.isArray(rawTypes)) {
+        Object.entries(rawTypes).forEach(([typeId, cfg]) => {
+            if (!typeId || !cfg || typeof cfg !== "object") return;
+            const base = merged[typeId] || {};
+            merged[typeId] = {
+                name: (cfg.name || base.name || typeId).toString().trim(),
+                color: safeHexColor(cfg.color, base.color || "#9ca3af"),
+                icon: (cfg.icon || base.icon || "🏷️").toString().trim() || "🏷️"
+            };
+        });
+    }
+    return merged;
+};
+const getTypeConfig = (typeId) => nodeTypes[typeId] || { name: typeId, color: "#9ca3af", icon: "🏷️" };
+const getTypeUsageCount = (typeId) => Object.values(db).filter(n => (n.type || "default") === typeId).length;
+const persistTypeConfigs = async () => {
+    nodeTypes = mergeTypeConfigs(nodeTypes);
+    await saveJson(TYPE_PATH, nodeTypes);
+};
+
+if (window.mandalaState === undefined) window.mandalaState = {
+    view: "grid", currentId: "root", history: [], detailTargetId: null, typeFilter: "all"
+};
+if (!window.mandalaState.typeFilter) window.mandalaState.typeFilter = "all";
+
+// --- 1. 交互组件 ---
+class QuickPrompt extends obsidian.Modal {
+    constructor(app, title, placeholder, onSubmit, defaultValue = "") {
+        super(app); this.titleStr = title; this.placeholder = placeholder; this.defaultValue = defaultValue; this.onSubmit = onSubmit;
+    }
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl("h3", { text: this.titleStr });
+        const input = contentEl.createEl("input", { type: "text", value: this.defaultValue });
+        input.placeholder = this.placeholder; input.style.width = "100%"; input.focus();
+        const btn = contentEl.createEl("button", { text: "确定", cls: "mod-cta", style: "margin-top:15px; float:right;" });
+        const submit = () => { if(input.value) { this.close(); this.onSubmit(input.value); }};
+        btn.onclick = submit; input.addEventListener("keypress", (e) => { if (e.key === "Enter") submit(); });
+    }
+    onClose() { this.contentEl.empty(); }
+}
+const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
+
+// --- 1.1 节点详情Modal (自定义HTML Modal) ---
+// 确保每次打开详情都读取最新的 JSON（防止磁盘已有数据却未载入内存）
+const refreshDbFromDisk = async () => {
+    nodeTypes = mergeTypeConfigs(await loadJson(TYPE_PATH, DEFAULT_NODE_TYPES));
+    db = await loadJson(DB_PATH, DEFAULT_DB);
+    logs = await loadJson(LOG_PATH, DEFAULT_LOGS);
+    Object.values(db).forEach(migrateNode);
+    sortLogsByDate();
+};
+
+const openNodeDetail = async (nodeId, onSave) => {
+    await refreshDbFromDisk();
+    // 创建遮罩层
+    const modal = document.createElement("div");
+    modal.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;";
+
+    // 创建内容区
+    const content = modal.createEl("div");
+    content.style.cssText = "background:var(--background-secondary);border-radius:12px;padding:24px;max-width:960px;width:96%;max-height:92vh;overflow-y:auto;";
+
+    // 标题
+    content.createEl("h2", { text: "📋 节点详情", style: "margin-bottom: 15px; display: flex; align-items: center; gap: 8px;" });
+
+    // 获取节点数据（刷新后）
+    const node = db[nodeId];
+    if (!node) {
+        new Notice("❌ 节点不存在");
+        return;
+    }
+
+    // 标题显示（带类型标签）
+    const titleRow = content.createEl("div", {
+        style: "margin-bottom: 15px; padding: 8px 12px; background: var(--background-secondary); border-radius: 6px; display: flex; align-items: center; gap: 10px;"
+    });
+    titleRow.createEl("span", { text: node.title, style: "font-weight: bold; font-size: 1.1em;" });
+
+    // 如果有类型，显示类型标签
+    const nodeType = node.type || 'default';
+    if (nodeType !== 'default') {
+        const typeConfig = getTypeConfig(nodeType);
+        const typeBadge = titleRow.createEl("span", {
+            text: `${typeConfig?.icon || ''} ${typeConfig?.name || nodeType}`,
+            style: `padding: 2px 8px; border-radius: 12px; font-size: 0.8em; background: ${typeConfig?.color || '#666'}; color: white;`
+        });
+    }
+
+    // 统计信息
+    const statsDiv = content.createEl("div", {
+        style: "background: var(--background-secondary); padding: 12px; border-radius: 8px; margin-bottom: 18px; display: flex; justify-content: space-around; gap: 20px;"
+    });
+    const allIds = getAllDescendantIds(nodeId);
+    const relatedLogs = logs.filter(l => allIds.includes(l.targetId));
+    statsDiv.createEl("div", { text: `📊 总记录数: ${relatedLogs.length}` });
+    statsDiv.createEl("div", { text: `🕐 最近更新: ${relatedLogs[0]?.date || "无"}` });
+
+    // 分隔线
+    content.createEl("div", { style: "border-top: 1px solid var(--background-modifier-border); margin: 15px 0;" });
+
+    // 名称编辑
+    content.createEl("h4", { text: "✏️ 节点名称", style: "margin-top: 10px; margin-bottom: 8px;" });
+    const titleInput = content.createEl("input", {
+        type: "text",
+        value: node.title,
+        placeholder: "请输入节点名称"
+    });
+    titleInput.style.cssText = "width: 100%; padding: 10px 12px; border: 1px solid var(--text-muted); border-radius: 6px; background: var(--background-primary); color: var(--text-normal); font-size: 14px;";
+
+    // 改名历史（旧名称 -> 新名称）
+    const renameHistory = Array.isArray(node.renameHistory) ? node.renameHistory : [];
+    content.createEl("h4", { text: "🧾 改名历史数据帧", style: "margin-top: 14px; margin-bottom: 8px;" });
+    if (renameHistory.length === 0) {
+        content.createEl("div", { text: "暂无改名记录", style: "color: var(--text-muted); font-size: 0.9em; margin-bottom: 10px;" });
+    } else {
+        const historyTable = content.createEl("table", {
+            style: "width: 100%; border-collapse: collapse; font-size: 0.9em; margin-bottom: 10px;"
+        });
+        const thead = historyTable.createEl("thead");
+        const headRow = thead.createEl("tr");
+        headRow.createEl("th", { text: "时间", style: "text-align:left; padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border);" });
+        headRow.createEl("th", { text: "旧名称", style: "text-align:left; padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border);" });
+        headRow.createEl("th", { text: "新名称", style: "text-align:left; padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border);" });
+
+        const tbody = historyTable.createEl("tbody");
+        [...renameHistory].slice().reverse().forEach((item) => {
+            const row = tbody.createEl("tr");
+            row.createEl("td", { text: item.changedAt || "-", style: "padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border-focus);" });
+            row.createEl("td", { text: item.oldTitle || "-", style: "padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border-focus);" });
+            row.createEl("td", { text: item.newTitle || "-", style: "padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border-focus);" });
+        });
+    }
+
+    // 描述/备注编辑
+    content.createEl("h4", { text: "📝 描述/备注 (可写 1000 字以上)", style: "margin-top: 15px; margin-bottom: 8px;" });
+    const textarea = content.createEl("textarea", {
+        style: "width: 100%; min-height: 420px; height: 420px; padding: 12px; border: 1px solid var(--text-muted); border-radius: 6px; background: var(--background-primary); color: var(--text-normal); resize: vertical; font-size: 14px; line-height: 1.6;"
+    });
+    // 对 textarea 需要显式赋值，设置 attribute 不会显示内容
+    textarea.value = node.comment || "";
+
+    // 类型选择
+    content.createEl("h4", { text: "🏷️ 节点类型", style: "margin-top: 18px; margin-bottom: 10px;" });
+    const typeContainer = content.createEl("div", {
+        cls: "type-selector",
+        style: "display: flex; flex-wrap: wrap; gap: 10px; padding: 15px; background: var(--background-secondary); border-radius: 8px;"
+    });
+
+    const typeRadios = {};
+    const currentType = node.type && nodeTypes[node.type] ? node.type : 'default';
+    const typeEntries = Object.entries(nodeTypes);
+    if (node.type && !nodeTypes[node.type]) typeEntries.push([node.type, getTypeConfig(node.type)]);
+
+    typeEntries.forEach(([typeId, config]) => {
+        const isChecked = currentType === typeId;
+        const label = typeContainer.createEl("label", {
+            style: `display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 4px; cursor: pointer; border: 1px solid ${isChecked ? config.color : 'var(--background-modifier-border)'}; background: ${isChecked ? config.color + '20' : 'var(--background-primary)'};`
+        });
+
+        const radio = label.createEl("input", {
+            type: "radio",
+            name: "nodeType",
+            value: typeId,
+            checked: isChecked
+        });
+        // 确保初始选中状态生效（Obsidian createEl 对 boolean 属性不总是设置 DOM property）
+        radio.checked = isChecked;
+        typeRadios[typeId] = radio;
+
+        label.createSpan({ text: `${config.icon} ${config.name}`, style: `font-weight: ${isChecked ? 'bold' : 'normal'};` });
+
+        // 颜色指示点
+        if (config.color !== 'transparent') {
+            const colorDot = label.createEl("span", {
+                cls: "type-color-dot",
+                style: `width: 10px; height: 10px; border-radius: 50%; background: ${config.color}; ${isChecked ? 'box-shadow: 0 0 6px ' + config.color : ''}`
+            });
+        }
+
+        // 点击切换类型
+        label.onclick = () => {
+            // 取消所有选中
+            Object.values(typeRadios).forEach(r => r.checked = false);
+            // 重置所有标签样式
+            typeContainer.querySelectorAll('label').forEach(lbl => {
+                lbl.style.border = '1px solid var(--background-modifier-border)';
+                lbl.style.background = 'var(--background-primary)';
+                const span = lbl.querySelector('span');
+                if (span) span.style.fontWeight = 'normal';
+                const dot = lbl.querySelector('span:last-child');
+                if (dot && dot.classList.contains('type-color-dot')) dot.style.boxShadow = 'none';
+            });
+            // 选中当前
+            radio.checked = true;
+            label.style.border = `1px solid ${config.color}`;
+            label.style.background = `${config.color}20`;
+            label.querySelector('span').style.fontWeight = 'bold';
+            const dot = label.querySelector('span:last-child');
+            if (dot && dot.classList.contains('type-color-dot')) dot.style.boxShadow = `0 0 6px ${config.color}`;
+        };
+    });
+
+    // 操作按钮
+    const btnRow = content.createEl("div", {
+        style: "display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; padding-top: 15px; border-top: 1px solid var(--background-modifier-border);"
+    });
+
+    const saveBtn = btnRow.createEl("button", {
+        text: "💾 保存",
+        style: "padding: 10px 24px; border-radius: 6px; font-size: 14px; background: var(--interactive-accent); color: white; border: none; cursor: pointer;"
+    });
+
+    const cancelBtn = btnRow.createEl("button", {
+        text: "✖️ 关闭",
+        style: "padding: 10px 24px; border-radius: 6px; font-size: 14px; background: var(--background-modifier-hover); border: none; cursor: pointer;"
+    });
+
+    // 保存逻辑
+    saveBtn.onclick = async () => {
+        // 查找选中的类型
+        let selectedType = 'default';
+        for (const [typeId, radio] of Object.entries(typeRadios)) {
+            if (radio.checked) {
+                selectedType = typeId;
+                break;
+            }
+        }
+
+        // 更新内存数据
+        const trimmedTitle = (titleInput.value || "").trim();
+        if (!trimmedTitle) {
+            new Notice("❌ 名称不能为空");
+            titleInput.focus();
+            return;
+        }
+
+        const oldTitle = db[nodeId].title;
+        const titleChanged = trimmedTitle !== oldTitle;
+        if (titleChanged) {
+            await renameLinkedFile(oldTitle, trimmedTitle);
+            if (!Array.isArray(db[nodeId].renameHistory)) db[nodeId].renameHistory = [];
+            db[nodeId].renameHistory.push({
+                oldTitle: oldTitle,
+                newTitle: trimmedTitle,
+                changedAt: moment().format("YYYY-MM-DD HH:mm:ss"),
+                timestamp: Date.now()
+            });
+            db[nodeId].title = trimmedTitle;
+        }
+
+        db[nodeId].comment = textarea.value;
+        db[nodeId].type = selectedType;
+
+        // 保存到文件（若不存在则自动创建），并刷新
+        try {
+            await saveJson(DB_PATH, db);
+            new Notice(titleChanged ? "✅ 已保存，名称变更已记录" : "✅ 已保存");
+            document.body.removeChild(modal);
+            if (onSave) onSave(); else renderView();
+        } catch (err) {
+            console.error(err);
+            new Notice("❌ 保存失败，请查看控制台");
+        }
+    };
+
+    // 取消逻辑
+    cancelBtn.onclick = () => document.body.removeChild(modal);
+
+    // 点击遮罩层关闭
+    modal.onclick = (e) => {
+        if (e.target === modal) document.body.removeChild(modal);
+    };
+
+    // 显示弹窗
+    document.body.appendChild(modal);
+};
+
+// --- 2. 数据处理 ---
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+
+const loadJson = async (path, defaultData) => {
+    const normalized = normalizePathSafe(path);
+    if (!await app.vault.adapter.exists(normalized)) {
+        await app.vault.create(normalized, JSON.stringify(defaultData, null, 2));
+        return defaultData;
+    }
+    try { return JSON.parse(await app.vault.adapter.read(normalized)); } catch (e) { return defaultData; }
+};
+
+// 保存时兜底创建文件，并统一使用标准化路径
+const saveJson = async (path, data) => {
+    const normalized = normalizePathSafe(path);
+    const jsonString = JSON.stringify(data, null, 2);
+    const file = app.vault.getAbstractFileByPath(normalized);
+    if (file) await app.vault.modify(file, jsonString);
+    else await app.vault.create(normalized, jsonString);
+};
+
+let db = await loadJson(DB_PATH, DEFAULT_DB);
+let logs = await loadJson(LOG_PATH, DEFAULT_LOGS);
+nodeTypes = mergeTypeConfigs(await loadJson(TYPE_PATH, DEFAULT_NODE_TYPES));
+logs.sort((a, b) => {
+    if (a.date !== b.date) return (b.date || "").localeCompare(a.date || "");
+    if ((a.time || "") !== (b.time || "")) return (b.time || "").localeCompare(a.time || "");
+    return (b.timestamp || 0) - (a.timestamp || 0);
+});
+
+// --- 2.1 数据迁移 ---
+// 确保旧数据有 type 和 comment 字段
+const migrateNode = (node) => {
+    if (!node.type) node.type = 'default';
+    if (!node.comment) node.comment = '';
+    if (!Array.isArray(node.renameHistory)) node.renameHistory = [];
+    return node;
+};
+Object.values(db).forEach(migrateNode);
+
+// --- 核心逻辑 ---
+
+const sortLogsByDate = () => {
+    logs.sort((a, b) => {
+        if (a.date !== b.date) return (b.date || "").localeCompare(a.date || "");
+        if ((a.time || "") !== (b.time || "")) return (b.time || "").localeCompare(a.time || "");
+        return (b.timestamp || 0) - (a.timestamp || 0);
+    });
+};
+
+const openLogEditor = async (logId) => {
+    await refreshDbFromDisk();
+    const log = logs.find((l) => l.id === logId);
+    if (!log) {
+        new Notice("❌ 记录不存在");
+        return;
+    }
+
+    const modal = document.createElement("div");
+    modal.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10001;";
+    const content = modal.createEl("div");
+    content.style.cssText = "background:var(--background-secondary);border-radius:12px;padding:20px;max-width:680px;width:94%;max-height:88vh;overflow-y:auto;";
+    content.createEl("h3", { text: "✏️ 编辑记录", style: "margin: 0 0 12px 0;" });
+    content.createEl("div", { text: `目标：${getTimelineTargetText(log)}`, style: "color:var(--text-muted);margin-bottom:10px;" });
+
+    const dateLabel = content.createEl("div", { text: "日期 (YYYY-MM-DD)", style: "margin:6px 0;" });
+    const dateInput = content.createEl("input", { type: "text", value: log.date || "" });
+    dateInput.style.cssText = "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-primary);color:var(--text-normal);";
+
+    const timeLabel = content.createEl("div", { text: "时间 (HH:mm)", style: "margin:12px 0 6px;" });
+    const timeInput = content.createEl("input", { type: "text", value: log.time || moment().format("HH:mm") });
+    timeInput.style.cssText = "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-primary);color:var(--text-normal);";
+
+    const commentLabel = content.createEl("div", { text: "记录内容", style: "margin:12px 0 6px;" });
+    const commentInput = content.createEl("textarea");
+    commentInput.style.cssText = "width:100%;min-height:220px;padding:10px 12px;border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-primary);color:var(--text-normal);resize:vertical;line-height:1.6;";
+    commentInput.value = log.comment || "";
+
+    const btnRow = content.createEl("div", { style: "display:flex;gap:10px;justify-content:flex-end;margin-top:16px;" });
+    const saveBtn = btnRow.createEl("button", { cls: "m-btn active", text: "保存修改" });
+    const cancelBtn = btnRow.createEl("button", { cls: "m-btn", text: "取消" });
+
+    saveBtn.onclick = async () => {
+        const newDate = (dateInput.value || "").trim();
+        const newTime = (timeInput.value || "").trim();
+        const newComment = (commentInput.value || "").trim();
+        if (!moment(newDate, "YYYY-MM-DD", true).isValid()) {
+            new Notice("❌ 日期格式错误，请使用 YYYY-MM-DD");
+            dateInput.focus();
+            return;
+        }
+        if (!/^\d{2}:\d{2}$/.test(newTime)) {
+            new Notice("❌ 时间格式错误，请使用 HH:mm");
+            timeInput.focus();
+            return;
+        }
+
+        log.date = newDate;
+        log.time = newTime;
+        log.comment = newComment || "✅ 完成打卡";
+        log.editedAt = moment().format("YYYY-MM-DD HH:mm:ss");
+        sortLogsByDate();
+        await saveJson(LOG_PATH, logs);
+        new Notice("✅ 记录已更新");
+        document.body.removeChild(modal);
+        renderView();
+    };
+
+    cancelBtn.onclick = () => document.body.removeChild(modal);
+    modal.onclick = (e) => { if (e.target === modal) document.body.removeChild(modal); };
+    document.body.appendChild(modal);
+};
+
+const addLog = async (targetId, targetTitle) => {
+    const comment = await prompt(`打卡: ${targetTitle}`, "评价/记录/感想 (留空仅打卡)");
+    if (comment === undefined) return;
+    const defaultDate = moment().format("YYYY-MM-DD");
+    const inputDate = await prompt("确认日期", "YYYY-MM-DD", defaultDate);
+    if (inputDate === undefined) return;
+
+    const titleSnapshot = db[targetId]?.title || targetTitle || "未命名目标";
+    const newLog = {
+        id: generateId(),
+        targetId: targetId,
+        targetTitle: titleSnapshot,
+        targetPathAtLog: getPathName(targetId),
+        date: inputDate,
+        time: moment().format("HH:mm"),
+        comment: comment || "✅ 完成打卡",
+        timestamp: Date.now()
+    };
+    
+    logs.push(newLog); 
+    sortLogsByDate();
+
+    await saveJson(LOG_PATH, logs);
+    new Notice(`📝 已记录到 ${inputDate}`);
+    renderView();
+};
+
+const getAllDescendantIds = (rootId) => {
+    let ids = [rootId]; 
+    const node = db[rootId];
+    if (!node) return ids;
+    Object.values(node.children).forEach(childId => {
+        if (childId && db[childId]) ids = ids.concat(getAllDescendantIds(childId));
+    });
+    return ids;
+};
+
+// 【关键新增】获取完整的路径名称 (Breadcrumb)
+// 格式如：核心目标 > 财务 > 储蓄
+const getPathName = (targetId) => {
+    if (!db[targetId]) return "已删除";
+    if (targetId === "root") return db["root"].title;
+
+    // 向上查找父节点 (效率优化：因为DB结构是父存子，所以需要全库反查)
+    // 在数据量极大时可能稍慢，但在个人知识库量级下通常无感
+    let currentId = targetId;
+    let pathStack = [db[targetId].title];
+    
+    // 安全计数防止死循环
+    let safety = 0;
+    while (currentId !== "root" && safety < 50) {
+        let parentFound = null;
+        for (const [pId, node] of Object.entries(db)) {
+            if (Object.values(node.children).includes(currentId)) {
+                parentFound = pId;
+                break;
+            }
+        }
+        if (parentFound) {
+            pathStack.unshift(db[parentFound].title);
+            currentId = parentFound;
+        } else {
+            break; // 找不到父节点（也就是断链了，或者到达顶层但逻辑未匹配）
+        }
+        safety++;
+    }
+    
+    return pathStack.join(" > ");
+};
+
+const getCurrentTitleById = (targetId) => db[targetId]?.title || "已删除目标";
+
+const getTimelineTargetText = (log) => {
+    const historicalTitle = (log.targetTitle || getCurrentTitleById(log.targetId) || "未命名目标").trim();
+    const currentTitle = getCurrentTitleById(log.targetId);
+    if (currentTitle !== "已删除目标" && historicalTitle !== currentTitle) {
+        return `[${historicalTitle}]（现名：${currentTitle}）`;
+    }
+    return `[${historicalTitle}]`;
+};
+
+const getTimelinePathText = (log) => log.targetPathAtLog || getPathName(log.targetId);
+
+const getRecursiveLogCount = (targetId) => {
+    const allIds = getAllDescendantIds(targetId);
+    return logs.filter(l => allIds.includes(l.targetId)).length;
+};
+
+const getNoteImage = async (noteTitle) => {
+    const file = app.metadataCache.getFirstLinkpathDest(noteTitle, dv.current().file.path);
+    if (!file) return null; 
+    const content = await app.vault.read(file);
+    const internalMatch = content.match(/!\[\[(.*?)(?:\|.*?)?\]\]/);
+    if (internalMatch) {
+        const imgName = internalMatch[1];
+        const imgFile = app.metadataCache.getFirstLinkpathDest(imgName, file.path);
+        if (imgFile) return app.vault.getResourcePath(imgFile);
+    }
+    const externalMatch = content.match(/!\[.*?\]\((.*?)\)/);
+    if (externalMatch) return externalMatch[1];
+    return null;
+};
+
+const renameLinkedFile = async (oldName, newName) => {
+    const currentFile = dv.current().file;
+    const targetFile = app.metadataCache.getFirstLinkpathDest(oldName, currentFile.path);
+    if (targetFile) {
+        try {
+            const parentPath = targetFile.parent.path;
+            const newPath = parentPath === "/" ? `${newName}.md` : `${parentPath}/${newName}.md`;
+            await app.fileManager.renameFile(targetFile, newPath);
+            new Notice(`📄 文件已更名: ${newName}`);
+        } catch (e) { console.error(e); }
+    }
+};
+
+const setNodeTitle = async (id, oldTitle) => {
+    const newTitle = await prompt("修改标题 (保留历史名称)", "请输入名称...", oldTitle);
+    const trimmedTitle = (newTitle || "").trim();
+    if (!trimmedTitle || trimmedTitle === oldTitle) return;
+    
+    await renameLinkedFile(oldTitle, trimmedTitle);
+    if (!Array.isArray(db[id].renameHistory)) db[id].renameHistory = [];
+    db[id].renameHistory.push({
+        oldTitle: oldTitle,
+        newTitle: trimmedTitle,
+        changedAt: moment().format("YYYY-MM-DD HH:mm:ss"),
+        timestamp: Date.now()
+    });
+    db[id].title = trimmedTitle;
+    await saveJson(DB_PATH, db);
+    new Notice("✏️ 名称已更新，历史记录已保留");
+    renderView();
+};
+
+const createSubNode = async (parentId, slotIndex) => {
+    const title = await prompt("新建目标", "请输入名称...");
+    if (!title) return;
+    const newId = generateId();
+    db[newId] = {
+        id: newId,
+        title: title,
+        type: 'default',
+        comment: '',
+        renameHistory: [],
+        children: {}
+    };
+    db[parentId].children[slotIndex] = newId;
+    await saveJson(DB_PATH, db);
+    renderView();
+};
+
+const switchView = (viewName, targetId = null) => {
+    window.mandalaState.view = viewName;
+    if (targetId) window.mandalaState.detailTargetId = targetId;
+    renderView();
+};
+const drillDown = (nodeId) => {
+    window.mandalaState.history.push(window.mandalaState.currentId);
+    window.mandalaState.currentId = nodeId;
+    renderView();
+};
+const goBack = () => {
+    if (window.mandalaState.history.length > 0) {
+        window.mandalaState.currentId = window.mandalaState.history.pop();
+        renderView();
+    }
+};
+
+// --- 3. 渲染视图 ---
+const renderView = async () => {
+    dv.container.innerHTML = "";
+    
+    const style = document.createElement('style');
+    style.textContent = `
+        .mandala-wrap { display: flex; flex-direction: column; align-items: center; width: 100%; font-family: sans-serif; }
+        .top-bar { width: 100%; display: flex; justify-content: space-between; border-bottom: 2px solid var(--interactive-accent); padding: 5px 0 10px 0; margin-bottom: 15px; }
+        .bar-left { display: flex; gap: 8px; }
+        .m-btn { background: var(--background-primary); border: 1px solid var(--text-muted); color: var(--text-normal); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+        .m-btn.active { background: var(--interactive-accent); color: white; border-color: var(--interactive-accent); }
+
+        .grid-container { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: 8px; width: 100%; max-width: 450px; aspect-ratio: 1; }
+        .grid-cell {
+            position: relative; background: var(--background-secondary); border-radius: 6px;
+            display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+            overflow: hidden; cursor: pointer; transition: transform 0.2s;
+            background-size: cover; background-position: center;
+        }
+        .grid-cell:hover { transform: scale(1.02); z-index: 2; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .cell-has-img { background-size: contain !important; background-repeat: no-repeat !important; background-color: #1e1e1e; }
+        .cell-title-bar {
+            width: 100%; background: rgba(0,0,0,0.7); color: white; padding: 4px;
+            font-size: 0.85em; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .cell-empty { justify-content: center; color: var(--text-faint); border: 1px dashed var(--text-muted); background: transparent; }
+        .badge { position: absolute; top: 4px; left: 4px; background: var(--interactive-accent); color: white; font-size: 10px; padding: 1px 5px; border-radius: 8px; z-index: 10; opacity: 0.9; }
+
+        .action-overlay { position: absolute; top: 0; right: 0; padding: 4px; display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s; z-index: 20; }
+        .grid-cell:hover .action-overlay { opacity: 1; }
+        .icon-btn { background: rgba(0,0,0,0.6); color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+        .icon-btn:hover { background: var(--interactive-accent); }
+
+        /* 类型指示器 */
+        .type-indicator {
+            position: absolute; top: 4px; right: 30px; width: 10px; height: 10px; border-radius: 50%; z-index: 10;
+        }
+
+        /* Modal样式 */
+        .type-option:hover { background: var(--background-secondary); }
+
+        /* 节点详情Modal美化 */
+        .modal-stats { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+        .modal-stats div { font-size: 0.95em; }
+        .type-selector { padding: 10px; background: var(--background-secondary); border-radius: 8px; }
+        .type-option { background: var(--background-primary); border: 1px solid var(--background-modifier-border) !important; transition: all 0.2s; }
+        .type-option:hover { border-color: var(--interactive-accent) !important; transform: translateY(-1px); }
+        .type-option:has(input:checked) { border-color: var(--interactive-accent) !important; background: var(--background-modifier-form-field); }
+        .modal-btn-row button { padding: 8px 20px; border-radius: 6px; font-size: 14px; }
+        .modal-textarea:focus { outline: none; border-color: var(--interactive-accent) !important; box-shadow: 0 0 0 2px var(--interactive-accent-35); }
+
+        .timeline-container { width: 100%; max-width: 600px; }
+        .tl-item { display: flex; gap: 10px; padding: 10px 0; border-left: 2px solid var(--background-modifier-border); margin-left: 10px; padding-left: 15px; position: relative; }
+        .tl-item::before { content: ''; position: absolute; left: -6px; top: 15px; width: 10px; height: 10px; border-radius: 50%; background: var(--interactive-accent); }
+        .tl-date { font-family: monospace; color: var(--text-muted); font-size: 0.9em; min-width: 80px; }
+        .tl-content { flex: 1; display:flex; flex-direction:column; gap:2px; }
+        .tl-target { font-weight: bold; color: var(--text-normal); cursor: pointer; font-size: 0.9em; color: var(--text-accent); }
+        .tl-target:hover { text-decoration: underline; }
+        .tl-path { font-size: 0.8em; color: var(--text-muted); opacity: 0.8; margin-bottom: 2px; }
+        .tl-comment { color: var(--text-normal); font-size: 0.95em;}
+        .tl-actions { display: flex; gap: 8px; margin-top: 6px; }
+        .tl-edit-btn { padding: 2px 8px; font-size: 12px; }
+
+        .detail-header { text-align: center; margin-bottom: 20px; padding: 20px; background: var(--background-secondary); border-radius: 8px; width: 100%; max-width: 600px; }
+        .stat-box { display: flex; gap: 20px; justify-content: center; margin-top: 10px; }
+        .stat-num { font-size: 1.5em; font-weight: bold; color: var(--interactive-accent); }
+
+        .type-filter-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; width: 100%; max-width: 900px; }
+        .type-filter-select {
+            min-width: 220px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--background-modifier-border);
+            background: var(--background-primary); color: var(--text-normal);
+        }
+        .node-list { width: 100%; max-width: 900px; display: grid; gap: 10px; }
+        .node-item {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            padding: 10px 12px; background: var(--background-secondary); border-radius: 8px;
+            border: 1px solid var(--background-modifier-border);
+        }
+        .node-meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .node-title { font-weight: 600; color: var(--text-normal); }
+        .node-path { font-size: 0.85em; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 620px; }
+        .node-type-chip {
+            display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px;
+            font-size: 0.8em; color: #fff; width: fit-content;
+        }
+        .node-actions { display: flex; gap: 8px; }
+
+        .type-admin-wrap { width: 100%; max-width: 980px; display: flex; flex-direction: column; gap: 14px; }
+        .type-admin-row {
+            display: grid; grid-template-columns: 170px 160px 90px 170px 120px 120px;
+            gap: 10px; align-items: center;
+            padding: 10px 12px; background: var(--background-secondary);
+            border: 1px solid var(--background-modifier-border); border-radius: 8px;
+        }
+        .type-admin-row input { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); }
+        .type-admin-row .type-id { font-family: monospace; color: var(--text-muted); }
+        .type-admin-create {
+            display: grid; grid-template-columns: 1fr 140px 170px 120px; gap: 10px; align-items: center;
+            padding: 12px; background: var(--background-secondary); border-radius: 8px; width: 100%;
+        }
+        .type-admin-create input { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); }
+        .type-color-input-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .type-color-input-wrap input[type="color"] {
+            width: 44px; height: 32px; padding: 2px; border-radius: 6px;
+            border: 1px solid var(--background-modifier-border); cursor: pointer;
+            background: var(--background-primary);
+        }
+        .type-color-preview {
+            width: 22px; height: 22px; border-radius: 6px;
+            border: 1px solid var(--background-modifier-border);
+            flex: 0 0 auto;
+        }
+    `;
+    dv.container.appendChild(style);
+    
+    const wrap = dv.el("div", "", { cls: "mandala-wrap" });
+
+    const topBar = wrap.createEl("div", { cls: "top-bar" });
+    const barLeft = topBar.createEl("div", { cls: "bar-left" });
+    const barRight = topBar.createEl("div", { cls: "bar-right" });
+
+    const btnGrid = barLeft.createEl("button", { text: "🕸️ 九宫格", cls: `m-btn ${window.mandalaState.view === 'grid' ? 'active' : ''}` });
+    btnGrid.onclick = () => switchView("grid");
+    const btnFilter = barLeft.createEl("button", { text: "🔎 类型筛选", cls: `m-btn ${window.mandalaState.view === 'type-filter' ? 'active' : ''}` });
+    btnFilter.onclick = () => switchView("type-filter");
+    const btnTimeline = barLeft.createEl("button", { text: "⏳ 时间轴", cls: `m-btn ${window.mandalaState.view === 'timeline' ? 'active' : ''}` });
+    btnTimeline.onclick = () => switchView("timeline");
+    const btnTypeManage = barLeft.createEl("button", { text: "🧩 类型管理", cls: `m-btn ${window.mandalaState.view === 'type-manage' ? 'active' : ''}` });
+    btnTypeManage.onclick = () => switchView("type-manage");
+
+    if (window.mandalaState.view === "grid") {
+        if (window.mandalaState.history.length > 0) {
+            const backBtn = barRight.createEl("button", { text: "⬅️ 上一级", cls: "m-btn" });
+            backBtn.onclick = goBack;
+        }
+        
+        if (!db[window.mandalaState.currentId]) window.mandalaState.currentId = "root";
+        const currentNode = db[window.mandalaState.currentId];
+        
+        wrap.createEl("h4", { text: `当前聚焦: ${currentNode.title}`, style: "margin: 0 0 10px 0; opacity: 0.8;" });
+        const gridDiv = wrap.createEl("div", { cls: "grid-container" });
+
+        for (let i = 0; i < 9; i++) {
+            const cell = gridDiv.createEl("div", { cls: "grid-cell" });
+
+            const renderCellContent = async (node, isCore) => {
+                const nodeType = node.type || 'default';
+                const typeConfig = getTypeConfig(nodeType);
+                if (!isCore) cell.style.border = `2px solid ${typeConfig.color}`;
+
+                // 核心节点使用强调边框
+                if (isCore) cell.style.border = "2px solid var(--interactive-accent)";
+
+                const bgUrl = await getNoteImage(node.title);
+                if (bgUrl) { cell.style.backgroundImage = `url("${bgUrl}")`; cell.classList.add("cell-has-img"); }
+
+                // 类型指示器（非默认类型显示）
+                if (nodeType !== 'default') {
+                    const indicator = cell.createEl("div", { cls: "type-indicator", title: `${typeConfig.icon} ${typeConfig.name}` });
+                    indicator.style.background = typeConfig.color;
+                }
+
+                const count = getRecursiveLogCount(node.id);
+                if (count > 0) cell.createEl("div", { text: `${count}`, cls: "badge", title: "子目标累计记录" });
+
+                cell.createDiv({ text: node.title, cls: "cell-title-bar" });
+
+                const overlay = cell.createEl("div", { cls: "action-overlay" });
+                const detailBtn = overlay.createEl("div", { text: "📋", cls: "icon-btn", title: "节点详情" });
+                detailBtn.onclick = async (e) => { e.stopPropagation(); await openNodeDetail(node.id); };
+                const historyBtn = overlay.createEl("div", { text: "📜", cls: "icon-btn", title: "查看历史(含子目标)" });
+                historyBtn.onclick = (e) => { e.stopPropagation(); switchView("detail", node.id); };
+                const logBtn = overlay.createEl("div", { text: "✅", cls: "icon-btn", title: "记录评价" });
+                logBtn.onclick = (e) => { e.stopPropagation(); addLog(node.id, node.title); };
+            };
+
+            if (i === 4) {
+                await renderCellContent(currentNode, true);
+                cell.onclick = () => app.workspace.openLinkText(currentNode.title, dv.current().file.path);
+            } else {
+                const childId = currentNode.children[i];
+                if (childId && db[childId]) {
+                    await renderCellContent(db[childId], false);
+                    cell.onclick = () => drillDown(childId);
+                } else {
+                    cell.classList.add("cell-empty");
+                    cell.innerText = "+";
+                    cell.onclick = () => createSubNode(currentNode.id, i);
+                }
+            }
+        }
+    }
+
+    else if (window.mandalaState.view === "type-filter") {
+        wrap.createEl("h3", { text: "🔎 按类型筛选节点" });
+        const filterBar = wrap.createEl("div", { cls: "type-filter-bar" });
+        filterBar.createEl("span", { text: "类型：" });
+        const typeSelect = filterBar.createEl("select", { cls: "type-filter-select" });
+        const allOption = typeSelect.createEl("option", { text: "全部类型", value: "all" });
+        allOption.selected = (window.mandalaState.typeFilter || "all") === "all";
+
+        Object.entries(nodeTypes).forEach(([typeId, cfg]) => {
+            const usage = getTypeUsageCount(typeId);
+            const option = typeSelect.createEl("option", { text: `${cfg.icon} ${cfg.name} (${usage})`, value: typeId });
+            option.selected = window.mandalaState.typeFilter === typeId;
+        });
+        typeSelect.onchange = () => {
+            window.mandalaState.typeFilter = typeSelect.value || "all";
+            renderView();
+        };
+
+        const list = wrap.createEl("div", { cls: "node-list" });
+        const activeFilter = window.mandalaState.typeFilter || "all";
+        const nodePathMap = {};
+        const getNodePath = (nodeId) => {
+            if (!nodePathMap[nodeId]) nodePathMap[nodeId] = getPathName(nodeId);
+            return nodePathMap[nodeId];
+        };
+        const getPathSortKey = (nodeId) => getNodePath(nodeId).replace(/\s*>\s*/g, ">");
+        const nodes = Object.values(db)
+            .filter(n => n && n.id !== "root")
+            .filter(n => activeFilter === "all" ? true : (n.type || "default") === activeFilter)
+            .sort((a, b) => {
+                const byPath = getPathSortKey(a.id).localeCompare(getPathSortKey(b.id), "zh", { numeric: true, sensitivity: "base" });
+                if (byPath !== 0) return byPath;
+                return (a.title || "").localeCompare(b.title || "", "zh", { numeric: true, sensitivity: "base" });
+            });
+
+        if (nodes.length === 0) {
+            list.createEl("div", { text: "该类型下暂无节点", style: "color:var(--text-muted); padding:14px;" });
+        }
+
+        nodes.forEach((node) => {
+            const nodeType = node.type || "default";
+            const cfg = getTypeConfig(nodeType);
+            const nodePath = getNodePath(node.id);
+            const item = list.createEl("div", { cls: "node-item", title: `路径: ${nodePath}` });
+
+            const meta = item.createEl("div", { cls: "node-meta" });
+            const chip = meta.createEl("div", { cls: "node-type-chip", text: `${cfg.icon} ${cfg.name}` });
+            chip.style.background = cfg.color;
+            meta.createEl("div", { cls: "node-title", text: node.title || "未命名目标" });
+            meta.createEl("div", { cls: "node-path", text: nodePath });
+
+            const actions = item.createEl("div", { cls: "node-actions" });
+            const detailBtn = actions.createEl("button", { cls: "m-btn", text: "详情" });
+            detailBtn.onclick = () => switchView("detail", node.id);
+            const editBtn = actions.createEl("button", { cls: "m-btn", text: "编辑" });
+            editBtn.onclick = async () => openNodeDetail(node.id);
+        });
+    }
+
+    else if (window.mandalaState.view === "type-manage") {
+        wrap.createEl("h3", { text: "🧩 类型管理" });
+        const adminWrap = wrap.createEl("div", { cls: "type-admin-wrap" });
+        adminWrap.createEl("div", { text: "可编辑类型名称、emoji、颜色。新增类型后可在节点详情中直接选择。", style: "color:var(--text-muted);" });
+
+        const createRow = adminWrap.createEl("div", { cls: "type-admin-create" });
+        const newTypeName = createRow.createEl("input", { placeholder: "新类型名称（例如：关键结果）" });
+        const newTypeIcon = createRow.createEl("input", { placeholder: "emoji", value: "🏷️" });
+        const newTypeColorWrap = createRow.createEl("div", { cls: "type-color-input-wrap" });
+        const newTypeColor = newTypeColorWrap.createEl("input", { type: "color", value: "#3b82f6", title: "选择类型颜色" });
+        const newTypeColorPreview = newTypeColorWrap.createEl("span", { cls: "type-color-preview" });
+        const syncNewTypeColorPreview = () => {
+            const normalized = safeHexColor(newTypeColor.value, "#3b82f6");
+            newTypeColor.value = normalized;
+            newTypeColorPreview.style.background = normalized;
+        };
+        syncNewTypeColorPreview();
+        newTypeColor.oninput = syncNewTypeColorPreview;
+        const addTypeBtn = createRow.createEl("button", { cls: "m-btn active", text: "新增类型" });
+        addTypeBtn.onclick = async () => {
+            const name = (newTypeName.value || "").trim();
+            if (!name) return new Notice("❌ 请输入类型名称");
+            const typeId = ensureUniqueTypeId(toTypeId(name), nodeTypes);
+            nodeTypes[typeId] = {
+                name,
+                icon: (newTypeIcon.value || "🏷️").trim() || "🏷️",
+                color: safeHexColor(newTypeColor.value, "#3b82f6")
+            };
+            await persistTypeConfigs();
+            new Notice(`✅ 已新增类型: ${name}`);
+            renderView();
+        };
+
+        Object.entries(nodeTypes).forEach(([typeId, cfg]) => {
+            const row = adminWrap.createEl("div", { cls: "type-admin-row" });
+            row.createEl("div", { cls: "type-id", text: typeId });
+
+            const nameInput = row.createEl("input", { value: cfg.name || typeId });
+            const iconInput = row.createEl("input", { value: cfg.icon || "🏷️" });
+            const colorWrap = row.createEl("div", { cls: "type-color-input-wrap" });
+            const colorInput = colorWrap.createEl("input", {
+                type: "color",
+                value: safeHexColor(cfg.color, "#9ca3af"),
+                title: "选择类型颜色"
+            });
+            const colorPreview = colorWrap.createEl("span", { cls: "type-color-preview" });
+            const syncColorPreview = () => {
+                const normalized = safeHexColor(colorInput.value, "#9ca3af");
+                colorInput.value = normalized;
+                colorPreview.style.background = normalized;
+            };
+            syncColorPreview();
+            colorInput.oninput = syncColorPreview;
+            const usage = row.createEl("div", { text: `使用中: ${getTypeUsageCount(typeId)}` });
+            usage.style.color = "var(--text-muted)";
+
+            const actionWrap = row.createEl("div", { style: "display:flex; gap:8px;" });
+            const saveBtn = actionWrap.createEl("button", { cls: "m-btn", text: "保存" });
+            saveBtn.onclick = async () => {
+                const newName = (nameInput.value || "").trim();
+                if (!newName) return new Notice("❌ 类型名称不能为空");
+                nodeTypes[typeId] = {
+                    name: newName,
+                    icon: (iconInput.value || "🏷️").trim() || "🏷️",
+                    color: safeHexColor(colorInput.value, cfg.color || "#9ca3af")
+                };
+                await persistTypeConfigs();
+                new Notice(`✅ 已更新类型: ${newName}`);
+                renderView();
+            };
+
+            const delBtn = actionWrap.createEl("button", { cls: "m-btn", text: "删除" });
+            const isDefault = !!DEFAULT_NODE_TYPES[typeId];
+            if (isDefault) {
+                delBtn.disabled = true;
+                delBtn.title = "默认类型不可删除";
+            } else {
+                delBtn.onclick = async () => {
+                    if (!confirm(`确定删除类型「${cfg.name}」吗？此类型节点将回退为“普通”。`)) return;
+                    Object.values(db).forEach((node) => {
+                        if ((node.type || "default") === typeId) node.type = "default";
+                    });
+                    delete nodeTypes[typeId];
+                    await persistTypeConfigs();
+                    await saveJson(DB_PATH, db);
+                    new Notice("🗑️ 类型已删除，相关节点已回退为普通");
+                    renderView();
+                };
+            }
+        });
+    }
+
+    else if (window.mandalaState.view === "timeline") {
+        wrap.createEl("h3", { text: "⏳ 全局行动记录" });
+        const tlContainer = wrap.createEl("div", { cls: "timeline-container" });
+        if (logs.length === 0) tlContainer.createDiv({ text: "暂无记录", style: "color:var(--text-muted); padding:20px;" });
+
+        logs.forEach(log => {
+            const item = tlContainer.createEl("div", { cls: "tl-item" });
+            item.createEl("div", { text: `${log.date}${log.time ? ` ${log.time}` : ""}`, cls: "tl-date" });
+            const content = item.createEl("div", { cls: "tl-content" });
+            
+            // 【核心修改】显示完整路径
+            const fullPath = getTimelinePathText(log);
+            content.createEl("div", { text: fullPath, cls: "tl-path" });
+            
+            // 显示具体的打卡目标，点击可跳转详情
+            const targetLink = content.createEl("div", { text: getTimelineTargetText(log), cls: "tl-target" });
+            targetLink.onclick = () => switchView("detail", log.targetId);
+            
+            content.createEl("span", { text: log.comment, cls: "tl-comment" });
+            const actionRow = content.createEl("div", { cls: "tl-actions" });
+            const editBtn = actionRow.createEl("button", { text: "✏️ 编辑", cls: "m-btn tl-edit-btn" });
+            editBtn.onclick = () => openLogEditor(log.id);
+        });
+    }
+
+    else if (window.mandalaState.view === "detail") {
+        const targetId = window.mandalaState.detailTargetId;
+        const targetName = db[targetId] ? db[targetId].title : "已删除目标";
+        const targetPath = getPathName(targetId); // 详情页也显示一下路径
+
+        const allDescendantIds = getAllDescendantIds(targetId);
+        const relatedLogs = logs.filter(l => allDescendantIds.includes(l.targetId));
+        
+        const header = wrap.createEl("div", { cls: "detail-header" });
+        // 显示路径面包屑
+        header.createEl("div", { text: targetPath, style: "font-size:0.8em; color:var(--text-muted); margin-bottom:5px;" });
+        header.createEl("h2", { text: targetName, style: "margin:0;" });
+        const statBox = header.createEl("div", { cls: "stat-box" });
+        
+        statBox.createEl("div", { cls: "stat-item" }).innerHTML = `<div class="stat-num">${relatedLogs.length}</div><div>总记录(含子目标)</div>`;
+        const lastDate = relatedLogs.length > 0 ? relatedLogs[0].date : "无";
+        statBox.createEl("div", { cls: "stat-item" }).innerHTML = `<div class="stat-num" style="font-size:1.2em; line-height:1.5;">${lastDate}</div><div>最近更新</div>`;
+
+        const btnRow = wrap.createEl("div", { style: "display:flex; gap:10px; margin-bottom:20px;" });
+        const backBtn = btnRow.createEl("button", { text: "🔙 返回九宫格", cls: "m-btn" });
+        backBtn.onclick = () => switchView("grid");
+        const logBtn = btnRow.createEl("button", { text: "✅ 新增当前记录", cls: "m-btn active" });
+        logBtn.onclick = () => addLog(targetId, targetName);
+
+        const tlContainer = wrap.createEl("div", { cls: "timeline-container" });
+        
+        if (relatedLogs.length === 0) tlContainer.createDiv({ text: "该目标及其子目标暂无任何记录", style: "color:var(--text-muted); font-style:italic;" });
+
+        relatedLogs.forEach(log => {
+            const item = tlContainer.createEl("div", { cls: "tl-item" });
+            item.createEl("div", { text: `${log.date}${log.time ? ` ${log.time}` : ""}`, cls: "tl-date" });
+            const content = item.createEl("div", { cls: "tl-content" });
+            const targetLink = content.createEl("div", { text: getTimelineTargetText(log), cls: "tl-target" });
+            targetLink.onclick = () => switchView("detail", log.targetId);
+            
+            // 如果是子目标的日志，显示它的来源路径（只显示相对于当前节点的差异路径）
+            if (log.targetId !== targetId) {
+                // 这里的路径可以是全路径，也可以优化显示
+                // 为了清晰，这里直接展示它的全路径，标明 "↳"
+                const subPath = getTimelinePathText(log);
+                content.createEl("div", { text: `↳ ${subPath}`, cls: "tl-path", style: "color:var(--text-accent);" });
+            }
+            
+            content.createEl("span", { text: log.comment, cls: "tl-comment" });
+            const actionRow = content.createEl("div", { cls: "tl-actions" });
+            const editBtn = actionRow.createEl("button", { text: "✏️ 编辑", cls: "m-btn tl-edit-btn" });
+            editBtn.onclick = () => openLogEditor(log.id);
+        });
+    }
+};
+
+renderView();
+
+```
