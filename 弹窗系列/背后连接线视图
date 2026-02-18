@@ -1,0 +1,918 @@
+<%*
+// ============================================================
+// 🔗 新版背后连接线程序 (融合增强版 v2.0)
+// 功能：Templater触发，悬浮窗口显示当前打开文件的引用关系图
+// 特性：
+//   - 完整数据源（EVA_Notes.json + EVA_Links.json）
+//   - 所属图配色分组
+//   - Pan & Zoom 平移缩放
+//   - DOM 后处理点击（避免 Mermaid click 语法报错）
+// ============================================================
+
+(async () => {
+    // --- 0. Toggle 机制 ---
+    const WIDGET_ID = "reference-graph-widget";
+    const existing = document.getElementById(WIDGET_ID);
+    if (existing) { existing.remove(); return; }
+
+    const { Notice } = tp.obsidian;
+
+    // --- 1. 配置 ---
+    const CONFIG = {
+        maxDepth: 7,           // 最大展开层数
+        layout: "LR",          // 图布局方向: LR(左到右), TB(上到下), RL, BT
+        groupByLevel: true,    // 是否按层级分组
+        showStats: true,       // 是否显示统计信息
+        nodeMaxLength: 1000,   // 节点名称最大长度（几乎不限制）
+        cacheEnabled: true     // 是否启用缓存
+    };
+
+    // --- 2. JSON文件名配置 ---
+    const JSON_CONFIG = {
+        NOTES_JSON: "EVA_Notes.json",
+        LINKS_JSON: "EVA_Links.json"
+    };
+
+    // --- 3. 加载EVA JSON数据（自动全库搜索JSON文件） ---
+    async function loadEvaJson() {
+        try {
+            const allFiles = app.vault.getFiles();
+
+            const notesFile = allFiles.find(f => f.name === JSON_CONFIG.NOTES_JSON);
+            if (!notesFile) {
+                throw new Error(`全库未找到 ${JSON_CONFIG.NOTES_JSON}，请先运行 EVA JSON Builder`);
+            }
+
+            const linksFile = allFiles.find(f => f.name === JSON_CONFIG.LINKS_JSON);
+            if (!linksFile) {
+                throw new Error(`全库未找到 ${JSON_CONFIG.LINKS_JSON}，请先运行 EVA JSON Builder`);
+            }
+
+            const notesContent = await app.vault.read(notesFile);
+            const linksContent = await app.vault.read(linksFile);
+
+            return {
+                notes: JSON.parse(notesContent),
+                links: JSON.parse(linksContent)
+            };
+        } catch (err) {
+            new Notice(`❌ 无法加载EVA JSON文件: ${err.message}`, 5000);
+            throw new Error(`JSON加载失败: ${err.message}`);
+        }
+    }
+
+    // --- 4. 从JSON获取节点信息 ---
+    function getNodeInfoFromJson(nodeId, notesJson) {
+        const note = notesJson.notes[nodeId];
+        if (note) {
+            return {
+                id: note.id,
+                name: note.title,
+                suoshutu: note.yaml?.上级条目 || note.yaml?.parent_atom || "",
+                filePath: note.file_path
+            };
+        }
+        return {
+            id: nodeId,
+            name: nodeId,
+            suoshutu: "",
+            filePath: ""
+        };
+    }
+
+    // --- 5. 安全化ID（增强版，支持更多特殊字符） ---
+    function safeId(id) {
+        // 替换所有非字母数字字符为下划线，并确保以字母开头
+        let safe = id.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
+        // 如果以数字开头，添加前缀
+        if (/^[0-9]/.test(safe)) {
+            safe = 'n_' + safe;
+        }
+        return safe;
+    }
+
+    // --- 6. 文件类型过滤（只允许 .md 和 .excalidraw） ---
+    function isAllowedFileType(fileNameOrPath) {
+        if (!fileNameOrPath) return false;
+        const lower = fileNameOrPath.toLowerCase();
+        // 允许 .md 文件和 .excalidraw 文件（包括 .excalidraw.md）
+        return lower.endsWith('.md') || lower.endsWith('.excalidraw');
+    }
+
+    // --- 7. 构建引用图（基于EVA JSON + 实时扫描） ---
+    async function buildReferenceGraph(targetNodeId, maxDepth, targetFile) {
+        new Notice("⚡️ 加载引用数据...", 2000);
+
+        let evaData = null;
+        let notesJson = { notes: {} };
+        let linksJson = { adjacency: {} };
+
+        try {
+            evaData = await loadEvaJson();
+            notesJson = evaData.notes;
+            linksJson = evaData.links;
+        } catch (e) {
+            new Notice("⚠️ EVA JSON未找到，将实时扫描链接", 2000);
+        }
+
+        const adjacency = linksJson.adjacency || {};
+        const graph = {
+            nodes: [],
+            edges: [],
+            stats: { totalNodes: 0, totalEdges: 0, maxLevel: 0 }
+        };
+
+        const visited = new Set();
+        const nodeMap = new Map();
+
+        // 解析正文中的wikilinks，并缓存结果（严格排除yaml frontmatter）
+        const bodyLinkCache = new Map();
+
+        function stripYamlFrontmatter(rawContent) {
+            if (!rawContent) return "";
+
+            // 处理可能存在的 BOM
+            let content = rawContent.replace(/^\uFEFF/, "");
+
+            // 仅在文件起始处存在 frontmatter 分隔符时尝试剥离
+            if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
+                return content;
+            }
+
+            // 匹配标准 YAML frontmatter（--- ... --- 或 --- ... ...）
+            const fmMatch = content.match(/^---\s*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/);
+            if (!fmMatch) return content;
+
+            return content.slice(fmMatch[0].length);
+        }
+
+        async function getBodyLinks(filePath) {
+            if (bodyLinkCache.has(filePath)) {
+                return bodyLinkCache.get(filePath);
+            }
+
+            const emptyResult = {
+                outgoingIds: new Set(),
+                outgoingPaths: new Set()
+            };
+
+            try {
+                const file = app.vault.getAbstractFileByPath(filePath);
+                if (!file) {
+                    bodyLinkCache.set(filePath, emptyResult);
+                    return emptyResult;
+                }
+
+                const rawContent = await app.vault.read(file);
+                const content = stripYamlFrontmatter(rawContent);
+
+                const outgoingIds = new Set();
+                const outgoingPaths = new Set();
+                const wikiRegex = /\[\[([^\]]+)\]\]/g;
+                let match;
+
+                while ((match = wikiRegex.exec(content)) !== null) {
+                    let target = match[1].trim();
+                    const pipeIdx = target.indexOf('|');
+                    if (pipeIdx > -1) target = target.substring(0, pipeIdx).trim();
+                    const hashIdx = target.indexOf('#');
+                    if (hashIdx > -1) target = target.substring(0, hashIdx).trim();
+
+                    const linkedFile = app.metadataCache.getFirstLinkpathDest(target, filePath);
+
+                    // 过滤：只允许 .md 和 .excalidraw 文件
+                    if (linkedFile && !isAllowedFileType(linkedFile.path)) {
+                        continue;
+                    }
+
+                    if (linkedFile) {
+                        outgoingIds.add(linkedFile.basename);
+                        outgoingPaths.add(linkedFile.path);
+                    } else {
+                        outgoingIds.add(target.replace(/\.md$/i, '').replace(/\.excalidraw$/i, ''));
+                    }
+                }
+
+                const result = { outgoingIds, outgoingPaths };
+                bodyLinkCache.set(filePath, result);
+                return result;
+            } catch (e) {
+                console.error("解析正文链接错误:", e);
+                bodyLinkCache.set(filePath, emptyResult);
+                return emptyResult;
+            }
+        }
+
+        // 实时扫描文件链接的辅助函数（只扫描正文，不扫描yaml）
+        async function scanFileLinks(filePath) {
+            const outgoing = [];
+            const incoming = [];
+
+            try {
+                const file = app.vault.getAbstractFileByPath(filePath);
+                if (!file) return { outgoing, incoming };
+                const parsed = await getBodyLinks(filePath);
+                parsed.outgoingIds.forEach(id => outgoing.push(id));
+
+                // 查找反向链接（哪些文件链接到当前文件）
+                const resolvedLinks = app.metadataCache.resolvedLinks;
+                for (const [sourcePath, links] of Object.entries(resolvedLinks)) {
+                    if (links[filePath]) {
+                        // 过滤：只允许 .md 和 .excalidraw 文件作为来源
+                        if (!isAllowedFileType(sourcePath)) {
+                            continue;
+                        }
+
+                        const sourceFile = app.vault.getAbstractFileByPath(sourcePath);
+                        if (sourceFile) {
+                            // 二次校验：仅当来源文件正文确实链接到当前文件，才计为入链
+                            const sourceParsed = await getBodyLinks(sourcePath);
+                            if (sourceParsed.outgoingPaths.has(filePath) || sourceParsed.outgoingIds.has(file.basename)) {
+                                // 统一使用文件基础名作为ID（不区分是否带ATOM编号）
+                                incoming.push(sourceFile.basename);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("扫描文件链接错误:", e);
+            }
+
+            return { outgoing: [...new Set(outgoing)], incoming: [...new Set(incoming)] };
+        }
+
+        // BFS遍历
+        const queue = [{ id: targetNodeId, level: 0, filePath: targetFile?.path }];
+        visited.add(targetNodeId);
+
+        while (queue.length > 0) {
+            const { id, level, filePath } = queue.shift();
+
+            if (level > maxDepth) continue;
+
+            // 获取节点信息：优先从JSON，否则从文件系统
+            let nodeInfo = getNodeInfoFromJson(id, notesJson);
+            let currentFilePath = nodeInfo.filePath || filePath;
+
+            // 如果JSON中没有该节点，尝试从文件系统获取信息
+            if (!nodeInfo.filePath && !filePath) {
+                // 尝试根据ID找到文件（包括 .md 和 .excalidraw）
+                // ID统一是文件基础名，直接匹配即可
+                const allFiles = app.vault.getFiles().filter(f => isAllowedFileType(f.path));
+                const matchedFile = allFiles.find(f => f.basename === id);
+                if (matchedFile) {
+                    currentFilePath = matchedFile.path;
+                    nodeInfo = {
+                        id: id,
+                        name: id,  // 直接使用ID
+                        suoshutu: "",
+                        filePath: matchedFile.path
+                    };
+                }
+            }
+
+            // 过滤：如果找到的文件不是允许的类型，跳过该节点
+            if (currentFilePath && !isAllowedFileType(currentFilePath)) {
+                continue;
+            }
+
+            const node = {
+                id: id,
+                name: id,  // 直接使用ID作为名称（包含ATOM编号如有）
+                suoshutu: nodeInfo.suoshutu,
+                filePath: currentFilePath,
+                level: level,
+                isTarget: id === targetNodeId
+            };
+
+            if (!nodeMap.has(id)) {
+                nodeMap.set(id, node);
+                graph.nodes.push(node);
+            }
+
+            if (level > graph.stats.maxLevel) {
+                graph.stats.maxLevel = level;
+            }
+
+            // 获取链接：有文件路径时强制实时扫描正文（排除yaml）；仅在无文件路径时回退JSON
+            let outgoingIds = [];
+            let incomingIds = [];
+
+            if (currentFilePath) {
+                const scanned = await scanFileLinks(currentFilePath);
+                outgoingIds = scanned.outgoing;
+                incomingIds = scanned.incoming;
+            } else {
+                outgoingIds = adjacency[id]?.outgoing || [];
+                incomingIds = adjacency[id]?.incoming || [];
+            }
+
+            // 出链
+            for (const targetId of outgoingIds) {
+                if (!visited.has(targetId) && level < maxDepth) {
+                    visited.add(targetId);
+                    queue.push({ id: targetId, level: level + 1, filePath: null });
+                }
+                graph.edges.push({ from: id, to: targetId, type: 'outgoing' });
+            }
+
+            // 入链
+            for (const sourceId of incomingIds) {
+                if (!visited.has(sourceId) && level < maxDepth) {
+                    visited.add(sourceId);
+                    queue.push({ id: sourceId, level: level + 1, filePath: null });
+                }
+                graph.edges.push({ from: sourceId, to: id, type: 'incoming' });
+            }
+        }
+
+        // 去重边
+        const edgeSet = new Set();
+        graph.edges = graph.edges.filter(edge => {
+            const key = `${edge.from}|${edge.to}`;
+            if (edgeSet.has(key)) return false;
+            edgeSet.add(key);
+            return true;
+        });
+
+        graph.stats.totalNodes = graph.nodes.length;
+        graph.stats.totalEdges = graph.edges.length;
+
+        return graph;
+    }
+
+    // --- 7. 生成Mermaid代码（不含click语法，后续用DOM绑定） ---
+    function generateMermaidCode(graph) {
+        let code = `flowchart ${CONFIG.layout}\n`;
+
+        // 样式定义
+        code += "  classDef targetNode fill:#ffeb3b,stroke:#f57f17,stroke-width:3px,color:#000\n";
+        code += "  classDef level0 fill:#e3f2fd,stroke:#1976d2\n";
+        code += "  classDef level1 fill:#f3e5f5,stroke:#7b1fa2\n";
+        code += "  classDef level2 fill:#e8f5e9,stroke:#388e3c\n";
+        code += "  classDef level3 fill:#fff3e0,stroke:#f57c00\n";
+        code += "  classDef level4 fill:#fce4ec,stroke:#c2185b\n";
+        code += "  classDef level5 fill:#e0f2f1,stroke:#00796b\n";
+
+        // 所属图配色
+        const suoshutuColors = [
+            "fill:#e1f5fe,stroke:#0288d1",
+            "fill:#fce4ec,stroke:#c2185b",
+            "fill:#f1f8e9,stroke:#689f38",
+            "fill:#fff8e1,stroke:#ffa000",
+            "fill:#ede7f6,stroke:#512da8",
+            "fill:#e0f2f1,stroke:#00796b",
+            "fill:#fff3e0,stroke:#e65100",
+            "fill:#f3e5f5,stroke:#6a1b9a"
+        ];
+
+        const suoshutuList = [...new Set(graph.nodes.map(n => n.suoshutu).filter(s => s))];
+        const suoshutu2Class = {};
+        suoshutuList.forEach((s, i) => {
+            const className = `suoshutu${i}`;
+            code += `  classDef ${className} ${suoshutuColors[i % suoshutuColors.length]}\n`;
+            suoshutu2Class[s] = className;
+        });
+
+        // 截断名称
+        function truncateName(name) {
+            if (!name) return "未命名";
+            // 替换引号防止语法错误
+            let clean = name.replace(/"/g, "'");
+            if (clean.length > CONFIG.nodeMaxLength) {
+                return clean.substring(0, CONFIG.nodeMaxLength) + "...";
+            }
+            return clean;
+        }
+
+        // 构建 safeId -> filePath 映射（用于后续DOM绑定点击）
+        const nodeDataMap = {};
+
+        // 按层级分组
+        if (CONFIG.groupByLevel) {
+            for (let level = 0; level <= graph.stats.maxLevel; level++) {
+                const levelNodes = graph.nodes.filter(node => node.level === level);
+                if (levelNodes.length > 0) {
+                    code += `  subgraph level${level}["第 ${level} 层 (${levelNodes.length} 个节点)"]\n`;
+                    code += `    direction TB\n`;
+
+                    for (const node of levelNodes) {
+                        const sid = safeId(node.id);
+                        nodeDataMap[sid] = { filePath: node.filePath, name: node.name, id: node.id };
+                        const displayName = truncateName(node.name);
+                        code += `    ${sid}("${displayName}")\n`;
+                    }
+
+                    code += "  end\n";
+                }
+            }
+        } else {
+            for (const node of graph.nodes) {
+                const sid = safeId(node.id);
+                nodeDataMap[sid] = { filePath: node.filePath, name: node.name, id: node.id };
+                const displayName = truncateName(node.name);
+                code += `  ${sid}("${displayName}")\n`;
+            }
+        }
+
+        // 添加边
+        for (const edge of graph.edges) {
+            const fromSid = safeId(edge.from);
+            const toSid = safeId(edge.to);
+            const fromExists = graph.nodes.some(n => n.id === edge.from);
+            const toExists = graph.nodes.some(n => n.id === edge.to);
+            if (fromExists && toExists) {
+                code += `  ${fromSid} --> ${toSid}\n`;
+            }
+        }
+
+        // 应用样式
+        for (const node of graph.nodes) {
+            const sid = safeId(node.id);
+            if (node.isTarget) {
+                code += `  class ${sid} targetNode\n`;
+            } else if (node.suoshutu && suoshutu2Class[node.suoshutu]) {
+                code += `  class ${sid} ${suoshutu2Class[node.suoshutu]}\n`;
+            } else {
+                const levelClass = `level${Math.min(node.level, 5)}`;
+                code += `  class ${sid} ${levelClass}\n`;
+            }
+        }
+
+        return { code, nodeDataMap };
+    }
+
+    // --- 8. 获取当前打开的文件 ---
+    const activeFile = app.workspace.getActiveFile();
+    if (!activeFile) {
+        new Notice("❌ 请先打开一个文件！", 3000);
+        return;
+    }
+
+    // 提取节点ID：统一使用文件基础名（不带扩展名）作为ID，不区分是否有ATOM编号
+    function extractNodeId(file) {
+        // 直接返回文件基础名（包含ATOM编号如有）
+        return file.basename;
+    }
+
+    const targetNodeId = extractNodeId(activeFile);
+
+    // 预加载获取目标节点名称
+    let targetNodeName = activeFile.basename;
+    try {
+        const evaData = await loadEvaJson();
+        // 尝试用ATOM ID查找
+        let noteInfo = evaData.notes.notes[targetNodeId];
+        // 如果没找到，尝试遍历查找匹配的文件路径
+        if (!noteInfo) {
+            for (const [id, note] of Object.entries(evaData.notes.notes)) {
+                if (note.file_path === activeFile.path || note.file_name === activeFile.name) {
+                    noteInfo = note;
+                    break;
+                }
+            }
+        }
+        if (noteInfo) {
+            targetNodeName = noteInfo.title || activeFile.basename;
+        }
+    } catch (e) {
+        // 使用文件名
+    }
+
+    // --- 9. 构建Widget ---
+    const widget = document.createElement("div");
+    widget.id = WIDGET_ID;
+    widget.style.cssText = `
+        position: fixed;
+        top: 50px;
+        right: 30px;
+        width: 800px;
+        height: 85vh;
+        max-height: 950px;
+        background: var(--background-primary);
+        border: 1px solid var(--background-modifier-border);
+        box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        border-radius: 12px;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        font-family: var(--font-text);
+        animation: fadeIn 0.3s ease;
+    `;
+
+    const styleTag = document.createElement("style");
+    styleTag.textContent = `
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        #${WIDGET_ID} .ref-header {
+            padding: 12px 16px;
+            background: var(--background-secondary);
+            border-bottom: 1px solid var(--background-modifier-border);
+            cursor: move;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+            flex-shrink: 0;
+            z-index: 10;
+        }
+
+        #${WIDGET_ID} .ref-header-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        #${WIDGET_ID} .ref-header-btns {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        #${WIDGET_ID} .ref-btn {
+            padding: 4px 10px;
+            background: var(--interactive-accent);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        #${WIDGET_ID} .ref-btn:hover {
+            filter: brightness(1.1);
+        }
+
+        #${WIDGET_ID} .ref-close {
+            cursor: pointer;
+            padding: 0 8px;
+            color: var(--text-muted);
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        #${WIDGET_ID} .ref-close:hover {
+            color: var(--text-error) !important;
+        }
+
+        #${WIDGET_ID} .ref-stats {
+            padding: 8px 16px;
+            background: var(--background-primary-alt);
+            border-bottom: 1px solid var(--background-modifier-border);
+            font-size: 12px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        #${WIDGET_ID} .ref-content {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+            background: var(--background-primary);
+            cursor: grab;
+        }
+
+        #${WIDGET_ID} .ref-content:active {
+            cursor: grabbing;
+        }
+
+        #${WIDGET_ID} .ref-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-muted);
+        }
+
+        #${WIDGET_ID} .mermaid {
+            width: 100%;
+            height: 100%;
+        }
+
+        #${WIDGET_ID} .mermaid svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        #${WIDGET_ID} .zoom-controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            gap: 5px;
+            z-index: 10;
+        }
+
+        #${WIDGET_ID} .zoom-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 1px solid var(--background-modifier-border);
+            background: var(--background-secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 16px;
+            color: var(--text-normal);
+        }
+
+        #${WIDGET_ID} .zoom-btn:hover {
+            background: var(--background-modifier-hover);
+        }
+
+        /* 强制节点可点击样式 */
+        #${WIDGET_ID} .node {
+            cursor: pointer !important;
+        }
+
+        #${WIDGET_ID} .node:hover {
+            filter: brightness(0.9);
+        }
+    `;
+    widget.appendChild(styleTag);
+
+    // Header
+    const header = document.createElement("div");
+    header.className = "ref-header";
+
+    const headerTitle = document.createElement("span");
+    headerTitle.className = "ref-header-title";
+    headerTitle.textContent = `🔗 引用关系图: ${targetNodeName}`;
+    header.appendChild(headerTitle);
+
+    const headerBtns = document.createElement("div");
+    headerBtns.className = "ref-header-btns";
+
+    const refreshBtn = document.createElement("button");
+    refreshBtn.className = "ref-btn";
+    refreshBtn.textContent = "🔄 刷新";
+    refreshBtn.onclick = async () => {
+        new Notice("请关闭后重新触发以刷新数据", 2000);
+        widget.remove();
+    };
+    headerBtns.appendChild(refreshBtn);
+
+    const closeBtn = document.createElement("div");
+    closeBtn.className = "ref-close";
+    closeBtn.innerHTML = "✕";
+    closeBtn.onclick = () => widget.remove();
+    headerBtns.appendChild(closeBtn);
+
+    header.appendChild(headerBtns);
+    widget.appendChild(header);
+
+    // Stats区域
+    const statsDiv = document.createElement("div");
+    statsDiv.className = "ref-stats";
+    statsDiv.innerHTML = `<span>目标节点: <b>${targetNodeId}</b> | 最大深度: ${CONFIG.maxDepth} | 布局: ${CONFIG.layout} | <i>滚轮缩放 / 拖拽平移 / 点击跳转</i></span>`;
+    widget.appendChild(statsDiv);
+
+    // 内容区域
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "ref-content";
+    contentDiv.innerHTML = '<div class="ref-loading">⏳ 正在构建引用关系图...</div>';
+    widget.appendChild(contentDiv);
+
+    // 缩放控件
+    const zoomControls = document.createElement("div");
+    zoomControls.className = "zoom-controls";
+    zoomControls.innerHTML = `
+        <div class="zoom-btn" id="z-out">−</div>
+        <div class="zoom-btn" id="z-reset">R</div>
+        <div class="zoom-btn" id="z-in">+</div>
+    `;
+    widget.appendChild(zoomControls);
+
+    // 窗口拖拽功能
+    let isDragging = false, dragX = 0, dragY = 0;
+    header.onmousedown = (e) => {
+        if (e.target === closeBtn || e.target === refreshBtn) return;
+        isDragging = true;
+        const rect = widget.getBoundingClientRect();
+        dragX = e.clientX - rect.left;
+        dragY = e.clientY - rect.top;
+        widget.style.right = "auto";
+        widget.style.left = rect.left + "px";
+        widget.style.top = rect.top + "px";
+        document.addEventListener('mousemove', onWidgetMove);
+        document.addEventListener('mouseup', onWidgetUp);
+        e.preventDefault();
+    };
+
+    const onWidgetMove = (e) => {
+        if (!isDragging) return;
+        widget.style.left = (e.clientX - dragX) + "px";
+        widget.style.top = (e.clientY - dragY) + "px";
+    };
+
+    const onWidgetUp = () => {
+        isDragging = false;
+        document.removeEventListener('mousemove', onWidgetMove);
+        document.removeEventListener('mouseup', onWidgetUp);
+    };
+
+    // 添加到页面
+    document.body.appendChild(widget);
+
+    // --- 10. 异步构建图 ---
+    try {
+        const graph = await buildReferenceGraph(targetNodeId, CONFIG.maxDepth, activeFile);
+
+        // 更新统计
+        statsDiv.innerHTML = `
+            <span>目标: <b>${targetNodeId}</b></span> |
+            <span>节点: <b>${graph.stats.totalNodes}</b></span> |
+            <span>边: <b>${graph.stats.totalEdges}</b></span> |
+            <span>层数: <b>${graph.stats.maxLevel + 1}</b></span> |
+            <i style="color:var(--text-faint)">滚轮缩放 / 拖拽平移 / 点击跳转</i>
+        `;
+
+        if (graph.nodes.length === 0) {
+            contentDiv.innerHTML = '<div class="ref-loading">⚠️ 未找到相关引用关系（孤岛节点）</div>';
+            return;
+        }
+
+        // 生成Mermaid代码
+        const { code, nodeDataMap } = generateMermaidCode(graph);
+
+        // 清空加载提示
+        contentDiv.innerHTML = '';
+
+        // 渲染Mermaid
+        const mermaidDiv = document.createElement("div");
+        mermaidDiv.className = "mermaid";
+        mermaidDiv.textContent = code;
+        contentDiv.appendChild(mermaidDiv);
+
+        // 兼容多版本 Mermaid API
+        const mermaidAPI = window.mermaid;
+        if (mermaidAPI) {
+            try {
+                // Mermaid v10+ 使用 run() 方法
+                if (typeof mermaidAPI.run === 'function') {
+                    await mermaidAPI.run({ nodes: [mermaidDiv] });
+                }
+                // Mermaid v9.x 及更早版本使用 init()
+                else if (typeof mermaidAPI.init === 'function') {
+                    await mermaidAPI.init(undefined, mermaidDiv);
+                }
+                // 备用：尝试 render() 方法
+                else if (typeof mermaidAPI.render === 'function') {
+                    const uniqueId = 'mermaid-' + Date.now();
+                    const { svg } = await mermaidAPI.render(uniqueId, code);
+                    mermaidDiv.innerHTML = svg;
+                }
+            } catch (mermaidErr) {
+                console.error("Mermaid 渲染错误:", mermaidErr);
+                // 如果渲染失败，尝试重新初始化
+                try {
+                    mermaidAPI.initialize({ startOnLoad: false, securityLevel: 'loose' });
+                    if (typeof mermaidAPI.run === 'function') {
+                        await mermaidAPI.run({ nodes: [mermaidDiv] });
+                    } else if (typeof mermaidAPI.init === 'function') {
+                        await mermaidAPI.init(undefined, mermaidDiv);
+                    }
+                } catch (retryErr) {
+                    console.error("Mermaid 重试失败:", retryErr);
+                    throw retryErr;
+                }
+            }
+
+            // 等待一小段时间确保渲染完成
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            const svg = mermaidDiv.querySelector("svg");
+            if (!svg) {
+                // SVG未生成，显示诊断信息
+                console.warn("Mermaid 调用成功但未生成 SVG");
+                new Notice("⚠️ Mermaid 渲染异常，未生成图形", 3000);
+                mermaidDiv.innerHTML = `
+                    <div style="padding:10px;background:rgba(255,100,0,0.1);border-radius:4px;margin-bottom:10px;">
+                        <p style="margin:0;color:var(--text-error);">⚠️ Mermaid 渲染异常</p>
+                        <p style="margin:5px 0 0;font-size:11px;color:var(--text-muted);">Mermaid API 已调用但未生成 SVG。可能是语法错误或版本不兼容。</p>
+                    </div>
+                    <pre style="font-size:11px;overflow:auto;padding:10px;background:var(--background-secondary);border-radius:4px;max-height:400px;">${code}</pre>
+                `;
+                return;
+            }
+
+            // SVG 渲染成功，设置样式
+            svg.style.width = "100%";
+            svg.style.height = "100%";
+            svg.removeAttribute("maxWidth");
+
+            // --- Pan & Zoom 实现 ---
+            let scale = 1, pX = 0, pY = 0;
+            const g = svg.querySelector("g");
+
+            const updateTransform = () => {
+                if (!g) return;
+                g.style.transform = `translate(${pX}px, ${pY}px) scale(${scale})`;
+                g.style.transformOrigin = "0 0";
+                g.style.transition = "transform 0.1s ease-out";
+            };
+
+            // 滚轮缩放
+            contentDiv.onwheel = (e) => {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                scale *= delta;
+                scale = Math.min(Math.max(0.1, scale), 10);
+                updateTransform();
+            };
+
+            // 拖拽平移
+            let isPan = false, startX = 0, startY = 0;
+            contentDiv.onmousedown = (e) => {
+                if (e.button !== 0) return;
+                isPan = true;
+                startX = e.clientX - pX;
+                startY = e.clientY - pY;
+                contentDiv.style.cursor = "grabbing";
+            };
+            contentDiv.onmousemove = (e) => {
+                if (!isPan) return;
+                pX = e.clientX - startX;
+                pY = e.clientY - startY;
+                if (g) {
+                    g.style.transition = "none";
+                    g.style.transform = `translate(${pX}px, ${pY}px) scale(${scale})`;
+                }
+            };
+            contentDiv.onmouseup = () => { isPan = false; contentDiv.style.cursor = "grab"; };
+            contentDiv.onmouseleave = () => { isPan = false; };
+
+            // 缩放按钮
+            widget.querySelector("#z-in").onclick = () => { scale *= 1.2; updateTransform(); };
+            widget.querySelector("#z-out").onclick = () => { scale /= 1.2; updateTransform(); };
+            widget.querySelector("#z-reset").onclick = () => { scale = 1; pX = 0; pY = 0; updateTransform(); };
+
+            // --- DOM 后处理：绑定节点点击事件 ---
+            const nodes = svg.querySelectorAll(".node");
+            nodes.forEach(node => {
+                // Mermaid 生成的节点 id 格式如 "flowchart-ATOM_121_001-123"
+                // 我们需要从中匹配出 safeId
+                const nodeId = node.id;
+
+                // 遍历 nodeDataMap 找匹配的 safeId
+                let matchedData = null;
+                for (const [sid, data] of Object.entries(nodeDataMap)) {
+                    // 检查节点id是否包含我们的safeId
+                    if (nodeId.includes(sid + "-") || nodeId.includes("-" + sid + "-") || nodeId.endsWith("-" + sid)) {
+                        matchedData = data;
+                        break;
+                    }
+                    // 更宽松的匹配：检查是否包含safeId
+                    if (nodeId.includes(sid)) {
+                        matchedData = data;
+                        break;
+                    }
+                }
+
+                if (matchedData && matchedData.filePath) {
+                    node.style.cursor = "pointer";
+
+                    node.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // 打开对应笔记
+                        app.workspace.openLinkText(matchedData.filePath, "", false);
+                        new Notice(`📄 打开: ${matchedData.name}`, 2000);
+                    };
+
+                    // 添加悬停提示
+                    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+                    title.textContent = `点击打开: ${matchedData.name}\n${matchedData.filePath}`;
+                    node.appendChild(title);
+                }
+            });
+        } else {
+            // 降级：显示代码 + 诊断信息
+            console.warn("Mermaid 不可用，显示原始代码");
+            new Notice("⚠️ Mermaid 渲染库未加载，显示原始代码", 3000);
+            mermaidDiv.innerHTML = `
+                <div style="padding:10px;background:rgba(255,200,0,0.1);border-radius:4px;margin-bottom:10px;">
+                    <p style="margin:0;color:var(--text-warning);">⚠️ Mermaid 渲染库未加载</p>
+                    <p style="margin:5px 0 0;font-size:11px;color:var(--text-muted);">请确保 Obsidian 已启用 Mermaid 支持，或安装相关插件</p>
+                </div>
+                <pre style="font-size:12px;overflow:auto;padding:10px;background:var(--background-secondary);border-radius:4px;">${code}</pre>
+            `;
+        }
+
+        new Notice(`✅ 引用图加载完成: ${graph.stats.totalNodes}节点, ${graph.stats.totalEdges}边`, 3000);
+
+    } catch (err) {
+        contentDiv.innerHTML = `<div style="color:red;padding:20px;">
+            <p>❌ 构建失败: ${err.message}</p>
+            <pre style="font-size:11px;overflow:auto;">${err.stack}</pre>
+        </div>`;
+        new Notice(`❌ 引用图构建失败: ${err.message}`, 5000);
+    }
+
+})();
+%>
