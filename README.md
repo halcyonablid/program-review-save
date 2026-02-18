@@ -5,3 +5,10 @@
 - 九宫格目标
 
 这几个是可选的，不是系统运行必要程序，可以后面批次再加入使用
+
+
+obsidian的三方插件依赖有
+
+- templater
+- dataviewjs
+- mermaid tools
