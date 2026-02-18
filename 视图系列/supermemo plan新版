@@ -1,0 +1,4225 @@
+
+```dataviewjs
+
+
+// 获取当前笔记的元数据，用于存储记录
+
+let thisFile;
+try {
+  thisFile = dv.current();
+} catch (e) {
+  console.error("无法获取当前笔记元数据:", e);
+}
+
+// 注意：不再合并现有记录，每次都是全新记录
+let timeEntries = [];
+
+
+// 保存状态定时器（防抖）
+let saveDebounceTimer = null;
+
+// 保存状态标志
+window.timePlannerIsSaving = window.timePlannerIsSaving || false;
+
+// 存储时间阶段规划数据
+let currentPhase = null;
+
+// 存储UI状态的备份，用于在操作后恢复
+let lastUIState = {
+  phase: 'initial',
+  timestamp: Date.now()
+};
+
+// NEW AND IMPROVED getTargetFile function
+async function getTargetFile() {
+  if (!app || !app.vault) {
+    throw new Error("无法访问Obsidian API");
+  }
+
+  // 1. 优先使用 thisFile.file (dataviewjs 所在的文件)
+  if (thisFile && thisFile.file && thisFile.file.path) {
+    const fileFromDV = app.vault.getAbstractFileByPath(thisFile.file.path);
+    if (fileFromDV) {
+      console.log("Target file located via Dataview API:", fileFromDV.path);
+      return fileFromDV;
+    }
+  }
+
+  // 2. 备用方案: 使用你提供的、带 .md 后缀的固定路径
+  const fixedPath = '项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/supermemoplan做计划，带自动保存版.md';
+  const fileFromFixedPath = app.vault.getAbstractFileByPath(fixedPath);
+  if (fileFromFixedPath) {
+    console.log("Target file located via fixed path:", fileFromFixedPath.path);
+    return fileFromFixedPath;
+  }
+  
+  // 3. 如果都失败，抛出明确错误，而不是错误地使用活动文件
+  throw new Error(`无法定位计划脚本所在的目标文件。请检查固定路径是否正确: "${fixedPath}"`);
+}
+
+
+// 获取当前文件路径的安全函数
+function getCurrentFilePath() {
+  // 首选从dv.current()获取
+  if (thisFile && thisFile.file && thisFile.file.path) {
+    return thisFile.file.path;
+  }
+  
+  // 备用方案：从app.workspace获取
+  try {
+    if (app && app.workspace) {
+      const activeFile = app.workspace.getActiveFile();
+      if (activeFile && activeFile.path) {
+        return activeFile.path;
+      }
+    }
+  } catch (e) {
+    console.error("获取当前文件路径失败:", e);
+  }
+  
+  // 最后备用方案：使用固定字符串作为键
+  return "obsidian-time-planner-backup";
+}
+
+// 保存UI状态
+function saveUIState() {
+  if (!currentPhase) {
+    lastUIState = { phase: 'initial', timestamp: Date.now() };
+    return;
+  }
+  
+  if (currentPhase.status === 'planning') {
+    lastUIState = { phase: 'planning', timestamp: Date.now() };
+  } else if (currentPhase.status === 'active') {
+    lastUIState = { phase: 'active', timestamp: Date.now() };
+  } else {
+    lastUIState = { phase: 'initial', timestamp: Date.now() };
+  }
+}
+
+// 恢复UI状态
+function restoreUIState() {
+  if (!currentPhase) {
+    phaseFormEl.style.display = "block";
+    activitiesFormEl.style.display = "none";
+    executionPanelEl.style.display = "none";
+    reviewFormEl.style.display = "none";
+    return;
+  }
+  
+  switch (lastUIState.phase) {
+    case 'planning':
+      phaseFormEl.style.display = "none";
+      activitiesFormEl.style.display = "block";
+      executionPanelEl.style.display = "none";
+      reviewFormEl.style.display = "none";
+      renderActivitiesList();
+      updateAllocationSummary();
+      break;
+    case 'active':
+      phaseFormEl.style.display = "none";
+      activitiesFormEl.style.display = "none";
+      executionPanelEl.style.display = "block";
+      reviewFormEl.style.display = "none";
+      ensureExecutionTicker();
+      calculateExpectedTimes();
+      renderExecutionList();
+      updateExecutionDisplay();
+      break;
+    default:
+      phaseFormEl.style.display = "block";
+      activitiesFormEl.style.display = "none";
+      executionPanelEl.style.display = "none";
+      reviewFormEl.style.display = "none";
+  }
+}
+
+function processActivityPlanData(activityPlanData) {
+  try {
+    // 1) 基本校验
+    if (!activityPlanData) {
+      throw new Error("活动计划数据为空");
+    }
+    if (!Array.isArray(activityPlanData)) {
+      throw new Error("活动计划数据不是数组");
+    }
+    if (activityPlanData.length === 0) {
+      throw new Error("活动计划数据数组为空");
+    }
+
+    // 2) 找到计划开始记录
+    const startEntry = activityPlanData.find(entry => entry.status === "开始");
+    if (!startEntry) {
+      throw new Error("找不到计划开始记录");
+    }
+
+    // 3) 解析开始时间
+    let startTime;
+    try {
+      startTime = new Date(startEntry.timestamp);
+      if (isNaN(startTime.getTime())) {
+        throw new Error("无效的开始时间");
+      }
+    } catch (e) {
+      console.error("解析开始时间失败:", e);
+      startTime = new Date(); // 备用
+    }
+
+    // 4) 构建阶段对象
+    let newPhase = {
+      startTime,
+      plannedDuration: startEntry.duration || 60,
+      status: 'planning',
+      activities: [],
+      totalExpectedDuration: 0,
+      lastTransitionTime: new Date()
+    };
+
+    // 5) 过滤出活动条目
+    const activityEntries = activityPlanData.filter(entry => entry.status !== "开始");
+    if (activityEntries.length === 0) {
+      console.warn("警告: 没有找到活动条目");
+    }
+
+    // 6) 逐条构建活动对象
+    activityEntries.forEach((entry) => {
+      if (!entry.project) {
+        console.warn("警告: 跳过没有project属性的条目", entry);
+        return;
+      }
+
+      const activity = {
+        id: generateId(),
+        project: entry.project,
+        expectedDuration: entry.expectedDuration || 15,
+        allocatedDuration: entry.allocatedDuration || entry.expectedDuration || 15,
+        status: entry.status || 'pending',
+        experience: entry.experience || "",
+        rating: entry.rating || 0,
+        originalTimestamp: entry.timestamp,
+        isStartTimeFixed: !!entry.isStartTimeFixed
+      };
+
+      // ======================= ▼▼▼ 核心修复点 START ▼▼▼ =======================
+      // 如果一个活动是固定的，并且是待定状态，那么它的'timestamp'字段
+      // 存储的就是我们必须恢复的 'expectedStart' 时间。
+      if (entry.isStartTimeFixed && activity.status === 'pending') {
+        try {
+          activity.expectedStart = new Date(entry.timestamp);
+          if (isNaN(activity.expectedStart.getTime())) {
+            activity.expectedStart = null; // 如果时间戳无效，则重置
+            console.warn("恢复固定的expectedStart时间失败，时间戳无效:", entry.timestamp);
+          }
+        } catch(e) {
+            activity.expectedStart = null;
+            console.error("恢复固定的expectedStart时间出错:", e);
+        }
+      }
+      // ======================= ▲▲▲ 核心修复点 END ▲▲▲ =======================
+
+      // 如果有已开始或已完成的活动，设置实际开始时间
+      if (entry.status === 'in-progress' || entry.status === 'completed') {
+        try {
+          activity.actualStart = new Date(entry.timestamp);
+          if (isNaN(activity.actualStart.getTime())) {
+            activity.actualStart = new Date(); // 备用值
+          }
+        } catch (e) {
+          console.warn("无法解析actualStart时间:", e);
+          activity.actualStart = new Date(); // 备用值
+        }
+      }
+
+      // 如果已完成，设置实际结束时间
+      if (entry.status === 'completed') {
+        try {
+          if (entry.actualEnd) {
+            activity.actualEnd = new Date(entry.actualEnd);
+            if (isNaN(activity.actualEnd.getTime())) {
+              activity.actualEnd = new Date(
+                activity.actualStart.getTime() +
+                (activity.allocatedDuration || activity.expectedDuration) * 60 * 1000
+              );
+            }
+          } else {
+            activity.actualEnd = new Date(
+              activity.actualStart.getTime() +
+              (activity.allocatedDuration || activity.expectedDuration) * 60 * 1000
+            );
+          }
+        } catch (e) {
+          console.warn("无法设置actualEnd时间:", e);
+          activity.actualEnd = new Date(); // 备用
+        }
+      }
+
+      newPhase.activities.push(activity);
+    });
+
+    // 7) 校验至少有一个活动
+    if (newPhase.activities.length === 0) {
+      throw new Error("没有成功加载任何活动");
+    }
+
+    // 8) 计算总预期时长
+    newPhase.totalExpectedDuration = newPhase.activities.reduce(
+      (sum, activity) => sum + (activity.expectedDuration || 0), 0
+    );
+
+    // 9) 根据活动状态确定阶段状态
+    if (newPhase.activities.some(a => a.status === 'completed' || a.status === 'in-progress')) {
+      newPhase.status = 'active';
+    }
+
+    // 10) 更新最后转换时间
+    const latestActivities = [...newPhase.activities].filter(a => a.actualStart);
+    if (latestActivities.length > 0) {
+      const latestActivity = latestActivities.sort((a, b) =>
+        new Date(b.actualStart) - new Date(a.actualStart)
+      )[0];
+      newPhase.lastTransitionTime = new Date(latestActivity.actualStart);
+    }
+
+    // 11) 更新当前阶段
+    currentPhase = newPhase;
+
+    // 12) 初始化预计时间
+    if (currentPhase.status === 'active') {
+      calculateExpectedTimes();
+    } else {
+      calculateExpectedTimesForPlanning();
+    }
+
+    // 14) 更新UI状态
+    if (currentPhase.status === 'active') {
+      lastUIState = { phase: 'active', timestamp: Date.now() };
+    } else {
+      lastUIState = { phase: 'planning', timestamp: Date.now() };
+    }
+    initUIBasedOnPhaseStatus();
+
+    // 15) 成功提示
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: "已从备份恢复活动计划",
+      attr: {style: "color: green; background-color: #e8f5e9; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+
+    return true;
+  } catch (error) {
+    console.error("处理活动计划数据失败:", error);
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: "处理活动计划数据失败: " + error.message,
+      attr: {style: "color: white; background-color: #d32f2f; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+    return false;
+  }
+}
+
+
+// ============================================================
+// 🎯 JSON 数据存储层 (新增)
+// ============================================================
+
+// 获取当前文件路径的安全方式（支持 DataviewJS 环境）
+function getCurrentFolder() {
+    // 调试信息
+    console.log("=== getCurrentFolder 调试 ===");
+
+    // 方式1: 优先使用 this.container.file (DataviewJS 环境)
+    if (this?.container?.file?.path) {
+        console.log("方式1 成功: this.container.file.path =", this.container.file.path);
+        return this.container.file.path.replace(/[^/]+$/, "");
+    }
+    console.log("方式1 失败: this.container =", this?.container);
+
+    // 方式2: 使用 dv.current() (Dataview API)
+    if (typeof dv !== 'undefined' && dv.current()?.file?.path) {
+        console.log("方式2 成功: dv.current().file.path =", dv.current().file.path);
+        return dv.current().file.path.replace(/[^/]+$/, "");
+    }
+    console.log("方式2 失败: dv.current() =", typeof dv !== 'undefined' ? dv.current() : 'dv undefined');
+
+    // 方式3: 使用 app.workspace (备选)
+    if (typeof app !== 'undefined' && app.workspace?.getActiveFile()?.path) {
+        console.log("方式3 成功: getActiveFile().path =", app.workspace.getActiveFile().path);
+        return app.workspace.getActiveFile().path.replace(/[^/]+$/, "");
+    }
+    console.log("方式3 失败: app.workspace.getActiveFile() =", typeof app !== 'undefined' ? app.workspace?.getActiveFile() : 'app undefined');
+
+    // 回退: 返回空字符串或当前目录
+    console.warn("所有路径获取方式都失败，使用空字符串作为目录");
+    return "";
+}
+
+const currentFolder = getCurrentFolder();
+console.log("currentFolder 结果:", currentFolder);
+
+// 修复：确保路径不以/结尾，避免双斜杠问题
+const normalizedFolder = currentFolder.replace(/\/$/, "");
+const PLAN_FILE = normalizedFolder
+    ? `${normalizedFolder}/superplan_data.json`
+    : "superplan_data.json";
+console.log("PLAN_FILE 路径:", PLAN_FILE);
+
+// 保存计划到 JSON 文件（参考 GTD 的简洁写法）
+async function savePlanToJSON(phase) {
+    console.log("=== savePlanToJSON 开始 ===");
+    console.log("PLAN_FILE:", PLAN_FILE);
+    if (!phase) {
+        console.log("phase 为空，返回 false");
+        return false;
+    }
+    try {
+        const planData = {
+            id: phase.id || generateId(),  // 使用 generateId 而不是 generateActivityId
+            created: phase.created || new Date().toISOString(),
+            startTime: phase.startTime,
+            plannedDuration: phase.plannedDuration,
+            activities: phase.activities.map(a => ({
+                id: a.id,
+                project: a.project,
+                expectedDuration: a.expectedDuration,
+                allocatedDuration: a.allocatedDuration,
+                status: a.status,
+                isStartTimeFixed: a.isStartTimeFixed,
+                expectedStart: a.expectedStart,
+                expectedEnd: a.expectedEnd,
+                // 新增：保存实际时间（用于已完成活动的历史记录）
+                actualStart: a.actualStart,
+                actualEnd: a.actualEnd,
+                // 保存体验和评分
+                experience: a.experience || "",
+                rating: a.rating || 0,
+                // 预留位：未来可扩展的自定义字段
+            }))
+        };
+        const jsonString = JSON.stringify(planData, null, 2);
+        console.log("JSON 数据准备完毕，长度:", jsonString.length);
+
+        // 检查文件是否存在
+        const fileExists = await app.vault.adapter.exists(PLAN_FILE);
+        console.log("文件是否存在:", fileExists);
+
+        const file = app.vault.getAbstractFileByPath(PLAN_FILE);
+        console.log("getAbstractFileByPath 结果:", file);
+
+        if (file) {
+            console.log("执行 modify...");
+            await app.vault.modify(file, jsonString);
+        } else {
+            console.log("执行 create...");
+            await app.vault.create(PLAN_FILE, jsonString);
+        }
+        console.log("✅ 计划已保存:", PLAN_FILE);
+        return true;
+    } catch (e) {
+        console.error("❌ 保存计划失败:", e);
+        console.error("错误详情:", e.message, e.stack);
+        return false;
+    }
+}
+
+// 从 JSON 文件加载计划
+async function loadPlanFromJSON() {
+    console.log("=== loadPlanFromJSON 开始 ===");
+    console.log("PLAN_FILE:", PLAN_FILE);
+    try {
+        const fileExists = await app.vault.adapter.exists(PLAN_FILE);
+        console.log("文件是否存在:", fileExists);
+
+        if (fileExists) {
+            const content = await app.vault.adapter.read(PLAN_FILE);
+            console.log("文件内容长度:", content.length);
+            const data = JSON.parse(content);
+            console.log("JSON 解析成功，活动数量:", data.activities?.length);
+
+            // 检测是否有执行中的活动，决定阶段状态
+            const hasActiveActivity = data.activities.some(a => a.status === 'in-progress');
+            const hasCompletedActivity = data.activities.some(a => a.status === 'completed');
+            const detectedStatus = (hasActiveActivity || hasCompletedActivity) ? 'active' : 'planning';
+            console.log("检测到的状态:", detectedStatus);
+
+            // 转换为 Phase 对象（保留原有的 actualStart, actualEnd 等数据）
+            return {
+                id: data.id,
+                created: data.created,
+                startTime: data.startTime,
+                plannedDuration: data.plannedDuration,
+                status: detectedStatus,  // 根据活动状态动态检测
+                activities: data.activities.map(a => ({
+                    ...a,
+                    originalTimestamp: a.id,
+                    experience: a.experience || "",
+                    rating: a.rating || 0,
+                    // 注意：actualStart 和 actualEnd 应该从 JSON 数据中保留
+                    // 预留位：未来可扩展的自定义字段
+                })),
+                totalExpectedDuration: data.activities.reduce((sum, a) => sum + a.expectedDuration, 0),
+                lastTransitionTime: new Date(data.startTime)
+            };
+        } else {
+            console.log("文件不存在，返回 null");
+        }
+    } catch (e) {
+        console.error("从 JSON 加载计划失败:", e);
+        console.error("错误详情:", e.message, e.stack);
+    }
+    return null;
+}
+
+// 历史记录文件路径（与 PLAN_FILE 使用相同逻辑）
+const HISTORY_FILE = normalizedFolder
+    ? `${normalizedFolder}/superplan_history.json`
+    : "superplan_history.json";
+
+// 保存历史记录到 JSON
+async function saveHistoryToJSON(newEntry) {
+    try {
+        let history = [];
+        if (await app.vault.adapter.exists(HISTORY_FILE)) {
+            const content = await app.vault.adapter.read(HISTORY_FILE);
+            history = JSON.parse(content);
+        }
+        history.unshift(newEntry);
+
+        // 只保留最近 1000 条记录
+        if (history.length > 1000) {
+            history = history.slice(0, 1000);
+        }
+
+        const jsonString = JSON.stringify(history, null, 2);
+        const file = app.vault.getAbstractFileByPath(HISTORY_FILE);
+        if (file) await app.vault.modify(file, jsonString);
+        else await app.vault.create(HISTORY_FILE, jsonString);
+        return true;
+    } catch (e) {
+        console.error("保存历史记录失败:", e);
+        return false;
+    }
+}
+
+// 从 JSON 加载历史记录
+async function loadHistoryFromJSON() {
+    try {
+        if (await app.vault.adapter.exists(HISTORY_FILE)) {
+            const content = await app.vault.adapter.read(HISTORY_FILE);
+            return JSON.parse(content);
+        }
+    } catch (e) {
+        console.error("加载历史记录失败:", e);
+    }
+    return [];
+}
+
+// 尝试从 JSON 自动恢复
+async function tryAutoRestoreFromJSON() {
+    const plan = await loadPlanFromJSON();
+    if (plan) {
+        console.log("从 JSON 文件恢复计划成功");
+        return plan;
+    }
+    return null;
+}
+
+// 统一的保存函数（替代原来的 saveCurrentState）
+async function saveCurrentStateJSON() {
+    if (!currentPhase) return false;
+
+    // 保存计划
+    const planSuccess = await savePlanToJSON(currentPhase);
+    if (!planSuccess) {
+        console.error("保存计划失败");
+        return false;
+    }
+
+    console.log("计划已保存到 JSON");
+    return true;
+}
+
+// ============================================================
+// 以上为新增的 JSON 数据存储层
+// ============================================================
+
+// Toast 通知函数 - 非阻塞反馈
+function showToast(message, type = 'success', duration = 2000) {
+    // 检查是否已存在 toast 容器
+    let toastContainer = document.querySelector('.time-planner-toast-container');
+    if (!toastContainer) {
+        toastContainer = document.createElement('div');
+        toastContainer.className = 'time-planner-toast-container';
+        toastContainer.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        `;
+        document.body.appendChild(toastContainer);
+    }
+
+    const toast = document.createElement('div');
+    const colors = {
+        success: { bg: '#4CAF50', text: '#fff' },
+        error: { bg: '#f44336', text: '#fff' },
+        info: { bg: '#2196F3', text: '#fff' }
+    };
+    const color = colors[type] || colors.success;
+
+    toast.style.cssText = `
+        background: ${color.bg};
+        color: ${color.text};
+        padding: 10px 16px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        animation: toastSlideIn 0.3s ease;
+        opacity: 0;
+        transform: translateX(100%);
+        transition: all 0.3s ease;
+    `;
+    toast.textContent = message;
+    toastContainer.appendChild(toast);
+
+    // 动画显示
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateX(0)';
+    });
+
+    // 自动消失
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
+// 添加 toast 动画样式
+const toastStyle = document.createElement('style');
+toastStyle.textContent = `
+    @keyframes toastSlideIn {
+        from { opacity: 0; transform: translateX(100%); }
+        to { opacity: 1; transform: translateX(0); }
+    }
+`;
+document.head.appendChild(toastStyle);
+
+// 创建主容器
+const containerEl = this.container.createEl("div", {cls: "time-planner-container"});
+containerEl.style.position = "relative"; // 确保子元素绝对定位正确
+const statusEl = containerEl.createEl("div", {cls: "status-message"});
+
+// 添加全局样式
+const styleEl = containerEl.createEl("style");
+styleEl.textContent = `
+  /* 计划活动卡片样式 */
+  .activities-card {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    cursor: grab;
+    transition: all 0.2s ease;
+  }
+  .activities-card:hover {
+    border-color: var(--interactive-accent);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  .activities-card.is-dragging {
+    opacity: 0.5;
+    border: 2px dashed var(--interactive-accent);
+  }
+  .activities-card.drag-over {
+    border: 2px dashed var(--interactive-accent);
+    background: rgba(var(--interactive-accent-rgb), 0.05);
+  }
+
+  /* 执行阶段卡片样式 */
+  .execution-card {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 12px;
+    transition: all 0.2s ease;
+  }
+  .execution-card:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  }
+  .execution-card.is-dragging {
+    opacity: 0.5;
+    border: 2px dashed var(--interactive-accent);
+  }
+  .execution-card.drag-over {
+    border: 2px dashed var(--interactive-accent);
+    background: rgba(var(--interactive-accent-rgb), 0.05);
+  }
+  /* 当前进行中卡片的进度背景条 */
+  .activity-progress {
+    position: relative;
+    overflow: hidden;
+    border-radius: 8px;
+  }
+  .activity-progress-bar {
+    position: absolute;
+    inset: 0;
+    width: 0%;
+    background: linear-gradient(90deg, rgba(76,175,80,0.35), rgba(76,175,80,0.15));
+    z-index: 0;
+    transition: width 0.6s ease;
+  }
+  .activity-progress-content {
+    position: relative;
+    z-index: 1;
+  }
+  .activity-rating-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(76, 175, 80, 0.12);
+  }
+  .activity-review-block {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+  }
+  .activity-review-block.in-progress {
+    background: linear-gradient(90deg, rgba(76,175,80,0.20), rgba(76,175,80,0.08));
+    border-color: rgba(76,175,80,0.45);
+  }
+  .activity-review-block.in-progress .activity-review-title {
+    color: #2e7d32;
+  }
+  .activity-review-title {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .activity-review-content {
+    font-size: 13px;
+    color: var(--text-normal);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+  }
+  .activity-review-empty {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* 编辑弹窗样式 */
+  .edit-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  .edit-modal-content {
+    background: var(--background-primary);
+    border-radius: 12px;
+    padding: 24px;
+    width: 90%;
+    max-width: 500px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  }
+
+  /* 拖拽时的视觉反馈 */
+  .dragging {
+    opacity: 0.5;
+    transform: scale(0.98);
+  }
+`;
+
+// 创建阶段规划表单
+const phaseFormEl = containerEl.createEl("div", {cls: "phase-form"});
+const phaseTitle = phaseFormEl.createEl("h3", {text: "创建新的时间规划阶段"});
+
+// 开始时间选择
+const startTimeDiv = phaseFormEl.createEl("div", {cls: "form-group"});
+const startTimeLabel = startTimeDiv.createEl("label", {text: "开始时间:"});
+const now = new Date();
+const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+const startTimeInput = startTimeDiv.createEl("input", {
+  attr: {
+    type: "time", 
+    value: timeString
+  }
+});
+
+// 计划总时长
+const durationDiv = phaseFormEl.createEl("div", {cls: "form-group"});
+const durationLabel = durationDiv.createEl("label", {text: "计划总时长(分钟):"});
+const durationInput = phaseFormEl.createEl("input", {attr: {type: "number", min: "1", value: "60"}});
+
+// 创建阶段按钮
+const createPhaseBtn = phaseFormEl.createEl("button", {text: "创建时间阶段"});
+
+// 从 JSON 恢复按钮
+const restoreFromJSONBtn = phaseFormEl.createEl("button", {
+    text: "📂 从 JSON 恢复",
+    attr: {
+        style: "margin-left: 10px; background-color: #9c27b0; color: white;",
+        title: "从 superplan_data.json 恢复之前的计划"
+    }
+});
+restoreFromJSONBtn.addEventListener("click", async () => {
+    const restored = await tryAutoRestoreFromJSON();
+    if (restored) {
+        currentPhase = restored;
+        initUIBasedOnPhaseStatus();
+        showToast("✅ 已从 JSON 恢复数据", "success");
+    } else {
+        showToast("❌ 未找到可恢复的数据", "error");
+    }
+});
+
+// 活动规划区域
+const activitiesFormEl = containerEl.createEl("div", {cls: "activities-form", attr: {style: "display: none;"}});
+const activitiesTitle = activitiesFormEl.createEl("h3", {text: "添加计划活动"});
+const phaseSummary = activitiesFormEl.createEl("div", {cls: "phase-summary"});
+
+// 添加活动表单
+const addActivityForm = activitiesFormEl.createEl("div", {cls: "add-activity-form"});
+const projectLabel = addActivityForm.createEl("label", {text: "活动名称:"});
+const projectInput = addActivityForm.createEl("input", {attr: {type: "text"}});
+const projectDurationLabel = addActivityForm.createEl("label", {text: "心理预期时长(分钟):"});
+const projectDurationInput = addActivityForm.createEl("input", {attr: {type: "number", min: "1", value: "15"}});
+const addActivityBtn = addActivityForm.createEl("button", {text: "添加活动"});
+
+// 计划活动列表 - 现代卡片式布局
+const activitiesListEl = activitiesFormEl.createEl("div", {cls: "activities-list"});
+activitiesListEl.createEl("h4", {text: "已规划活动（可拖拽调整顺序）"});
+
+// 活动卡片容器（使用 div 替代表格）
+const activitiesTableBody = activitiesListEl.createEl("div", {
+    cls: "activities-cards-wrapper",
+    attr: {style: "margin-top: 15px;"}
+});
+
+// 显示总分配情况
+const allocationSummary = activitiesFormEl.createEl("div", {cls: "allocation-summary"});
+
+// 开始执行计划按钮
+const startPhaseBtn = activitiesFormEl.createEl("button", {
+  text: "开始执行计划", 
+  attr: {style: "margin-top: 15px; background-color: #4CAF50; color: white;"}
+});
+
+// 手动保存按钮（规划页面）- 使用 JSON 存储
+const savePlanBtn = activitiesFormEl.createEl("button", {
+  text: "保存到备份",
+  attr: {
+    style: "margin-top: 15px; margin-left: 10px; background-color: #2196F3; color: white;",
+    title: "保存当前活动规划到 JSON 文件"
+  }
+});
+savePlanBtn.addEventListener("click", async () => {
+  const success = await saveCurrentStateJSON();
+  if (success) {
+    showToast("✅ 计划已保存到 JSON", "success");
+  } else {
+    showToast("❌ 保存失败", "error");
+  }
+});
+
+// 执行计划的控制面板
+const executionPanelEl = containerEl.createEl("div", {cls: "execution-panel", attr: {style: "display: none;"}});
+const executionTitle = executionPanelEl.createEl("h3", {text: "计划执行"});
+
+// 修改后的进度条容器
+const progressBarContainer = executionPanelEl.createEl("div", {
+  cls: "progress-container",
+  attr: {
+    style: "position: relative; height: 40px; margin-bottom: 15px; background-color: #f5f5f5; border-radius: 4px; overflow: visible;"
+  }
+});
+
+// 进度条
+const progressBar = progressBarContainer.createEl("div", {
+  cls: "progress-bar",
+  attr: {
+    style: "position: absolute; height: 100%; background-color: rgba(76, 175, 80, 0.7); transition: width 0.5s ease;"
+  }
+});
+
+// 进度文本
+const progressText = progressBarContainer.createEl("div", {
+  cls: "progress-text",
+  attr: {
+    style: "position: absolute; width: 100%; text-align: center; padding: 10px 0; z-index: 2; color: #333; font-weight: bold;"
+  }
+});
+
+// 当前活动信息
+const currentActivityEl = executionPanelEl.createEl("div", {cls: "current-activity"});
+const currentActivityTitle = currentActivityEl.createEl("h4", {text: "当前进行中的活动"});
+const currentActivityName = currentActivityEl.createEl("div", {cls: "current-activity-name"});
+const currentActivityTime = currentActivityEl.createEl("div", {cls: "current-activity-time"});
+
+// 活动执行列表 - 现代卡片式布局
+const executionListEl = executionPanelEl.createEl("div", {cls: "execution-list"});
+executionListEl.createEl("h4", {text: "活动计划表"});
+
+// 卡片容器（使用 div 替代表格）
+const executionCardsWrapper = executionListEl.createEl("div", {
+    cls: "execution-cards-wrapper",
+    attr: {style: "margin-top: 15px;"}
+});
+
+// 移除旧的表格结构
+// const executionTable = executionListEl.createEl("table", {cls: "execution-table"});
+// const executionTableHead = executionTable.createEl("thead");
+
+
+// 移除表格表头
+// const executionHeadRow = executionHeadRow = executionTableHead.createEl("tr");
+// [
+//   {text: "固定", width: "5%"},
+//   {text: "预计开始时间", width: "8%"},
+//   {text: "预计结束时间", width: "8%"},
+//   {text: "事项名称", width: "23%"},
+//   {text: "心理预期", width: "7%"},
+//   {text: "实际分配", width: "9%"},
+//   {text: "体验描述", width: "24%"},
+//   {text: "评分", width: "6%"},
+//   {text: "操作", width: "10%"}
+// ].forEach(header => {
+//   const th = executionHeadRow.createEl("th", {text: header.text});
+//   th.style.width = header.width;
+// });
+
+// const executionTableBody = executionTable.createEl("tbody");
+
+// 下一个活动信息
+const nextActivityEl = executionPanelEl.createEl("div", {cls: "next-activity"});
+const nextActivityTitle = nextActivityEl.createEl("h4", {text: "下一个活动"});
+const nextActivityName = nextActivityEl.createEl("div", {cls: "next-activity-name"});
+
+// 控制按钮
+const controlsEl = executionPanelEl.createEl("div", {cls: "controls"});
+const nextActivityBtn = controlsEl.createEl("button", {text: "开始下一个活动"});
+
+// 手动保存按钮（计划执行页面）
+const saveExecutionBtn = controlsEl.createEl("button", {
+  text: "保存当前状态",
+  attr: {
+    style: "background-color: #2196F3; color: white; margin-left: 10px; font-weight: bold;",
+    title: "手动保存当前所有状态到备份"
+  }
+});
+
+// 绑定保存当前状态按钮事件
+saveExecutionBtn.addEventListener("click", async () => {
+  const success = await saveCurrentStateJSON();
+  if (success) {
+    showToast("✅ 计划已保存到 JSON", "success");
+  } else {
+    showToast("❌ 保存失败", "error");
+  }
+});
+
+// 添加新功能：延长总时长按钮（放在控制按钮中）
+const extendDurationBtn = controlsEl.createEl("button", {
+  text: "延长总时长", 
+  attr: {
+    style: "background-color: #9c27b0; color: white; margin-left: 10px;",
+    title: "延长计划总时长"
+  }
+});
+
+// 结束当前时间阶段
+const finishPhaseBtn = executionPanelEl.createEl("button", {
+  text: "结束时间阶段", 
+  attr: {style: "margin-top: 15px; background-color: #f44336; color: white;"}
+});
+
+// 完成评价表单
+const reviewFormEl = containerEl.createEl("div", {cls: "review-form", attr: {style: "display: none;"}});
+const reviewTitle = reviewFormEl.createEl("h3", {text: "活动评价"});
+const activityToReviewName = reviewFormEl.createEl("h4", {text: ""});
+// 在初始化代码中替换experienceInput的创建部分
+const experienceLabel = reviewFormEl.createEl("label", {text: "体验描述:"});
+experienceLabel.style.display = "block";
+experienceLabel.style.marginBottom = "5px";
+experienceLabel.style.fontWeight = "bold";
+
+const experienceInput = reviewFormEl.createEl("textarea");
+experienceInput.style.width = "100%";
+experienceInput.style.height = "300px"; // 显著增加高度
+experienceInput.style.padding = "10px";
+experienceInput.style.fontSize = "16px";
+experienceInput.style.resize = "vertical"; // 允许垂直调整大小
+experienceInput.style.marginBottom = "15px";
+experienceInput.setAttribute("placeholder", "请描述您的体验（可输入最多1000字）");
+experienceInput.setAttribute("maxlength", "1000"); // 限制最大字符数
+
+// 设置评价表单整体样式
+reviewFormEl.style.maxWidth = "800px";
+reviewFormEl.style.margin = "20px auto";
+reviewFormEl.style.padding = "20px";
+reviewFormEl.style.backgroundColor = "#f9f9f9";
+reviewFormEl.style.borderRadius = "5px";
+reviewFormEl.style.boxShadow = "0 2px 5px rgba(0,0,0,0.1)";
+// 修复：添加定位和 z-index 确保表单正确显示在最上层
+reviewFormEl.style.position = "absolute";
+reviewFormEl.style.top = "50%";
+reviewFormEl.style.left = "50%";
+reviewFormEl.style.transform = "translate(-50%, -50%)";
+reviewFormEl.style.zIndex = "1000";
+reviewFormEl.style.width = "90%";
+const ratingLabel = reviewFormEl.createEl("label", {text: "评分(1-5):"});
+const ratingInput = reviewFormEl.createEl("select");
+for (let i = 1; i <= 5; i++) {
+  ratingInput.createEl("option", {text: String(i), attr: {value: String(i)}});
+}
+ratingInput.value = "3";
+
+// 提交按钮样式
+let submitReviewBtn = reviewFormEl.createEl("button", {
+  text: "提交评价",
+  attr: {
+    style: "padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;"
+  }
+});
+
+// ==================== 【新增】编辑活动弹窗 ====================
+const editModalEl = containerEl.createEl("div", {cls: "edit-modal"});
+const editModalContent = editModalEl.createEl("div", {cls: "edit-modal-content"});
+editModalContent.createEl("h3", {text: "编辑活动", attr: {style: "margin-top: 0; margin-bottom: 20px; border-bottom: 2px solid var(--interactive-accent); padding-bottom: 10px;"}});
+
+const editForm = editModalContent.createEl("div", {attr: {style: "display: flex; flex-direction: column; gap: 16px;"}});
+
+// 活动名称输入
+const editNameLabel = editForm.createEl("label", {text: "事项名称:", attr: {style: "font-weight: 600;"}});
+const editNameInput = editForm.createEl("input", {attr: {type: "text", style: "width: 100%; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 6px; font-size: 15px;"}});
+
+// 体验描述输入
+const editExperienceLabel = editForm.createEl("label", {text: "体验描述:", attr: {style: "font-weight: 600;"}});
+const editExperienceTextarea = editForm.createEl("textarea", {attr: {style: "width: 100%; height: 120px; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 6px; font-size: 14px; resize: vertical;"}});
+
+// 预期时间输入
+const editTimeLabel = editForm.createEl("label", {text: "心理预期时长 (分钟):", attr: {style: "font-weight: 600;"}});
+const editTimeInput = editForm.createEl("input", {attr: {type: "number", min: "1", style: "width: 100%; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 6px; font-size: 15px;"}});
+
+// 按钮行
+const editBtnRow = editForm.createEl("div", {attr: {style: "display: flex; gap: 10px; margin-top: 10px;"}});
+const saveEditBtn = editBtnRow.createEl("button", {text: "保存", attr: {style: "flex: 1; padding: 12px; background: var(--interactive-accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 15px;"}});
+const cancelEditBtn = editBtnRow.createEl("button", {text: "取消", attr: {style: "flex: 1; padding: 12px; background: var(--background-modifier-border); color: var(--text-normal); border: none; border-radius: 6px; cursor: pointer; font-size: 15px;"}});
+
+// 编辑弹窗控制
+let currentEditingActivity = null;
+
+function showEditModal(activity) {
+    if (!activity) return;
+    currentEditingActivity = activity;
+    editNameInput.value = activity.project || "";
+    editExperienceTextarea.value = activity.experience || "";
+    editTimeInput.value = activity.expectedDuration || 30;
+    editModalEl.style.display = "flex";
+}
+
+function hideEditModal() {
+    editModalEl.style.display = "none";
+    currentEditingActivity = null;
+}
+
+function saveEdit() {
+    if (!currentEditingActivity) return;
+
+    const newName = editNameInput.value.trim();
+    const newExperience = editExperienceTextarea.value.trim();
+    const newDuration = parseInt(editTimeInput.value, 10);
+
+    if (!newName) {
+        new Notice("请输入事项名称");
+        return;
+    }
+    if (isNaN(newDuration) || newDuration < 1) {
+        new Notice("请输入有效的时长");
+        return;
+    }
+
+    // 更新数据
+    currentEditingActivity.project = newName;
+    currentEditingActivity.experience = newExperience;
+    currentEditingActivity.expectedDuration = newDuration;
+
+    // 重新计算时间分配
+    allocateRemainingTime();
+
+    // 刷新界面
+    renderExecutionList();
+    hideEditModal();
+    debouncedSave();
+
+    new Notice(`已更新: ${newName}`);
+}
+
+// 绑定编辑弹窗事件
+cancelEditBtn.addEventListener("click", hideEditModal);
+saveEditBtn.addEventListener("click", saveEdit);
+editModalEl.addEventListener("click", (e) => {
+    if (e.target === editModalEl) hideEditModal();
+});
+
+// 统计与记录区域
+const statsEl = containerEl.createEl("div", {cls: "stats-container", attr: {style: "margin-top: 20px;"}});
+const entriesEl = containerEl.createEl("div", {cls: "entries-container", attr: {style: "margin-top: 20px;"}});
+
+// 格式化时间为yyyy/MM/dd HH:mm:ss格式
+function formatDateForTimestamp(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  
+  return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+}
+
+// 计划完成时转换为记录 - 修复评价记录到当前活动而非下一活动
+// 计划完成时转换为记录 - 修复评价记录到当前活动而非下一活动
+function convertPhaseToEntries(phase) {
+  const newEntries = [];
+  
+  // 获取所有已完成的活动
+  const completedActivities = phase.activities.filter(activity => 
+    activity.status === 'completed' && activity.actualStart && activity.actualEnd
+  ).sort((a, b) => new Date(b.actualStart) - new Date(a.actualStart)); // 按开始时间倒序排序
+  
+  // 添加特殊的结尾记录，标记时间阶段完成
+  const endTime = new Date();
+  const endEntry = {
+    timestamp: formatDateForTimestamp(endTime),
+    project: "**阶段结束**未记录", // 修改：添加阶段结束标记
+    prevExperience: "一个时间段完成了",
+    prevRating: 5
+  };
+  
+  // 将最后一个完成活动的评价放到"未记录"条目中
+  if (completedActivities.length > 0) {
+    const lastActivity = completedActivities[0]; // 最近完成的活动
+    endEntry.prevExperience = lastActivity.experience || "未记录";
+    endEntry.prevRating = lastActivity.rating || 3;
+  }
+  
+  newEntries.push(endEntry);
+  
+  // 处理所有完成的活动，将每个活动的评价赋给下一个活动的prevExperience
+  for (let i = 0; i < completedActivities.length; i++) {
+    const currentActivity = completedActivities[i];
+    const startTime = new Date(currentActivity.actualStart);
+    
+    const newEntry = {
+      timestamp: formatDateForTimestamp(startTime),
+      project: currentActivity.project,
+      prevExperience: "未记录",
+      prevRating: 3
+    };
+    
+    // 如果不是第一个活动，则使用前一个活动的评价
+    if (i < completedActivities.length - 1) {
+      const prevActivity = completedActivities[i + 1]; // 因为是倒序，所以i+1是前一个
+      newEntry.prevExperience = prevActivity.experience || "未记录";
+      newEntry.prevRating = prevActivity.rating || 3;
+    }
+    
+    newEntries.push(newEntry);
+  }
+  
+  // 修改：为最后一个条目（阶段开始）添加标记 - 无条件添加
+  if (newEntries.length > 1) {
+    const lastEntry = newEntries[newEntries.length - 1];
+    // 无条件为最后一个条目添加阶段开始标记
+    lastEntry.project = "**阶段开始**" + lastEntry.project;
+  }
+  
+  return newEntries;
+}
+
+// 从YAML恢复活动计划（增强修复版 - 修复了无法找到activityPlan数组的问题）
+async function restoreFromActivityPlan() {
+  // 保存当前状态以便错误时恢复
+  const backupPhase = currentPhase ? JSON.parse(JSON.stringify(currentPhase)) : null;
+  const backupUIState = JSON.parse(JSON.stringify(lastUIState));
+  
+  try {
+    // 显示加载中状态
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: "正在从备份恢复...",
+      attr: {style: "color: blue; background-color: #e3f2fd; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+    
+    // 检查Obsidian API是否可用
+    if (typeof app === 'undefined' || !app) {
+      throw new Error("无法访问Obsidian API (app未定义)");
+    }
+    
+    if (!app.vault) {
+      throw new Error("无法访问Obsidian文件系统 (app.vault未定义)");
+    }
+    
+ const currentFile = await getTargetFile();
+    
+    // 安全读取文件内容
+    let fileContent;
+    try {
+      fileContent = await app.vault.read(currentFile);
+    } catch (readError) {
+      console.error("读取文件内容失败:", readError);
+      throw new Error("无法读取文件内容: " + (readError.message || "未知错误"));
+    }
+    
+    if (!fileContent || fileContent.trim() === "") {
+      throw new Error("文件内容为空");
+    }
+    
+    if (!fileContent.startsWith('---\n')) {
+      throw new Error("未找到YAML前置元数据 (文件未以---\\n开头)");
+    }
+    
+    // 提取YAML部分
+    const yamlEnd = fileContent.indexOf('\n---\n');
+    if (yamlEnd <= 0) {
+      throw new Error("YAML格式错误 (找不到结束标记)");
+    }
+    
+    // 提取整个YAML内容
+    const yamlSection = fileContent.substring(4, yamlEnd);
+    console.log("提取的YAML内容长度:", yamlSection.length, "字节");
+    
+    // 首先尝试查找activityPlan标记
+    if (!yamlSection.includes('activityPlan:')) {
+      throw new Error("YAML中未包含activityPlan关键字");
+    }
+    
+    // 使用多种正则表达式尝试不同格式的匹配
+    let activityPlanData = null;
+    
+    // 方法1: 使用更宽松的正则表达式
+    try {
+      // 方法1: 匹配 activityPlan: 后面的所有内容直到结束或下一个顶级属性
+      const looserRegex = /activityPlan:\s*($$[\s\S]*?)(?:\n\S+:|$)/;
+      const match1 = yamlSection.match(looserRegex);
+      
+      if (match1 && match1[1]) {
+        const jsonStr = match1[1].trim();
+        console.log("方法1找到的可能JSON长度:", jsonStr.length);
+        
+        // 检查是否是有效的JSON数组开始
+        if (jsonStr.startsWith('[') && (jsonStr.endsWith(']') || jsonStr.includes(']'))) {
+          // 如果JSON字符串不以]结尾，尝试查找最后的]
+          let validJsonStr = jsonStr;
+          if (!jsonStr.endsWith(']')) {
+            const lastBracketPos = jsonStr.lastIndexOf(']');
+            if (lastBracketPos > 0) {
+              validJsonStr = jsonStr.substring(0, lastBracketPos + 1);
+            } else {
+              // 没有找到结束括号，尝试添加
+              validJsonStr = jsonStr + ']';
+            }
+          }
+          
+          try {
+            activityPlanData = JSON.parse(validJsonStr);
+            console.log("方法1成功解析JSON数组，长度:", activityPlanData.length);
+          } catch (parseErr) {
+            console.error("方法1解析JSON失败:", parseErr);
+          }
+        }
+      }
+    } catch (regexErr1) {
+      console.error("方法1正则匹配失败:", regexErr1);
+    }
+    
+    // 方法2: 更精确的数组匹配
+    if (!activityPlanData) {
+      try {
+        const regex2 = /activityPlan:\s*(\[\s*[\s\S]*?\n\s*$$)/m;
+        const match2 = yamlSection.match(regex2);
+        
+        if (match2 && match2[1]) {
+          try {
+            activityPlanData = JSON.parse(match2[1]);
+            console.log("方法2成功解析JSON数组，长度:", activityPlanData.length);
+          } catch (parseErr) {
+            console.error("方法2解析JSON失败:", parseErr);
+          }
+        }
+      } catch (regexErr2) {
+        console.error("方法2正则匹配失败:", regexErr2);
+      }
+    }
+    
+    // 方法3: 手动处理YAML文本
+    if (!activityPlanData) {
+      try {
+        // 找到activityPlan:开始的位置
+        const startPos = yamlSection.indexOf('activityPlan:');
+        if (startPos >= 0) {
+          // 从这个位置开始查找[
+          const arrayStartPos = yamlSection.indexOf('[', startPos);
+          if (arrayStartPos > 0) {
+            // 找到对应的结束括号
+            let bracketCount = 1;
+            let arrayEndPos = -1;
+            
+            for (let i = arrayStartPos + 1; i < yamlSection.length; i++) {
+              if (yamlSection[i] === '[') bracketCount++;
+              if (yamlSection[i] === ']') bracketCount--;
+              
+              if (bracketCount === 0) {
+                arrayEndPos = i;
+                break;
+              }
+            }
+            
+            if (arrayEndPos > arrayStartPos) {
+              const jsonArrayStr = yamlSection.substring(arrayStartPos, arrayEndPos + 1);
+              console.log("方法3提取的JSON长度:", jsonArrayStr.length);
+              
+              try {
+                // 清理格式
+                const cleanedStr = jsonArrayStr
+                  .replace(/\n\s*/g, ' ') // 移除换行和前导空格
+                  .trim();
+                
+                activityPlanData = JSON.parse(cleanedStr);
+                console.log("方法3成功解析JSON数组，长度:", activityPlanData.length);
+              } catch (parseErr) {
+                console.error("方法3解析JSON失败:", parseErr);
+              }
+            }
+          }
+        }
+      } catch (err3) {
+        console.error("方法3处理失败:", err3);
+      }
+    }
+    
+    // 方法4: 尝试直接从用户提供的示例中抽取
+    if (!activityPlanData && yamlSection.includes('"project": "计划开始"')) {
+      try {
+        // 在YAML中直接查找示例中的特定格式
+        const sampleStart = yamlSection.indexOf('"timestamp": "2025/05/15 01:29:02"');
+        if (sampleStart > 0) {
+          // 尝试向前找到[
+          let arrayStart = -1;
+          for (let i = sampleStart; i >= 0; i--) {
+            if (yamlSection[i] === '[') {
+              arrayStart = i;
+              break;
+            }
+          }
+          
+          if (arrayStart > 0) {
+            // 向后找到对应的]
+            let bracketCount = 1;
+            let arrayEnd = -1;
+            
+            for (let i = arrayStart + 1; i < yamlSection.length; i++) {
+              if (yamlSection[i] === '[') bracketCount++;
+              if (yamlSection[i] === ']') bracketCount--;
+              
+              if (bracketCount === 0) {
+                arrayEnd = i;
+                break;
+              }
+            }
+            
+            if (arrayEnd > arrayStart) {
+              const jsonArrayStr = yamlSection.substring(arrayStart, arrayEnd + 1);
+              console.log("方法4提取的JSON长度:", jsonArrayStr.length);
+              
+              try {
+                activityPlanData = JSON.parse(jsonArrayStr);
+                console.log("方法4成功解析JSON数组，长度:", activityPlanData.length);
+              } catch (parseErr) {
+                console.error("方法4解析JSON失败:", parseErr);
+                
+                // 尝试清理格式后再解析
+                try {
+                  const cleanedStr = jsonArrayStr
+                    .replace(/\n\s*/g, ' ') // 移除换行和前导空格
+                    .trim();
+                  
+                  activityPlanData = JSON.parse(cleanedStr);
+                  console.log("方法4(清理后)成功解析JSON数组，长度:", activityPlanData.length);
+                } catch (cleanErr) {
+                  console.error("方法4(清理后)解析JSON失败:", cleanErr);
+                }
+              }
+            }
+          }
+        }
+      } catch (err4) {
+        console.error("方法4处理失败:", err4);
+      }
+    }
+    
+    // 最后检查是否成功提取
+    if (!activityPlanData || !Array.isArray(activityPlanData) || activityPlanData.length === 0) {
+      // 显示YAML内容的一部分用于调试
+      const yamlPreview = yamlSection.substring(0, Math.min(500, yamlSection.length)) + 
+        (yamlSection.length > 500 ? '...' : '');
+      console.error("未能解析activityPlan数组，YAML预览:", yamlPreview);
+      
+      throw new Error("无法解析YAML中的activityPlan数组");
+    }
+    
+    // 处理解析后的数据
+    const success = processActivityPlanData(activityPlanData);
+    
+    if (!success) {
+      throw new Error("处理活动计划数据失败");
+    }
+    
+    return true;
+  } catch (error) {
+    console.error("从备份恢复活动计划失败:", error);
+    
+    // 恢复备份状态
+    if (backupPhase) {
+      currentPhase = backupPhase;
+    }
+    lastUIState = backupUIState;
+    
+    // 显示友好的错误信息
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: "恢复失败: " + (error.message || "未知错误"),
+      attr: {style: "color: white; background-color: #d32f2f; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+    
+    // 添加帮助信息
+    const helpDiv = statusEl.createEl("div", {
+      attr: {style: "margin-top: 8px; font-size: 0.9em; color: #555;"}
+    });
+    
+    helpDiv.innerHTML = `
+      <p>尝试以下解决方法:</p>
+      <ul>
+        <li>确认当前文件有正确的YAML前置数据，包含activityPlan数组</li>
+        <li>检查YAML格式是否正确</li>
+        <li>刷新页面后重试</li>
+        <li>如果问题持续，尝试手动创建新的时间阶段</li>
+      </ul>
+    `;
+    
+    // 确保UI一致
+    restoreUIState();
+    
+    return false;
+  }
+}
+
+// ================== ▲▲▲ ADD THIS NEW FUNCTION ▲▲▲ ==================
+window.timePlannerDisplayIntervalId = window.timePlannerDisplayIntervalId || null; window.timePlannerDebounceSaveTimer = window.timePlannerDebounceSaveTimer || null;
+function debouncedSave() {
+  // Clear the previous timeout to reset the waiting period
+  clearTimeout(window.timePlannerDebounceSaveTimer);
+
+  // If a save is already happening, don't queue another one
+  if (window.timePlannerIsSaving) return;
+
+  // Set a new timeout with minimal delay for near-instant saving
+  window.timePlannerDebounceSaveTimer = setTimeout(() => {
+    console.log("Saving to JSON immediately.");
+    saveCurrentStateJSON(); // 使用 JSON 存储
+  }, 100); // Nearly instant save with 100ms delay to batch rapid operations
+}
+
+
+window.timePlannerAutoSaveId = window.timePlannerAutoSaveId || null;
+
+
+// 转换当前阶段为活动计划格式（增强版：包含 isStartTimeFixed）
+function convertPhaseToActivityPlan(phase) {
+  // 深拷贝以避免直接引用
+  const snapshot = JSON.parse(JSON.stringify(phase));
+
+  // 生成entries数组（写入到 YAML 的 activityPlan）
+  const entries = [];
+
+  // 添加计划开始标记
+  const startTime = new Date(phase.startTime);
+  entries.push({
+    timestamp: formatDateForTimestamp(startTime),
+    project: "计划开始",
+    status: "开始",
+    duration: phase.plannedDuration
+  });
+
+  // 添加每个活动的状态
+  phase.activities.forEach((activity) => {
+    const entry = {
+      // 优先使用实际开始时间，其次预计开始时间，最后回退到当前时间
+      timestamp: activity.actualStart
+        ? formatDateForTimestamp(new Date(activity.actualStart))
+        : activity.expectedStart
+        ? formatDateForTimestamp(new Date(activity.expectedStart))
+        : formatDateForTimestamp(new Date()),
+      project: activity.project,
+      status: activity.status,
+      expectedDuration: activity.expectedDuration,
+      allocatedDuration: activity.allocatedDuration || activity.expectedDuration,
+      experience: activity.experience || "未记录",
+      rating: activity.rating || 3,
+      // 保存实际结束时间，有助于更精确的恢复
+      actualEnd: activity.actualEnd
+        ? formatDateForTimestamp(new Date(activity.actualEnd))
+        : null,
+      // 保存最后评价时间，用于检测最新评价
+      lastReviewTime: activity.lastReviewTime,
+      // 新增：保存“开始时间是否固定”的状态，确保恢复后能还原
+      isStartTimeFixed: !!activity.isStartTimeFixed
+    };
+
+    entries.push(entry);
+  });
+
+  return entries;
+}
+
+
+// 格式化时间显示
+function formatDuration(minutes) {
+  if (minutes < 1) {
+    return `${Math.max(0, Math.round(minutes * 60))}秒`;
+  }
+  if (minutes < 10) {
+    return `${minutes.toFixed(1)}分钟`;
+  }
+  if (minutes < 60) {
+    return `${Math.round(minutes)}分钟`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  return `${hours}小时${mins > 0 ? ` ${mins}分钟` : ''}`;
+}
+
+// 格式化时间点
+function formatTime(date) {
+  return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+}
+
+// 生成唯一ID
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+
+// 确保执行阶段的实时刷新计时器存在
+function ensureExecutionTicker() {
+  if (window.timePlannerDisplayIntervalId) {
+    clearInterval(window.timePlannerDisplayIntervalId);
+  }
+  window.timePlannerDisplayIntervalId = setInterval(updateExecutionDisplay, 1000);
+}
+
+// 根据心理预期时间分配实际时间
+function allocateTimeByExpectation() {
+  if (!currentPhase) return;
+  
+  // 计算总心理预期时间
+  let totalExpectedMinutes = 0;
+  currentPhase.activities.forEach(activity => {
+    totalExpectedMinutes += activity.expectedDuration;
+  });
+  
+  currentPhase.totalExpectedDuration = totalExpectedMinutes;
+  
+  // 如果没有活动，不需要分配
+  if (totalExpectedMinutes === 0) return;
+  
+  // 按照心理预期时间比例分配实际时间
+  const totalPlannedMinutes = currentPhase.plannedDuration;
+  
+  currentPhase.activities.forEach(activity => {
+    const ratio = activity.expectedDuration / totalExpectedMinutes;
+    activity.allocatedDuration = Math.round(totalPlannedMinutes * ratio);
+  });
+  
+  // 更新预计开始和结束时间 - 规划阶段也计算预计时间
+  calculateExpectedTimesForPlanning();
+  
+  // 更新分配信息
+  updateAllocationSummary();
+}
+
+// 更新分配信息显示
+function updateAllocationSummary() {
+  allocationSummary.innerHTML = '';
+  
+  if (!currentPhase || currentPhase.activities.length === 0) return;
+  
+  allocationSummary.createEl("h4", {text: "时间分配汇总"});
+  
+  // 总计划时间
+  const totalPlan = allocationSummary.createEl("div", {cls: "summary-item"});
+  totalPlan.createEl("span", {text: "总计划时间: "});
+  totalPlan.createEl("strong", {text: formatDuration(currentPhase.plannedDuration)});
+  
+  // 总心理预期时间
+  const totalExpected = allocationSummary.createEl("div", {cls: "summary-item"});
+  totalExpected.createEl("span", {text: "总心理预期时间: "});
+  totalExpected.createEl("strong", {text: formatDuration(currentPhase.totalExpectedDuration)});
+  
+  // 分配系数
+  const factor = currentPhase.plannedDuration / currentPhase.totalExpectedDuration;
+  const factorText = factor < 1 ? "压缩" : "扩展";
+  const factorDisplay = allocationSummary.createEl("div", {cls: "summary-item"});
+  factorDisplay.createEl("span", {text: `时间${factorText}系数: `});
+  factorDisplay.createEl("strong", {text: factor.toFixed(2)});
+  factorDisplay.createEl("span", {text: ` (每1分钟心理预期分配${factor.toFixed(2)}分钟实际时间)`});
+}
+
+// 计算规划阶段的预计开始和结束时间
+// 修改calculateExpectedTimesForPlanning函数
+function calculateExpectedTimesForPlanning() {
+  if (!currentPhase || currentPhase.status !== 'planning' || !currentPhase.activities || currentPhase.activities.length === 0) {
+    return;
+  }
+  
+  let currentTime = new Date(currentPhase.startTime);
+  
+  // 首先处理已固定开始时间的活动
+  const fixedActivities = currentPhase.activities.filter(a => a.isStartTimeFixed);
+  const unfixedActivities = currentPhase.activities.filter(a => !a.isStartTimeFixed);
+  
+  // 按索引排序所有活动
+  const allActivities = [...currentPhase.activities];
+  const activityIndices = {};
+  allActivities.forEach((a, idx) => {
+    activityIndices[a.id] = idx;
+  });
+  
+  // 为已固定开始时间的活动设置预期结束时间
+  fixedActivities.forEach(activity => {
+    // 如果已有expectedStart，则使用它，否则设置为当前时间点
+    if (!activity.expectedStart) {
+      activity.expectedStart = new Date(currentTime);
+    }
+    
+    // 计算预期结束时间
+    const allocatedTime = activity.allocatedDuration || activity.expectedDuration;
+    activity.expectedEnd = new Date(activity.expectedStart.getTime() + allocatedTime * 60 * 1000);
+  });
+  
+  // 按活动索引顺序创建时间段
+  let timeSegments = [];
+  
+  if (fixedActivities.length === 0) {
+    // 没有固定活动，整个计划是一个时间段
+    timeSegments.push({
+      startTime: new Date(currentPhase.startTime),
+      endTime: null, // 结束时间会根据总时长动态计算
+      activities: unfixedActivities
+    });
+  } else {
+    // 有固定活动，需要分段
+    
+    // 按索引排序固定活动
+    fixedActivities.sort((a, b) => activityIndices[a.id] - activityIndices[b.id]);
+    
+    // 创建时间段
+    let lastEndTime = new Date(currentPhase.startTime);
+    let lastIndex = -1;
+    
+    for (const fixedActivity of fixedActivities) {
+      const currentIndex = activityIndices[fixedActivity.id];
+      
+      // 获取两个固定活动之间的未固定活动
+      const activitiesBetween = unfixedActivities.filter(a => {
+        const aIndex = activityIndices[a.id];
+        return aIndex > lastIndex && aIndex < currentIndex;
+      });
+      
+      // 如果有未固定活动，创建一个时间段
+      if (activitiesBetween.length > 0) {
+        timeSegments.push({
+          startTime: new Date(lastEndTime),
+          endTime: new Date(fixedActivity.expectedStart),
+          activities: activitiesBetween
+        });
+      }
+      
+      lastEndTime = new Date(fixedActivity.expectedEnd);
+      lastIndex = currentIndex;
+    }
+    
+    // 处理最后一个固定活动之后的活动
+    const remainingActivities = unfixedActivities.filter(a => 
+      activityIndices[a.id] > lastIndex
+    );
+    
+    if (remainingActivities.length > 0) {
+      timeSegments.push({
+        startTime: new Date(lastEndTime),
+        endTime: null,
+        activities: remainingActivities
+      });
+    }
+  }
+  
+  // 计算计划的总结束时间
+  const plannedEndTime = new Date(currentPhase.startTime);
+  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+  
+  // 为每个时间段内的活动分配时间
+  timeSegments.forEach((segment, segmentIndex) => {
+    // 计算这个时间段的持续时间
+    let segmentDuration;
+    
+    if (segment.endTime) {
+      // 如果有固定结束时间，计算段持续时间
+      segmentDuration = (segment.endTime - segment.startTime) / (60 * 1000);
+    } else {
+      // 最后一段的结束时间是计划结束时间
+      segment.endTime = plannedEndTime;
+      segmentDuration = (segment.endTime - segment.startTime) / (60 * 1000);
+    }
+    
+    // 计算这个段内所有活动的总心理预期
+    const totalExpectedInSegment = segment.activities.reduce(
+      (sum, activity) => sum + (activity.expectedDuration || 0), 0
+    );
+    
+    let currentSegmentTime = new Date(segment.startTime);
+    
+    // 为段内的每个活动分配时间
+    segment.activities.forEach(activity => {
+      activity.expectedStart = new Date(currentSegmentTime);
+      
+      // 根据心理预期比例分配时间
+      let allocatedTime;
+      if (totalExpectedInSegment > 0) {
+        const ratio = activity.expectedDuration / totalExpectedInSegment;
+        allocatedTime = segmentDuration * ratio;
+        activity.allocatedDuration = allocatedTime;
+      } else {
+        allocatedTime = activity.expectedDuration;
+        activity.allocatedDuration = allocatedTime;
+      }
+      
+      // 计算预期结束时间
+      activity.expectedEnd = new Date(currentSegmentTime.getTime() + allocatedTime * 60 * 1000);
+      
+      // 更新当前时间点
+      currentSegmentTime = new Date(activity.expectedEnd);
+    });
+  });
+  
+  // 按原始顺序重新设置所有活动
+  currentPhase.activities.sort((a, b) => activityIndices[a.id] - activityIndices[b.id]);
+}
+
+// 计算执行阶段的预计开始和结束时间
+// 计算执行阶段的预计开始和结束时间 - 支持固定开始时间
+// 计算执行阶段的预计开始和结束时间 - 支持固定开始时间 (修复)
+// 计算执行阶段的预计开始和结束时间 - 改进版本
+// 计算执行阶段的预计开始和结束时间 - 最终修正版
+function calculateExpectedTimes() {
+  if (!currentPhase || currentPhase.status !== 'active' || !currentPhase.activities || currentPhase.activities.length === 0) {
+    return;
+  }
+  
+  // 计划结束时间
+  const plannedEndTime = new Date(currentPhase.startTime);
+  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+  
+  // 找到第一个未完成的活动的索引
+  const firstPendingIndex = currentPhase.activities.findIndex(a => a.status !== 'completed');
+  
+  // 如果所有活动都已完成或没有活动，返回
+  if (firstPendingIndex === -1) return;
+  
+  // 按原始索引记录所有活动
+  const activityIndices = {};
+  currentPhase.activities.forEach((a, idx) => {
+    activityIndices[a.id] = idx;
+  });
+  
+  // 获取所有时间点
+  let timePoints = [];
+  
+  // 添加当前时间点
+  let currentTime;
+  if (firstPendingIndex > 0) {
+    // 使用最后一个已完成活动的结束时间
+    const lastCompletedActivity = currentPhase.activities[firstPendingIndex - 1];
+    currentTime = new Date(lastCompletedActivity.actualEnd);
+  } else {
+    // 使用计划开始时间
+    currentTime = new Date(currentPhase.startTime);
+  }
+  
+  // 添加当前时间作为第一个时间点
+  timePoints.push({
+    time: new Date(currentTime),
+    type: 'current',
+    activityId: null
+  });
+  
+  // 处理进行中的活动
+  const inProgressActivity = currentPhase.activities.find(a => a.status === 'in-progress');
+  if (inProgressActivity) {
+    // 设置进行中活动的预期开始时间为实际开始时间
+    inProgressActivity.expectedStart = new Date(inProgressActivity.actualStart);
+    
+    const now = new Date();
+    const elapsedTime = (now - new Date(inProgressActivity.actualStart)) / (60 * 1000);
+    const allocatedTime = inProgressActivity.allocatedDuration || inProgressActivity.expectedDuration;
+    const remainingTime = Math.max(0, allocatedTime - elapsedTime);
+    
+    // 设置预期结束时间
+    const expectedEnd = new Date(now.getTime() + remainingTime * 60 * 1000);
+    inProgressActivity.expectedEnd = expectedEnd;
+    
+    // 添加进行中活动结束时间作为时间点
+    timePoints.push({
+      time: new Date(expectedEnd),
+      type: 'in-progress-end',
+      activityId: inProgressActivity.id,
+      activity: inProgressActivity
+    });
+    
+    // 更新当前时间
+    currentTime = new Date(expectedEnd);
+  }
+  
+  // 收集所有固定开始时间的未完成活动
+  const fixedStartActivities = currentPhase.activities.filter(a => 
+    a.isStartTimeFixed && 
+    (a.status === 'pending' || (a.status === 'in-progress' && !a.expectedStart))
+  );
+  
+  // 添加固定开始时间点（按原始顺序排序）
+  fixedStartActivities.sort((a, b) => activityIndices[a.id] - activityIndices[b.id]);
+  
+  fixedStartActivities.forEach(activity => {
+    if (!activity.expectedStart) {
+      // 如果没有预设开始时间但标记为固定，设置为当前时间点之后
+      activity.expectedStart = new Date(currentTime);
+    }
+    
+    // 确保固定开始时间不早于当前时间点
+    if (activity.expectedStart < currentTime) {
+      activity.expectedStart = new Date(currentTime);
+    }
+    
+    timePoints.push({
+      time: new Date(activity.expectedStart),
+      type: 'fixed-start',
+      activityId: activity.id,
+      activity: activity
+    });
+  });
+  
+  // 添加计划结束时间点
+  timePoints.push({
+    time: new Date(plannedEndTime),
+    type: 'plan-end',
+    activityId: null
+  });
+  
+  // 按时间排序所有时间点
+  timePoints.sort((a, b) => a.time - b.time);
+  
+  // 为每个时间段分配活动
+  const timeSegments = [];
+  
+  for (let i = 0; i < timePoints.length - 1; i++) {
+    const startPoint = timePoints[i];
+    const endPoint = timePoints[i + 1];
+    
+    // 跳过长度为0的时间段
+    if (startPoint.time.getTime() === endPoint.time.getTime()) continue;
+    
+    // 获取时间段中应包含的活动（特殊处理第一个时间段）
+    let activitiesInSegment = [];
+    
+    if (i === 0 && startPoint.type === 'current') {
+      // 第一个时间段的特殊处理：获取从开始到第一个固定点之间的所有未完成、未固定活动
+      const endIndex = endPoint.type === 'fixed-start' ? 
+                       activityIndices[endPoint.activityId] : 
+                       currentPhase.activities.length;
+      
+      for (let j = firstPendingIndex; j < endIndex; j++) {
+        const activity = currentPhase.activities[j];
+        if (activity && activity.status === 'pending' && !activity.isStartTimeFixed) {
+          activitiesInSegment.push(activity);
+        }
+      }
+      
+      // 如果当前有进行中活动，跳过它
+      if (inProgressActivity) {
+        activitiesInSegment = activitiesInSegment.filter(a => a.id !== inProgressActivity.id);
+      }
+    } else if (startPoint.type === 'fixed-start' || startPoint.type === 'in-progress-end') {
+      // 其他时间段：添加开始点对应的活动（如果是固定开始点）
+      if (startPoint.type === 'fixed-start') {
+        activitiesInSegment.push(startPoint.activity);
+      }
+      
+      // 找出这个固定点之后、下一个固定点之前的未完成、未固定活动
+      const startIndex = startPoint.activityId ? 
+                        activityIndices[startPoint.activityId] + 1 : 
+                        (inProgressActivity ? activityIndices[inProgressActivity.id] + 1 : 0);
+      
+      const endIndex = endPoint.type === 'fixed-start' ? 
+                       activityIndices[endPoint.activityId] : 
+                       currentPhase.activities.length;
+      
+      for (let j = startIndex; j < endIndex; j++) {
+        const activity = currentPhase.activities[j];
+        if (activity && activity.status === 'pending' && !activity.isStartTimeFixed) {
+          activitiesInSegment.push(activity);
+        }
+      }
+    }
+    
+    // 添加时间段
+    timeSegments.push({
+      startTime: new Date(startPoint.time),
+      endTime: new Date(endPoint.time),
+      startPoint: startPoint,
+      endPoint: endPoint,
+      activities: activitiesInSegment
+    });
+  }
+  
+  // 为每个时间段分配时间
+  timeSegments.forEach(segment => {
+    const segmentDuration = (segment.endTime - segment.startTime) / (60 * 1000);
+    
+    // 如果段持续时间过短，跳过
+    if (segmentDuration < 0.1) return;
+    
+    // 计算这个段内所有活动的总心理预期
+    const totalExpectedInSegment = segment.activities.reduce(
+      (sum, activity) => sum + (activity.expectedDuration || 0), 0
+    );
+    
+    // 按原始顺序排序活动
+    segment.activities.sort((a, b) => activityIndices[a.id] - activityIndices[b.id]);
+    
+    let currentSegmentTime = new Date(segment.startTime);
+    
+    // 为段内的每个活动分配时间
+    segment.activities.forEach((activity, index) => {
+      // 设置预期开始时间（如果不是固定开始时间的活动，或是该段的开始固定活动）
+      if (!activity.isStartTimeFixed || 
+          (segment.startPoint.type === 'fixed-start' && segment.startPoint.activityId === activity.id)) {
+        activity.expectedStart = new Date(currentSegmentTime);
+      }
+      
+      // 根据心理预期比例分配时间
+      let allocatedTime;
+      if (totalExpectedInSegment > 0) {
+        // 按心理预期比例分配
+        const ratio = activity.expectedDuration / totalExpectedInSegment;
+        allocatedTime = segmentDuration * ratio;
+      } else {
+        // 如果没有预期时间，平均分配
+        allocatedTime = segmentDuration / segment.activities.length;
+      }
+      
+      // 保存分配的时间
+      activity.allocatedDuration = allocatedTime;
+      
+      // 最后一个活动特殊处理
+      if (index === segment.activities.length - 1) {
+        const expectedEnd = new Date(currentSegmentTime.getTime() + allocatedTime * 60 * 1000);
+        if (expectedEnd > segment.endTime) {
+          allocatedTime = (segment.endTime - currentSegmentTime) / (60 * 1000);
+          activity.allocatedDuration = Math.max(0, allocatedTime);
+        }
+      }
+      
+      // 计算预期结束时间
+      activity.expectedEnd = new Date(currentSegmentTime.getTime() + allocatedTime * 60 * 1000);
+      
+      // 更新段内的当前时间
+      currentSegmentTime = new Date(activity.expectedEnd);
+    });
+  });
+}
+
+// 为时间段分配时间（独立函数，便于复用）
+function allocateTimeForSegments(timeSegments, activityIndices) {
+  timeSegments.forEach(segment => {
+    const segmentDuration = (segment.endTime - segment.startTime) / (60 * 1000);
+    
+    // 如果段持续时间过短，跳过
+    if (segmentDuration < 0.1) return;
+    
+    // 计算这个段内所有活动的总心理预期
+    const totalExpectedInSegment = segment.activities.reduce(
+      (sum, activity) => sum + (activity.expectedDuration || 0), 0
+    );
+    
+    // 按原始顺序排序活动
+    segment.activities.sort((a, b) => activityIndices[a.id] - activityIndices[b.id]);
+    
+    let currentSegmentTime = new Date(segment.startTime);
+    
+    // 为段内的每个活动分配时间
+    segment.activities.forEach((activity, index) => {
+      // 设置预期开始时间（如果不是固定开始时间的活动）
+      if (!activity.isStartTimeFixed || segment.startPoint.activityId === activity.id) {
+        activity.expectedStart = new Date(currentSegmentTime);
+      }
+      
+      // 根据心理预期比例分配时间
+      let allocatedTime;
+      if (totalExpectedInSegment > 0) {
+        // 按心理预期比例分配
+        const ratio = activity.expectedDuration / totalExpectedInSegment;
+        allocatedTime = segmentDuration * ratio;
+      } else {
+        // 如果没有预期时间，平均分配
+        allocatedTime = segmentDuration / segment.activities.length;
+      }
+      
+      // 保存分配的时间
+      activity.allocatedDuration = allocatedTime;
+      
+      // 最后一个活动特殊处理
+      if (index === segment.activities.length - 1) {
+        const expectedEnd = new Date(currentSegmentTime.getTime() + allocatedTime * 60 * 1000);
+        if (expectedEnd > segment.endTime) {
+          allocatedTime = (segment.endTime - currentSegmentTime) / (60 * 1000);
+          activity.allocatedDuration = Math.max(0, allocatedTime);
+        }
+      }
+      
+      // 计算预期结束时间
+      activity.expectedEnd = new Date(currentSegmentTime.getTime() + allocatedTime * 60 * 1000);
+      
+      // 更新段内的当前时间
+      currentSegmentTime = new Date(activity.expectedEnd);
+    });
+  });
+}
+
+// ============================================================
+// 📊 时间分配算法 - 分段缩放版
+// 核心逻辑：
+// 1) 以固定开始时间为锚，把执行阶段切成多个时间段；
+// 2) 每段内的(进行中 + 待办)按照心理预期比例分配该段时间；
+// 3) 当前进行中的活动使用“实际开始时间”作为段起点，而不是预估结束时间。
+// ============================================================
+
+function allocateRemainingTime() {
+  if (!currentPhase || currentPhase.status !== 'active') return;
+
+  const now = new Date();
+  const activities = currentPhase.activities;
+
+  // 计划结束时间
+  const plannedEndTime = new Date(currentPhase.startTime);
+  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+
+  // 找出进行中与首个待办的索引
+  const inProgressIdx = activities.findIndex(a => a.status === 'in-progress');
+  const firstPendingIdx = activities.findIndex(a => a.status === 'pending');
+  const startIdx = inProgressIdx >= 0 ? inProgressIdx : firstPendingIdx;
+  if (startIdx === -1) return; // 没有需要分配的活动
+
+  // 段起点：进行中用 actualStart，否则用计划开始/上一已完成结束
+  let currentTime;
+  if (inProgressIdx >= 0) {
+    currentTime = new Date(activities[inProgressIdx].actualStart || now);
+  } else if (startIdx > 0 && activities[startIdx - 1].actualEnd) {
+    currentTime = new Date(activities[startIdx - 1].actualEnd);
+  } else {
+    currentTime = new Date(currentPhase.startTime);
+  }
+
+  // 构建未来固定锚点（只看未完成的固定活动）
+  const futureAnchors = activities
+    .map((a, idx) => ({ idx, time: a.expectedStart ? new Date(a.expectedStart) : null, activity: a }))
+    .filter(item => item.activity.isStartTimeFixed && item.activity.status !== 'completed' && item.time)
+    .filter(item => item.time >= currentTime)
+    .sort((a, b) => a.time - b.time);
+
+  let anchorPos = 0;
+  let nextAnchor = futureAnchors[anchorPos];
+  let nextAnchorTime = nextAnchor ? nextAnchor.time : plannedEndTime;
+
+  let cursor = startIdx;
+
+  // 按段分配直到耗尽活动或到达计划结束
+  while (cursor < activities.length && currentTime < plannedEndTime) {
+    const segmentActivities = [];
+
+    // 收集本段内的活动：从 cursor 开始直到下一个锚点的活动（不包含锚点活动本身）
+    while (cursor < activities.length && (!nextAnchor || cursor < nextAnchor.idx)) {
+      const act = activities[cursor];
+      if (act.status !== 'completed') segmentActivities.push(act);
+      cursor++;
+    }
+
+    // 若当前锚点是进行中活动本身，应让它参与当前段
+    if (nextAnchor && cursor === nextAnchor.idx && nextAnchor.activity.status === 'in-progress') {
+      segmentActivities.push(nextAnchor.activity);
+      cursor++;
+      anchorPos++;
+      nextAnchor = futureAnchors[anchorPos];
+      nextAnchorTime = nextAnchor ? nextAnchor.time : plannedEndTime;
+    }
+
+    const segmentEnd = nextAnchor ? nextAnchorTime : plannedEndTime;
+    const segmentMinutes = Math.max(0, (segmentEnd - currentTime) / (60 * 1000));
+
+    // 总心理预期（进行中按心理预期计入比例）
+    const totalExpected = segmentActivities.reduce((sum, a) => sum + (a.expectedDuration || 0), 0);
+
+    // 若没有时间或没有活动，直接跳到下一锚点
+    if (segmentMinutes <= 0 || totalExpected === 0) {
+      currentTime = new Date(segmentEnd);
+      if (nextAnchor && currentTime >= nextAnchorTime) {
+        anchorPos++;
+        nextAnchor = futureAnchors[anchorPos];
+        nextAnchorTime = nextAnchor ? nextAnchor.time : plannedEndTime;
+      }
+      continue;
+    }
+
+    // 按比例分配本段时间
+    let timeCursor = new Date(currentTime);
+    segmentActivities.forEach(act => {
+      // 段内比例
+      let alloc = segmentMinutes * ((act.expectedDuration || 0) / totalExpected);
+
+      // 对进行中：至少覆盖已耗时间，避免负剩余
+      if (act.status === 'in-progress') {
+        const elapsed = (now - new Date(act.actualStart || now)) / (60 * 1000);
+        alloc = Math.max(alloc, elapsed);
+      }
+
+      act.allocatedDuration = alloc;
+      act.expectedStart = act.status === 'in-progress'
+        ? new Date(act.actualStart || timeCursor)
+        : new Date(timeCursor);
+
+      timeCursor = new Date(act.expectedStart.getTime() + alloc * 60 * 1000);
+      act.expectedEnd = new Date(timeCursor);
+    });
+
+    // 段结束对齐到锚点
+    currentTime = new Date(segmentEnd);
+
+    // 进入下一锚点
+    if (nextAnchor && currentTime >= nextAnchorTime) {
+      anchorPos++;
+      nextAnchor = futureAnchors[anchorPos];
+      nextAnchorTime = nextAnchor ? nextAnchor.time : plannedEndTime;
+    }
+  }
+
+  // 若还有剩余待办且没有锚点，分配至计划结束
+  if (cursor < activities.length && currentTime < plannedEndTime) {
+    const tailActivities = activities.slice(cursor).filter(a => a.status !== 'completed');
+    const tailMinutes = Math.max(0, (plannedEndTime - currentTime) / (60 * 1000));
+    const tailExpected = tailActivities.reduce((s, a) => s + (a.expectedDuration || 0), 0);
+
+    if (tailMinutes > 0 && tailExpected > 0) {
+      let timeCursor = new Date(currentTime);
+      tailActivities.forEach(act => {
+        const alloc = tailMinutes * ((act.expectedDuration || 0) / tailExpected);
+        act.allocatedDuration = alloc;
+        act.expectedStart = new Date(timeCursor);
+        timeCursor = new Date(timeCursor.getTime() + alloc * 60 * 1000);
+        act.expectedEnd = new Date(timeCursor);
+      });
+    }
+  }
+
+  // 使用顺序重算 expectedStart/expectedEnd，确保锚点与分配同步
+  recalculateExpectedTimes();
+
+  renderExecutionList();
+  debouncedSave();
+}
+
+// 顺序重算预计时间（执行阶段）
+// 要点：
+// - 从进行中活动的 actualStart 作为时间轴起点；
+// - 遇到固定开始时间活动，强制对齐到其 expectedStart；
+// - 保持原有顺序，不再把固定活动提前排序，避免段错位。
+function recalculateExpectedTimes() {
+  if (!currentPhase) return;
+
+  const activities = currentPhase.activities;
+  let currentTime = new Date(currentPhase.startTime);
+
+  // 时间轴起点
+  const inProgressIdx = activities.findIndex(a => a.status === 'in-progress');
+  if (inProgressIdx >= 0) {
+    currentTime = new Date(activities[inProgressIdx].actualStart || currentTime);
+  }
+
+  for (let i = 0; i < activities.length; i++) {
+    const act = activities[i];
+    if (act.status === 'completed') continue;
+
+    // 固定开始时间对齐
+    if (act.isStartTimeFixed && act.expectedStart) {
+      currentTime = new Date(act.expectedStart);
+    }
+
+    // 进行中活动保持实际开始
+    act.expectedStart = act.status === 'in-progress'
+      ? new Date(act.actualStart || currentTime)
+      : new Date(currentTime);
+
+    const duration = act.allocatedDuration || act.expectedDuration || 0;
+    currentTime = new Date(act.expectedStart.getTime() + duration * 60 * 1000);
+    act.expectedEnd = new Date(currentTime);
+  }
+}
+
+// 计算执行阶段的预计开始和结束时间 - 增强版：支持时间对齐
+
+
+// ============================================================
+// 🎨 拖拽功能 - 参考 GTD 待办事项管理系统
+// ============================================================
+
+// 拖拽处理函数
+function handleDragStart(e) {
+    window.smpDraggedId = e.target.getAttribute("data-activity-id");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", window.smpDraggedId);
+    e.target.classList.add("dragging");
+}
+
+function handleDragEnd(e) {
+    window.smpDraggedId = null;
+    e.target.classList.remove("dragging");
+    // 移除所有放置指示器
+    document.querySelectorAll(".activity-card").forEach(card => {
+        card.classList.remove("drag-over");
+    });
+}
+
+function handleDragOver(e) {
+    e.preventDefault(); // 必须阻止默认行为才能接收 drop
+    e.dataTransfer.dropEffect = "move";
+    const card = e.target.closest(".activity-card");
+    if (card && card.getAttribute("data-activity-id") !== window.smpDraggedId) {
+        card.classList.add("drag-over");
+    }
+}
+
+function handleDragLeave(e) {
+    const card = e.target.closest(".activity-card");
+    if (card) {
+        card.classList.remove("drag-over");
+    }
+}
+
+async function handleActivityDrop(e) {
+    e.preventDefault();
+    const targetCard = e.target.closest(".activity-card");
+    if (!targetCard) return;
+
+    targetCard.classList.remove("drag-over");
+
+    const draggedId = e.dataTransfer.getData("text/plain");
+    const targetId = targetCard.getAttribute("data-activity-id");
+
+    if (!draggedId || draggedId === targetId) return;
+
+    // 执行拖拽排序
+    await reorderActivities(draggedId, targetId);
+}
+
+// 重新排序活动
+async function reorderActivities(draggedId, targetId) {
+    if (!currentPhase || !currentPhase.activities) return;
+
+    const draggedIndex = currentPhase.activities.findIndex(a => a.id === draggedId);
+    const targetIndex = currentPhase.activities.findIndex(a => a.id === targetId);
+
+    if (draggedIndex < 0 || targetIndex < 0) return;
+
+    // 从原位置移除
+    const [draggedItem] = currentPhase.activities.splice(draggedIndex, 1);
+    // 插入到目标位置
+    currentPhase.activities.splice(targetIndex, 0, draggedItem);
+
+    // 重新计算时间分配（根据阶段选择不同函数）
+    if (currentPhase.status === 'active') {
+      // 执行阶段：从当前活动预计结束时间开始重新分配
+      allocateRemainingTime();
+    } else {
+      // 规划阶段：按心理预期比例分配
+      allocateTimeByExpectation();
+    }
+
+    // 重新渲染并保存
+    renderActivitiesList();
+    debouncedSave();
+
+    // 显示提示
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+        text: "✅ 已调整顺序，时间已重新分配",
+        attr: {style: "color: #4CAF50; background-color: #e8f5e9; padding: 5px; border-radius: 3px;"}
+    });
+}
+
+// ============================================================
+// 🎨 渲染活动列表(规划阶段) - 卡片式布局 + 拖拽支持
+// ============================================================
+
+function renderActivitiesList() {
+    // 清除现有的表格，使用卡片容器
+    activitiesTableBody.innerHTML = '';
+
+    // 更新阶段信息
+    phaseSummary.innerHTML = '';
+
+    if (!currentPhase) return;
+
+    const phaseDuration = phaseSummary.createEl("div", {cls: "phase-duration"});
+    const startDate = new Date(currentPhase.startTime);
+    phaseDuration.createEl("strong", {
+        text: `计划阶段: ${formatTime(startDate)} - ${formatDuration(currentPhase.plannedDuration)}`
+    });
+
+    if (!currentPhase.activities || currentPhase.activities.length === 0) {
+        activitiesTableBody.createEl("div", {
+            text: "尚未添加任何活动",
+            attr: {style: "text-align: center; color: var(--text-muted); padding: 40px;"}
+        });
+        return;
+    }
+
+    // 确保预计时间已计算
+    calculateExpectedTimesForPlanning();
+
+    // 创建卡片容器
+    const cardsContainer = activitiesTableBody.createEl("div", {
+        cls: "activity-cards-container",
+        attr: {style: "display: flex; flex-direction: column; gap: 12px; padding: 10px 0;"}
+    });
+
+    // 添加拖拽样式
+    const style = document.createElement("style");
+    style.textContent = `
+        .activity-card {
+            background: var(--background-primary);
+            border: 1px solid var(--background-modifier-border);
+            border-radius: 8px;
+            padding: 12px 16px;
+            cursor: grab;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .activity-card:hover {
+            background: var(--background-modifier-hover);
+            border-color: var(--interactive-accent);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .activity-card.dragging {
+            opacity: 0.5;
+            transform: scale(0.98);
+        }
+        .activity-card.drag-over {
+            border: 2px dashed var(--interactive-accent);
+            background: rgba(var(--interactive-accent-rgb), 0.05);
+        }
+        .activity-card .drag-handle {
+            color: var(--text-muted);
+            font-size: 18px;
+            cursor: grab;
+        }
+        .activity-card .time-info {
+            flex-shrink: 0;
+            width: 80px;
+            text-align: center;
+        }
+        .activity-card .time-info .time {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-normal);
+        }
+        .activity-card .time-info .duration {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        .activity-card .activity-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .activity-card .activity-name {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-normal);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .activity-card .activity-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+        .activity-card .activity-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .activity-card .action-btn {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .activity-card .action-btn.pin-btn {
+            background: transparent;
+            font-size: 16px;
+        }
+        .activity-card .action-btn.pin-btn.pinned {
+            color: #f44336;
+        }
+        .activity-card .action-btn.review-btn {
+            background: var(--background-modifier-border);
+            color: var(--text-normal);
+        }
+        .activity-card .action-btn.delete-btn {
+            background: transparent;
+            color: #f44336;
+        }
+        .activity-card .action-btn:hover {
+            opacity: 0.8;
+        }
+    `;
+    cardsContainer.appendChild(style);
+
+    // 渲染每个活动卡片
+    currentPhase.activities.forEach((activity, index) => {
+        const card = cardsContainer.createEl("div", {
+            cls: "activity-card",
+            attr: {
+                "data-activity-id": activity.id,
+                draggable: "true"
+            }
+        });
+
+        // 拖拽事件
+        card.addEventListener("dragstart", handleDragStart);
+        card.addEventListener("dragend", handleDragEnd);
+        card.addEventListener("dragover", handleDragOver);
+        card.addEventListener("dragleave", handleDragLeave);
+        card.addEventListener("drop", handleActivityDrop);
+
+        // 拖拽手柄
+        card.createEl("div", {
+            cls: "drag-handle",
+            text: "⋮⋮",
+            attr: {title: "拖拽调整顺序"}
+        });
+
+        // 时间信息
+        const timeInfo = card.createEl("div", {cls: "time-info"});
+        const startTime = activity.expectedStart ?
+            formatTime(new Date(activity.expectedStart)) : "待定";
+        timeInfo.createEl("div", {
+            cls: "time",
+            text: startTime
+        });
+        const expectedMins = activity.expectedDuration;
+        const allocatedMins = activity.allocatedDuration || expectedMins;
+        timeInfo.createEl("div", {
+            cls: "duration",
+            text: `${formatDuration(expectedMins)} → ${formatDuration(allocatedMins)}`
+        });
+
+        // 活动内容
+        const content = card.createEl("div", {cls: "activity-content"});
+        content.createEl("div", {
+            cls: "activity-name",
+            text: activity.project
+        });
+        const ratio = currentPhase.plannedDuration > 0 ?
+            Math.round((allocatedMins / currentPhase.plannedDuration) * 100) : 0;
+        content.createEl("div", {
+            cls: "activity-meta",
+            text: `分配: ${formatDuration(allocatedMins)} (${ratio}%)`
+        });
+
+        // 操作按钮
+        const actions = card.createEl("div", {cls: "activity-actions"});
+
+        // 固定开始时间按钮
+        const pinBtn = actions.createEl("button", {
+            cls: "action-btn pin-btn",
+            text: activity.isStartTimeFixed ? "📌" : "◯",
+            title: activity.isStartTimeFixed ? "已固定开始时间" : "固定开始时间"
+        });
+        if (activity.isStartTimeFixed) pinBtn.classList.add("pinned");
+        pinBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            activity.isStartTimeFixed = !activity.isStartTimeFixed;
+            calculateExpectedTimesForPlanning();
+            renderActivitiesList();
+            debouncedSave();
+        });
+
+        // 评价按钮
+        const reviewBtn = actions.createEl("button", {
+            cls: "action-btn review-btn",
+            text: "评价",
+            title: "添加评价"
+        });
+        reviewBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            showReviewForm(activity);
+        });
+
+        // 删除按钮
+        const deleteBtn = actions.createEl("button", {
+            cls: "action-btn delete-btn",
+            text: "✕",
+            title: "删除"
+        });
+        deleteBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            currentPhase.activities.splice(index, 1);
+            allocateTimeByExpectation();
+            renderActivitiesList();
+            debouncedSave();
+        });
+    });
+}
+// ==================== 渲染执行列表(执行阶段) - 卡片式布局 ====================
+function renderExecutionList() {
+  // 清空卡片容器
+  executionCardsWrapper.innerHTML = '';
+
+  if (!currentPhase || !currentPhase.activities || currentPhase.activities.length === 0) {
+    executionCardsWrapper.createEl("div", {
+      text: "没有活动",
+      attr: {style: "text-align: center; padding: 40px; color: var(--text-muted);"}
+    });
+    return;
+  }
+
+  // 确保预计开始和结束时间已计算
+  calculateExpectedTimes();
+
+  // 用于记录上一个活动的日期
+  let previousDate = null;
+
+  currentPhase.activities.forEach((activity, index) => {
+    // 检测当前活动是否与上一个活动在不同日期
+    let isCrossingToNewDay = false;
+    let currentDate = null;
+
+    if (activity.expectedStart) {
+      currentDate = new Date(activity.expectedStart);
+      currentDate.setHours(0, 0, 0, 0);
+
+      if (previousDate && currentDate > previousDate) {
+        isCrossingToNewDay = true;
+      }
+      if (currentDate) {
+        previousDate = currentDate;
+      }
+    }
+
+    // 创建卡片容器
+    const card = executionCardsWrapper.createEl("div", {
+      cls: "execution-card",
+      attr: {
+        "data-activity-id": activity.id,
+        "data-index": index,
+        style: `
+          background: var(--background-primary);
+          border: 1px solid var(--background-modifier-border);
+          border-radius: 10px;
+          padding: 16px;
+          margin-bottom: 12px;
+          cursor: ${activity.status === 'pending' ? 'grab' : 'default'};
+          transition: all 0.2s ease;
+          ${activity.status === 'in-progress' ? 'border-left: 4px solid #4CAF50; box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);' : ''}
+          ${activity.status === 'pending' && index > 0 && currentPhase.activities[index-1].status === 'in-progress' ? 'border-left: 4px solid #2196F3;' : ''}
+          ${isCrossingToNewDay ? 'border-top: 3px solid #4CAF50; background: var(--background-secondary);' : ''}
+        `
+      }
+    });
+
+    // 拖拽处理（仅对 pending 状态）
+    if (activity.status === 'pending') {
+      card.draggable = true;
+      card.addEventListener("dragstart", handleExecutionDragStart);
+      card.addEventListener("dragend", handleExecutionDragEnd);
+      card.addEventListener("dragover", handleExecutionDragOver);
+      card.addEventListener("dragleave", handleExecutionDragLeave);
+      card.addEventListener("drop", (e) => handleExecutionDrop(e, activity.id));
+    }
+
+    // 如果是进行中活动，包裹一个进度背景
+    let hostEl = card;
+    if (activity.status === 'in-progress') {
+      const progressWrapper = card.createEl("div", { cls: "activity-progress" });
+      progressWrapper.createEl("div", {
+        cls: "activity-progress-bar",
+        attr: { "data-activity-id": activity.id }
+      });
+      hostEl = progressWrapper.createEl("div", { cls: "activity-progress-content" });
+      // 初次渲染时同步一次进度条，避免等下个 tick
+      syncActivityProgressBar(activity);
+    }
+
+    // ==================== 第一行：开始时间 - 结束时间（大字体突出显示）================
+    const timeRow = hostEl.createEl("div", {
+      attr: {style: "display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px;"}
+    });
+
+    // 开始时间
+    let startTimeText = "待定";
+
+    if (activity.status === 'completed' && activity.actualStart) {
+      startTimeText = formatTime(new Date(activity.actualStart));
+    } else if (activity.expectedStart) {
+      const expectedStartDate = new Date(activity.expectedStart);
+      startTimeText = formatTime(expectedStartDate);
+      if (isCrossingToNewDay) {
+        const dateStr = `${expectedStartDate.getMonth() + 1}/${expectedStartDate.getDate()}`;
+        startTimeText = `🌙 ${dateStr} ${startTimeText}`;
+      }
+    }
+
+    const startTimeEl = timeRow.createEl("span", {
+      text: `开始: ${startTimeText}`,
+      attr: {
+        style: `
+          font-size: 16px;
+          font-weight: 700;
+          color: ${activity.isStartTimeFixed && activity.status !== 'completed' ? '#f44336' : 'var(--text-normal)'};
+        `
+      }
+    });
+    if (activity.isStartTimeFixed && activity.status !== 'completed') {
+      startTimeEl.innerHTML += " 📌";
+    }
+
+    timeRow.createEl("span", {text: "→", attr: {style: "color: var(--text-muted); font-size: 14px;"}});
+
+    // 结束时间
+    let endTimeText = "待定";
+    let endTimeStyle = "font-size: 16px; font-weight: 700;";
+    if (activity.status === 'completed' && activity.actualEnd) {
+      endTimeText = formatTime(new Date(activity.actualEnd));
+    } else if (activity.expectedEnd) {
+      endTimeText = formatTime(new Date(activity.expectedEnd));
+      endTimeStyle += " color: var(--text-normal);";
+    }
+
+    const endTimeEl = timeRow.createEl("span", {
+      text: `结束: ${endTimeText}`,
+      attr: {style: endTimeStyle}
+    });
+
+    // 状态标签（在时间后面）
+    const statusBadge = timeRow.createEl("span", {
+      text: activity.status === 'completed' ? '已完成' : activity.status === 'in-progress' ? '进行中' : '待开始',
+      attr: {
+        style: `
+          padding: 3px 8px;
+          border-radius: 10px;
+          font-size: 11px;
+          font-weight: 600;
+          margin-left: auto;
+          ${activity.status === 'completed' ? 'background: #e8f5e9; color: #2e7d32;' : ''}
+          ${activity.status === 'in-progress' ? 'background: #e3f2fd; color: #1565c0;' : ''}
+          ${activity.status === 'pending' ? 'background: #f5f5f5; color: #616161;' : ''}
+        `
+      }
+    });
+
+    // ==================== 第二行：活动名称（可点击编辑）================
+    const nameRow = hostEl.createEl("div", {
+      attr: {style: "display: flex; align-items: center; gap: 10px; margin-bottom: 10px;"}
+    });
+
+    // 新一天标识
+    if (isCrossingToNewDay) {
+      const phaseStartDate = new Date(currentPhase.startTime);
+      phaseStartDate.setHours(0, 0, 0, 0);
+      const daysDiff = Math.floor((currentDate - phaseStartDate) / (1000 * 60 * 60 * 24));
+      nameRow.createEl("span", {
+        text: `🌙 第${daysDiff + 1}天`,
+        attr: {style: "font-size: 12px; color: #4CAF50; font-weight: 600;"}
+      });
+    }
+
+    // 活动名称（可点击编辑）
+    const nameEl = nameRow.createEl("span", {
+      text: activity.project,
+      attr: {
+        style: `
+          font-size: 15px;
+          font-weight: 600;
+          color: var(--text-normal);
+          ${activity.status === 'pending' ? 'cursor: pointer; text-decoration: underline dotted #888;' : ''}
+          ${activity.status === 'pending' ? 'text-decoration-skip-ink: none;' : ''}
+        `
+      }
+    });
+    if (activity.status === 'pending') {
+      nameEl.title = "点击编辑";
+      nameEl.addEventListener("click", () => showEditModal(activity));
+    }
+
+    const ratingValue = Number(activity.rating) || 0;
+    const ratingStars = ratingValue > 0
+      ? "★".repeat(ratingValue) + "☆".repeat(5 - ratingValue)
+      : "☆☆☆☆☆";
+    let ratingColor = "var(--text-muted)";
+    if (ratingValue >= 4) {
+      ratingColor = "#2e7d32";
+    } else if (ratingValue === 3) {
+      ratingColor = "#f9a825";
+    } else if (ratingValue > 0) {
+      ratingColor = "#d32f2f";
+    }
+
+    nameRow.createEl("span", {
+      cls: "activity-rating-pill",
+      text: ratingValue > 0 ? `${ratingStars} ${ratingValue}/5` : `${ratingStars} 待评价`,
+      attr: {
+        style: `
+          color: ${ratingColor};
+          background: ${ratingValue > 0 ? 'rgba(76, 175, 80, 0.12)' : 'var(--background-modifier-border)'};
+        `
+      }
+    });
+
+    const reviewText = (activity.experience || "").trim();
+
+    // ==================== 主体评价区：完整显示评价 ====================
+    const reviewBlock = hostEl.createEl("div", {cls: "activity-review-block"});
+    if (activity.status === 'in-progress') {
+      reviewBlock.classList.add("in-progress");
+    }
+    reviewBlock.createEl("div", {
+      cls: "activity-review-title",
+      text: "📝 复盘评价"
+    });
+
+    if (reviewText) {
+      reviewBlock.createEl("div", {
+        cls: "activity-review-content",
+        text: reviewText
+      });
+    } else {
+      reviewBlock.createEl("div", {
+        cls: "activity-review-empty",
+        text: "暂无评价，点击右侧「评价」补充复盘。"
+      });
+    }
+
+    // ==================== 第三行：时长信息 + 操作按钮 ====================
+    const infoRow = hostEl.createEl("div", {
+      attr: {style: "display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--background-modifier-border);"}
+    });
+
+    // 时长信息
+    const durationInfo = infoRow.createEl("div", {
+      attr: {style: "display: flex; gap: 16px; font-size: 13px;"}
+    });
+
+    // 心理预期
+    durationInfo.createEl("span", {
+      text: `心理: ${formatDuration(activity.expectedDuration)}`,
+      attr: {style: "color: var(--text-muted);"}
+    });
+
+    // 实际/分配时长
+    let actualTimeText = "";
+    if (activity.status === 'completed') {
+      const start = new Date(activity.actualStart);
+      const end = new Date(activity.actualEnd);
+      const actualDuration = (end - start) / (60 * 1000);
+      actualTimeText = `实际: ${formatDuration(actualDuration)}`;
+    } else if (activity.status === 'in-progress') {
+      const now = new Date();
+      const start = new Date(activity.actualStart);
+      const elapsedTime = (now - start) / (60 * 1000);
+      const totalAllocated = activity.allocatedDuration || activity.expectedDuration;
+      actualTimeText = `${formatDuration(elapsedTime)} / ${formatDuration(totalAllocated)} (本活动)`;
+    } else {
+      actualTimeText = `分配: ${formatDuration(activity.allocatedDuration || activity.expectedDuration)}`;
+    }
+    durationInfo.createEl("span", {
+      text: actualTimeText,
+      cls: "activity-actual-text",
+      attr: {
+        "data-activity-id": activity.id,
+        style: "color: var(--text-normal); font-weight: 500;"
+      }
+    });
+
+    // 显示阶段剩余总时间（仅对进行中的活动）
+    if (activity.status === 'in-progress' && currentPhase) {
+      const plannedEndTime = new Date(currentPhase.startTime);
+      plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+      const remainingMs = Math.max(0, plannedEndTime - new Date());
+      const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+      durationInfo.createEl("span", {
+        text: `阶段剩余: ${formatDuration(remainingMinutes)}`,
+        cls: "activity-phase-remaining",
+        attr: {
+          "data-activity-id": activity.id,
+          style: "color: #2196F3; font-weight: 600; margin-left: 10px;"
+        }
+      });
+    }
+
+    durationInfo.createEl("span", {
+      text: reviewText ? `评价: 已记录 · ${ratingValue || '未评分'}` : "评价: 待补充",
+      attr: {
+        style: `
+          color: ${reviewText ? '#4CAF50' : '#888'};
+          font-weight: 500;
+        `
+      }
+    });
+
+    // 操作按钮
+    const actions = infoRow.createEl("div", {
+      attr: {style: "display: flex; gap: 6px;"}
+    });
+
+    // 评价按钮
+    const reviewBtn = actions.createEl("button", {
+      text: activity.experience ? "重新评价" : "评价",
+      attr: {
+        style: "padding: 5px 10px; font-size: 12px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: transparent; cursor: pointer;"
+      }
+    });
+    reviewBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showReviewForm(activity);
+    });
+
+    // 插入按钮
+    const addAfterBtn = actions.createEl("button", {
+      text: "+",
+      attr: {
+        title: "在此活动后添加新活动",
+        style: "padding: 5px 8px; font-size: 14px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: transparent; cursor: pointer;"
+      }
+    });
+    addAfterBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showAddActivityAfterForm(index);
+    });
+
+
+    // 固定开始时间按钮（仅 pending 状态）
+    if (activity.status === 'pending') {
+      const fixTimeBtn = actions.createEl("button", {
+        text: activity.isStartTimeFixed ? "📌已固定" : "📌固定",
+        attr: {
+          title: activity.isStartTimeFixed
+            ? `已固定开始时间: ${activity.expectedStart ? formatTime(new Date(activity.expectedStart)) : '未知'}（点击修改或取消）`
+            : "固定开始时间（可指定具体时间，后续活动重新分配）",
+          style: `
+            padding: 5px 8px;
+            font-size: 12px;
+            border-radius: 4px;
+            border: 1px solid ${activity.isStartTimeFixed ? '#f44336' : 'var(--background-modifier-border)'};
+            background: ${activity.isStartTimeFixed ? 'rgba(244, 67, 54, 0.1)' : 'transparent'};
+            cursor: pointer;
+            color: ${activity.isStartTimeFixed ? '#f44336' : 'var(--text-normal)'};
+          `
+        }
+      });
+      fixTimeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // 打开固定时间弹窗
+        showFixedStartTimeModal(activity);
+      });
+    }
+
+    // 删除按钮（仅 pending 状态）
+    if (activity.status === 'pending') {
+      const deleteBtn = actions.createEl("button", {
+        text: "×",
+        attr: {
+          title: "删除此活动",
+          style: "padding: 5px 8px; font-size: 14px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: transparent; cursor: pointer; color: #f44336;"
+        }
+      });
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        currentPhase.activities.splice(index, 1);
+        allocateRemainingTime();
+        debouncedSave();
+        renderExecutionList();
+        if (currentPhase.status === 'active') {
+          updateExecutionDisplay();
+        }
+      });
+    }
+  });
+
+  // 渲染剩余时间统计
+  renderRemainingTimeStats();
+}
+
+// ==================== 执行阶段拖拽处理函数 ====================
+function handleExecutionDragStart(e) {
+  window.smpExecutionDragId = e.target.getAttribute("data-activity-id");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", window.smpExecutionDragId);
+  e.target.classList.add("dragging");
+}
+
+function handleExecutionDragEnd(e) {
+  window.smpExecutionDragId = null;
+  e.target.classList.remove("dragging");
+}
+
+function handleExecutionDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  const card = e.target.closest(".execution-card");
+  if (card && !card.classList.contains("dragging")) {
+    const status = currentPhase.activities.find(a => a.id === card.getAttribute("data-activity-id"))?.status;
+    if (status === 'pending') {
+      card.style.border = "2px dashed var(--interactive-accent)";
+      card.style.background = "rgba(var(--interactive-accent-rgb), 0.05)";
+    }
+  }
+}
+
+function handleExecutionDragLeave(e) {
+  const card = e.target.closest(".execution-card");
+  if (card) {
+    card.style.border = "";
+    card.style.background = "";
+  }
+}
+
+async function handleExecutionDrop(e, targetId) {
+  e.preventDefault();
+  const draggedId = window.smpExecutionDragId;
+  if (!draggedId || draggedId === targetId) return;
+
+  const draggedActivity = currentPhase.activities.find(a => a.id === draggedId);
+  const targetActivity = currentPhase.activities.find(a => a.id === targetId);
+
+  if (!draggedActivity || !targetActivity) return;
+
+  // 只允许拖拽 pending 状态的活动
+  if (draggedActivity.status !== 'pending') {
+    new Notice("只能拖拽待开始的活动");
+    return;
+  }
+  if (targetActivity.status !== 'pending') {
+    new Notice("只能放置到待开始的活动位置");
+    return;
+  }
+
+  // 执行拖拽排序
+  const draggedIndex = currentPhase.activities.findIndex(a => a.id === draggedId);
+  const targetIndex = currentPhase.activities.findIndex(a => a.id === targetId);
+
+  if (draggedIndex === -1 || targetIndex === -1) return;
+
+  // 移动数组元素
+  const [removed] = currentPhase.activities.splice(draggedIndex, 1);
+  currentPhase.activities.splice(targetIndex, 0, removed);
+
+  // 重新计算时间
+  allocateRemainingTime();
+  debouncedSave();
+  renderExecutionList();
+  if (currentPhase.status === 'active') {
+    updateExecutionDisplay();
+  }
+
+  new Notice(`已调整顺序`);
+}
+
+// ==================== 渲染剩余时间统计 ====================
+function renderRemainingTimeStats() {
+  // 移除旧的统计区域（如果存在）
+  const oldStats = executionListEl.querySelector('.remaining-time-stats');
+  if (oldStats) {
+    oldStats.remove();
+  }
+  
+  if (!currentPhase || !currentPhase.activities || currentPhase.activities.length === 0) {
+    return;
+  }
+  
+  // 计算剩余未完成活动
+ 
+  // 计算剩余未完成活动（包括正在进行的活动）
+const remainingActivities = currentPhase.activities.filter(a => a.status === 'pending' || a.status === 'in-progress');
+
+  // 如果没有剩余活动，显示"全部完成"
+  if (remainingActivities.length === 0) {
+    const statsContainer = executionListEl.createEl("div", {
+      cls: "remaining-time-stats",
+      attr: {style: "margin-top: 20px; padding: 15px; background-color: #e8f5e9; border-radius: 5px; border-left: 4px solid #4CAF50;"}
+    });
+    statsContainer.createEl("h4", {
+      text: "✅ 所有活动已完成！",
+      attr: {style: "margin: 0; color: #2e7d32;"}
+    });
+    return;
+  }
+  
+  // 计算总预期时间（心理预期）
+  const totalExpectedTime = remainingActivities.reduce((sum, activity) => {
+    return sum + (activity.expectedDuration || 0);
+  }, 0);
+  
+  // 计算实际剩余时间（从当前时间到计划结束时间）
+  const now = new Date();
+  const plannedEndTime = new Date(currentPhase.startTime);
+  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+  
+  const actualRemainingTime = Math.max(0, (plannedEndTime - now) / (60 * 1000)); // 分钟
+  
+  // 计算预期时间与实际时间的比例
+  const ratio = actualRemainingTime > 0 ? (totalExpectedTime / actualRemainingTime) : 0;
+  
+  // 创建统计显示区域
+  const statsContainer = executionListEl.createEl("div", {
+    cls: "remaining-time-stats",
+    attr: {
+      style: "margin-top: 20px; padding: 20px; background-color: #f5f5f5; border-radius: 8px; border-left: 4px solid #2196F3;"
+    }
+  });
+  
+  // 标题
+  statsContainer.createEl("h4", {
+    text: "📊 剩余时间统计",
+    attr: {style: "margin-top: 0; margin-bottom: 15px; color: #1976D2;"}
+  });
+  
+  // 统计表格
+  const statsTable = statsContainer.createEl("table", {
+    attr: {style: "width: 100%; border-collapse: collapse;"}
+  });
+  
+  // 行1：剩余未完成项目数量
+  const row1 = statsTable.createEl("tr");
+  row1.createEl("td", {
+    text: "剩余未完成项目：",
+    attr: {style: "padding: 8px; font-weight: bold; width: 40%;"}
+  });
+  row1.createEl("td", {
+    text: `${remainingActivities.length} 个`,
+    attr: {style: "padding: 8px; color: #1976D2; font-size: 16px;"}
+  });
+  
+  // 行2：预期时间总和
+  const row2 = statsTable.createEl("tr");
+  row2.createEl("td", {
+    text: "预期时间总和（心理预期）：",
+    attr: {style: "padding: 8px; font-weight: bold; background-color: #e3f2fd;"}
+  });
+  row2.createEl("td", {
+    text: formatDuration(totalExpectedTime),
+    attr: {style: "padding: 8px; background-color: #e3f2fd; color: #0d47a1; font-size: 16px; font-weight: bold;"}
+  });
+  
+  // 行3：实际剩余时间
+  const row3 = statsTable.createEl("tr");
+  row3.createEl("td", {
+    text: "实际剩余时间（到计划结束）：",
+    attr: {style: "padding: 8px; font-weight: bold;"}
+  });
+  const actualTimeColor = actualRemainingTime < totalExpectedTime ? "#d32f2f" : "#388e3c";
+  row3.createEl("td", {
+    text: formatDuration(actualRemainingTime),
+    attr: {style: `padding: 8px; color: ${actualTimeColor}; font-size: 16px; font-weight: bold;`}
+  });
+  
+  // 行4：时间差（实际-预期）
+  const timeDifference = actualRemainingTime - totalExpectedTime;
+  const row4 = statsTable.createEl("tr");
+  row4.createEl("td", {
+    text: "时间差（实际-预期）：",
+    attr: {style: "padding: 8px; font-weight: bold; background-color: #f5f5f5;"}
+  });
+  const diffColor = timeDifference >= 0 ? "#388e3c" : "#d32f2f";
+  const diffSign = timeDifference >= 0 ? "+" : "";
+  row4.createEl("td", {
+    text: `${diffSign}${formatDuration(Math.abs(timeDifference))} ${timeDifference >= 0 ? "(充裕)" : "(紧张)"}`,
+    attr: {style: `padding: 8px; background-color: #f5f5f5; color: ${diffColor}; font-size: 16px; font-weight: bold;`}
+  });
+  
+  // 行5：占比分析
+  const row5 = statsTable.createEl("tr");
+  row5.createEl("td", {
+    text: "预期/实际 比例：",
+    attr: {style: "padding: 8px; font-weight: bold;"}
+  });
+  let ratioText, ratioColor, ratioDescription;
+  if (actualRemainingTime === 0) {
+    ratioText = "⚠️ 时间已用完";
+    ratioColor = "#d32f2f";
+    ratioDescription = "计划时间已耗尽";
+  } else if (ratio > 1.2) {
+    ratioText = `${(ratio * 100).toFixed(1)}%`;
+    ratioColor = "#d32f2f";
+    ratioDescription = "预期时间超出剩余时间，需要压缩";
+  } else if (ratio > 0.9 && ratio <= 1.2) {
+    ratioText = `${(ratio * 100).toFixed(1)}%`;
+    ratioColor = "#ff9800";
+    ratioDescription = "预期时间与剩余时间基本匹配";
+  } else {
+    ratioText = `${(ratio * 100).toFixed(1)}%`;
+    ratioColor = "#388e3c";
+    ratioDescription = "预期时间小于剩余时间，时间充裕";
+  }
+  
+  const ratioCell = row5.createEl("td", {
+    attr: {style: "padding: 8px;"}
+  });
+  ratioCell.createEl("span", {
+    text: ratioText,
+    attr: {style: `color: ${ratioColor}; font-size: 18px; font-weight: bold;`}
+  });
+  ratioCell.createEl("br");
+  ratioCell.createEl("span", {
+    text: ratioDescription,
+    attr: {style: `color: #666; font-size: 12px; font-style: italic;`}
+  });
+  
+  // 如果时间紧张，添加警告提示
+  if (ratio > 1.1) {
+    const warningDiv = statsContainer.createEl("div", {
+      attr: {
+        style: "margin-top: 15px; padding: 10px; background-color: #fff3e0; border-left: 4px solid #ff9800; border-radius: 3px;"
+      }
+    });
+    warningDiv.createEl("strong", {
+      text: "⚠️ 建议：",
+      attr: {style: "color: #e65100;"}
+    });
+    warningDiv.createEl("span", {
+      text: " 预期时间超出剩余时间，建议考虑延长总时长或调整活动优先级。",
+      attr: {style: "color: #666;"}
+    });
+  }
+}
+
+// ===================================================================
+//  AddActivityModal 类 (符合 Obsidian 1.9+ 规范) - 【未修改】
+// ===================================================================
+// 显示在特定活动后添加新活动的表单
+// ===================================================================
+//  第 1 部分: 新的 AddActivityModal 类 (符合 Obsidian 1.9+ 规范)
+// ===================================================================
+// 确保您在脚本的顶部或适当的作用域中可以访问到 Obsidian 的 API
+// const { Modal, App, Notice } = require('obsidian'); // 如果在插件开发中，需要这样引入
+// 在 DataviewJS 中，`app` 和 `Notice` 通常是全局可用的
+const { Modal, Notice } = require('obsidian');
+
+
+class AddActivityModal extends Modal {
+  // 构造函数接收 app 实例, 目标索引, 以及一个成功提交后的回调函数
+  constructor(app, afterIndex, onSubmit) {
+    super(app);
+    this.afterIndex = afterIndex;
+    this.onSubmit = onSubmit;
+  }
+
+  // onOpen 是 Modal 的生命周期方法，当窗口打开时自动执行
+  onOpen() {
+    const { contentEl } = this; // contentEl 是 Modal 提供的一个安全的、用于填充内容的 HTML 元素
+
+    // --- 开始构建模态窗口的内部 UI ---
+
+    // 1. 设置标题
+    const targetActivity = currentPhase.activities[this.afterIndex];
+    if (!targetActivity) {
+      // 这是一个额外的安全检查，尽管外部已做过
+      contentEl.createEl('h4', { text: '错误：找不到目标活动' });
+      return;
+    }
+    contentEl.createEl('h4', { 
+      text: `在 "${targetActivity.project}" 后添加新活动`,
+      cls: 'modal-title' // 可以添加自定义类名以便CSS美化
+    }).style.marginBottom = "15px";
+
+    // 2. 添加活动名称输入区域 (使用 textarea)
+    contentEl.createEl('label', { 
+      text: '活动名称:', 
+      cls: 'modal-label' 
+    }).style.fontWeight = "bold";
+    
+    const nameInput = contentEl.createEl('textarea');
+    nameInput.setAttrs({
+      "placeholder": "请输入活动名称（可输入最多1000字）",
+      "maxlength": "1000"
+    });
+    // 设置样式
+    Object.assign(nameInput.style, {
+      width: "100%",
+      height: "200px",
+      padding: "10px",
+      fontSize: "16px",
+      resize: "vertical",
+      marginTop: "5px",
+      marginBottom: "15px"
+    });
+
+    // 3. 添加时长输入区域
+    contentEl.createEl('label', { 
+      text: '心理预期时长(分钟):', 
+      cls: 'modal-label' 
+    }).style.fontWeight = "bold";
+
+    const durationInput = contentEl.createEl('input', { type: 'number' });
+    durationInput.setAttrs({ min: '1', value: '10' });
+    Object.assign(durationInput.style, {
+      width: "100%",
+      padding: "8px",
+      marginTop: "5px",
+      marginBottom: "20px"
+    });
+    
+    // 4. 创建按钮容器
+    const buttonContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+    Object.assign(buttonContainer.style, {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: "10px"
+    });
+
+    // 5. 创建确认按钮
+    const confirmBtn = buttonContainer.createEl('button', { text: '添加' });
+    Object.assign(confirmBtn.style, {
+      padding: "8px 15px",
+      backgroundColor: "#4CAF50",
+      color: "white"
+    });
+    confirmBtn.addEventListener('click', () => {
+      const projectName = nameInput.value.trim();
+      const duration = parseInt(durationInput.value, 10);
+      
+      if (!projectName || isNaN(duration) || duration <= 0) {
+        new Notice('请输入有效的活动名称和时长！', 3000); // 使用Obsidian的Notice提示
+        return;
+      }
+      
+      this.onSubmit(projectName, duration); // 调用传入的回调函数，将数据传出
+      this.close(); // 关闭模态窗口
+    });
+
+    // 6. 创建取消按钮
+    const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
+    cancelBtn.style.padding = "8px 15px";
+    cancelBtn.addEventListener('click', () => {
+      this.close(); // 关闭模态窗口
+    });
+
+    // 自动聚焦到输入框，方便用户直接输入
+    // 使用 setTimeout 确保元素完全渲染后再聚焦
+    setTimeout(() => nameInput.focus(), 50);
+  }
+
+  // onClose 是 Modal 的生命周期方法，当窗口关闭时自动执行
+  onClose() {
+    // 清空内容，防止内存泄漏和UI残留
+    this.contentEl.empty();
+  }
+}
+
+// =========================================================================
+//  第 2 部分: 新的、精简的 showAddActivityAfterForm 函数
+// =========================================================================
+function showAddActivityAfterForm(afterIndex) {
+  // 安全检查：确保目标索引有效
+  const targetActivity = currentPhase.activities[afterIndex];
+  if (!targetActivity) {
+    console.error("showAddActivityAfterForm 调用失败：无效的索引", afterIndex);
+    new Notice("无法添加活动，因为找不到目标位置。", 4000);
+    return;
+  }
+
+  // 定义当用户在模态窗口中点击“确认”后要执行的操作
+  const handleSubmit = (projectName, duration) => {
+    const newActivity = {
+      id: generateId(), // 确保您的 generateId() 函数可用
+      project: projectName,
+      expectedDuration: duration,
+      status: 'pending',
+      isStartTimeFixed: false
+    };
+    
+    // 1. 在指定位置后插入新活动
+    currentPhase.activities.splice(afterIndex + 1, 0, newActivity);
+    
+    // 2. 重新计算和保存
+    allocateRemainingTime(); // 确保您的 allocateRemainingTime() 函数可用
+    debouncedSave();         // 确保您的 debouncedSave() 函数可用
+    
+    // 3. 更新执行列表的UI (如果您有这个函数)
+    // 如果没有 renderExecutionList，请确保有其他机制来刷新列表
+    renderExecutionList();
+    if (currentPhase.status === 'active') {
+      updateExecutionDisplay();
+    }
+
+    // 4. 显示成功提示
+    statusEl.innerHTML = ''; // 确保 statusEl 元素可用
+    statusEl.createEl("div", {
+      text: "✅ 活动已添加，数据已自动保存到 JSON",
+      attr: {style: "color: #4CAF50; background-color: #e8f5e9; padding: 5px; border-radius: 3px;"}
+    });
+
+    new Notice(`已成功添加活动: "${projectName}"`, 3000);
+  };
+  
+  // 创建并打开新的模态窗口实例
+  new AddActivityModal(app, afterIndex, handleSubmit).open();
+}
+
+
+// 显示延长时间的弹窗
+// ===================================================================
+//  第 1 部分: 新的 ExtendDurationModal 类 (符合 Obsidian 1.9+ 规范)
+// ===================================================================
+
+// ▼▼▼ 【核心修复】确保 Modal 和 Notice 已从 Obsidian 核心库中加载 ▼▼▼
+// 如果您在脚本顶部已经有了这行代码，可以跳过；否则请保留
+
+// ▲▲▲ 【核心修复】▲▲▲
+
+class ExtendDurationModal extends Modal {
+  // 构造函数接收 app 实例和一个成功提交后的回调函数
+  constructor(app, onSubmit) {
+    super(app);
+    this.onSubmit = onSubmit;
+  }
+
+  // onOpen 是 Modal 的生命周期方法，当窗口打开时自动执行
+  onOpen() {
+    const { contentEl } = this;
+
+    // --- 开始构建模态窗口的内部 UI ---
+
+    // 1. 设置标题
+    contentEl.createEl('h4', { text: '延长计划总时长' });
+
+    // 2. 显示当前总时长
+    contentEl.createEl('div', {
+      cls: 'modal-info-text' // 添加一个类名方便样式调整
+    }).innerHTML = `<span>当前总时长: <strong>${formatDuration(currentPhase.plannedDuration)}</strong></span>`;
+    contentEl.lastChild.style.marginBottom = '10px';
+
+    // 3. 添加时长输入区域
+    contentEl.createEl('label', { text: '延长时间(分钟):' });
+    const durationInput = contentEl.createEl('input', { type: 'number' });
+    durationInput.setAttrs({ min: '1', value: '15' });
+    durationInput.style.marginTop = '5px';
+
+    // 4. 创建按钮容器
+    const buttonContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+    buttonContainer.style.marginTop = '15px';
+
+    // 5. 创建确认按钮
+    const confirmBtn = buttonContainer.createEl('button', { 
+      text: '确认延长', 
+      cls: 'mod-cta' // 使用 Obsidian 的推荐类名，使其看起来像一个主操作按钮
+    }); 
+    confirmBtn.addEventListener('click', () => {
+      const extraMinutes = parseInt(durationInput.value, 10);
+      
+      if (isNaN(extraMinutes) || extraMinutes <= 0) {
+        new Notice('请输入有效的延长时间！', 3000);
+        return;
+      }
+      
+      this.onSubmit(extraMinutes); // 调用传入的回调函数
+      this.close();
+    });
+
+    // 6. 创建取消按钮
+    const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
+    cancelBtn.addEventListener('click', () => {
+      this.close();
+    });
+
+    // 自动聚焦到输入框
+    setTimeout(() => durationInput.focus(), 50);
+  }
+
+  // onClose 是 Modal 的生命周期方法，当窗口关闭时自动执行
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+// =========================================================================
+// 固定开始时间弹窗
+// =========================================================================
+class FixedStartTimeModal extends Modal {
+  // 构造函数接收 app 实例、活动对象、以及回调函数
+  constructor(app, activity, onSubmit) {
+    super(app);
+    this.activity = activity;
+    this.onSubmit = onSubmit;
+  }
+
+  // onOpen 是 Modal 的生命周期方法，当窗口打开时自动执行
+  onOpen() {
+    const { contentEl } = this;
+
+    // --- 开始构建模态窗口的内部 UI ---
+
+    // 1. 设置标题
+    contentEl.createEl('h4', {
+      text: `固定 "${this.activity.project}" 的开始时间`,
+      cls: 'modal-title'
+    }).style.marginBottom = "15px";
+
+    // 2. 显示当前活动信息
+    contentEl.createEl('div', {
+      cls: 'modal-info-text'
+    }).innerHTML = `
+      <span>心理预期: <strong>${formatDuration(this.activity.expectedDuration)}</strong></span>
+      <br>
+      <span style="color: #666; font-size: 12px;">设置此活动的固定开始时间，后续活动将从该时间点重新分配</span>
+    `;
+    contentEl.lastChild.style.marginBottom = '15px';
+
+    // 3. 添加时间选择区域
+    contentEl.createEl('label', {
+      text: '固定开始时间:',
+      cls: 'modal-label'
+    }).style.fontWeight = "bold";
+
+    // 默认值：如果已有固定时间则使用，否则使用当前时间
+    const now = new Date();
+    const defaultTime = this.activity.expectedStart
+      ? `${new Date(this.activity.expectedStart).getHours().toString().padStart(2, '0')}:${new Date(this.activity.expectedStart).getMinutes().toString().padStart(2, '0')}`
+      : `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+    const timeInput = contentEl.createEl('input', { type: 'time' });
+    timeInput.setAttrs({ value: defaultTime });
+    timeInput.style.marginTop = '5px';
+    timeInput.style.marginBottom = '15px';
+    timeInput.style.padding = '8px';
+    timeInput.style.width = '100%';
+
+    // 4. 创建按钮容器
+    const buttonContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+    buttonContainer.style.marginTop = '15px';
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.gap = '10px';
+
+    // 5. 创建确认按钮
+    const confirmBtn = buttonContainer.createEl('button', {
+      text: '确认固定',
+      cls: 'mod-cta'
+    });
+    confirmBtn.style.flex = '1';
+    confirmBtn.style.padding = '8px 15px';
+
+    // 6. 创建取消按钮
+    const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
+    cancelBtn.style.flex = '1';
+    cancelBtn.style.padding = '8px 15px';
+
+    // 7. 如果已固定，提供"取消固定"选项
+    if (this.activity.isStartTimeFixed) {
+      const unsetBtn = buttonContainer.createEl('button', {
+        text: '取消固定',
+        cls: 'mod-warning'
+      });
+      unsetBtn.style.flex = '1';
+      unsetBtn.style.padding = '8px 15px';
+      unsetBtn.style.backgroundColor = '#f44336';
+      unsetBtn.style.color = 'white';
+
+      unsetBtn.addEventListener('click', () => {
+        this.onSubmit(null); // null 表示取消固定
+        this.close();
+      });
+    }
+
+    confirmBtn.addEventListener('click', () => {
+      const timeValue = timeInput.value;
+
+      if (!timeValue) {
+        new Notice('请选择开始时间！', 3000);
+        return;
+      }
+
+      // 解析时间
+      const [hours, minutes] = timeValue.split(':').map(Number);
+      const fixedTime = new Date();
+      fixedTime.setHours(hours, minutes, 0, 0);
+
+      // 验证时间是否在计划范围内
+      const plannedEndTime = new Date(currentPhase.startTime);
+      plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+
+      if (fixedTime < new Date(currentPhase.startTime)) {
+        new Notice('固定时间不能早于计划开始时间！', 3000);
+        return;
+      }
+
+      if (fixedTime > plannedEndTime) {
+        new Notice('固定时间不能晚于计划结束时间！', 3000);
+        return;
+      }
+
+      this.onSubmit(fixedTime); // 传入固定的 Date 对象
+      this.close();
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      this.close();
+    });
+
+    // 自动聚焦到时间输入框
+    setTimeout(() => timeInput.focus(), 50);
+  }
+
+  // onClose 是 Modal 的生命周期方法，当窗口关闭时自动执行
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+// =========================================================================
+// 显示固定开始时间弹窗
+// =========================================================================
+function showFixedStartTimeModal(activity) {
+  // 安全检查
+  if (!currentPhase || currentPhase.status !== 'active') {
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: "没有正在执行的计划",
+      attr: {style: "color: red; background-color: #ffebee; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+    return;
+  }
+
+  if (!activity || activity.status !== 'pending') {
+    new Notice('只能固定待开始活动的开始时间', 3000);
+    return;
+  }
+
+  // 定义当用户在模态窗口中点击"确认固定"后要执行的操作
+  const handleSubmit = (fixedTime) => {
+    if (fixedTime === null) {
+      // 取消固定
+      activity.isStartTimeFixed = false;
+      activity.expectedStart = null;
+      new Notice('已取消固定开始时间');
+    } else {
+      // 设置固定时间
+      activity.isStartTimeFixed = true;
+      activity.expectedStart = new Date(fixedTime);
+      new Notice(`已固定开始时间: ${formatTime(fixedTime)}`);
+    }
+
+    // 重新分配时间
+    allocateRemainingTime();
+    debouncedSave();
+    renderExecutionList();
+    if (currentPhase.status === 'active') {
+      updateExecutionDisplay();
+    }
+  };
+
+  // 创建并打开模态窗口
+  new FixedStartTimeModal(app, activity, handleSubmit).open();
+}
+
+
+// =========================================================================
+//  第 2 部分: 新的、精简的 showExtendDurationModal 函数
+// =========================================================================
+function showExtendDurationModal() {
+  // 安全检查：确保当前有正在执行的计划
+  if (!currentPhase || currentPhase.status !== 'active') {
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: "没有正在执行的计划",
+      attr: {style: "color: red; background-color: #ffebee; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+    return;
+  }
+  
+  // 定义当用户在模态窗口中点击“确认延长”后要执行的操作
+  // 注意：这里的逻辑直接调用您原来的 extendPhaseDuration 函数
+  const handleSubmit = (extraMinutes) => {
+    // 调用您原来的核心逻辑函数
+    extendPhaseDuration(extraMinutes); 
+  };
+  
+  // 创建并打开新的模态窗口实例
+  new ExtendDurationModal(app, handleSubmit).open();
+}
+
+
+// 延长阶段总时长的函数
+function extendPhaseDuration(extraMinutes) {
+  if (!currentPhase) return;
+  
+  // 保存原始时长用于消息显示
+  const originalDuration = currentPhase.plannedDuration;
+  
+  // 更新总时长
+  currentPhase.plannedDuration += extraMinutes;
+  
+  // 重新分配剩余时间
+  allocateRemainingTime();
+  debouncedSave();
+  // 更新UI
+  updateExecutionDisplay();
+  
+
+  
+  // 显示成功消息
+  statusEl.innerHTML = '';
+  statusEl.createEl("div", {
+    text: `总时长已从 ${formatDuration(originalDuration)} 延长至 ${formatDuration(currentPhase.plannedDuration)}`,
+    attr: {style: "color: green; background-color: #e8f5e9; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+  });
+  
+  // 提示保存
+  const savePrompt = statusEl.createEl("div", {
+    text: "请点击「保存当前状态」按钮以保存更改到备份",
+    attr: {style: "color: #ff9800; margin-top: 5px;"}
+  });
+}
+
+// 显示评价表单（优化版：解决闪回问题）
+function showReviewForm(activity) {
+  // 保存当前评价的活动ID，确保提交时评价正确的活动
+  reviewFormEl.setAttribute("data-activity-id", activity.id);
+  
+  // 显示评价表单
+  reviewFormEl.style.display = "block";
+  activityToReviewName.setText(`评价活动: ${activity.project}`);
+  
+  // 填入现有的评价和评分（支持重新评价）
+  experienceInput.value = activity.experience || "";
+  ratingInput.value = activity.rating || "3";
+  
+  // 清除之前的事件监听器
+  const oldBtn = submitReviewBtn;
+  const newBtn = oldBtn.cloneNode(true);
+  if (oldBtn.parentNode) {
+    oldBtn.parentNode.replaceChild(newBtn, oldBtn);
+  } else {
+    reviewFormEl.appendChild(newBtn);
+  }
+  submitReviewBtn = newBtn;
+  
+  // 添加优化后的事件监听器
+  newBtn.addEventListener("click", () => {
+    const activityId = reviewFormEl.getAttribute("data-activity-id");
+    const targetActivity = currentPhase.activities.find(a => a.id === activityId);
+    
+    if (!targetActivity) {
+      statusEl.innerHTML = '';
+      statusEl.createEl("div", {
+        text: "找不到要评价的活动",
+        attr: {style: "color: red; padding: 8px; border-radius: 3px; margin: 10px 0; background-color: #ffebee;"}
+      });
+      return;
+    }
+
+    // 保存旧值用于状态比较
+    const oldExperience = targetActivity.experience;
+    const oldRating = targetActivity.rating;
+    
+    // 更新活动的评价和评分
+    targetActivity.experience = experienceInput.value.trim();
+    targetActivity.rating = parseInt(ratingInput.value);
+    
+    // 添加评价时间戳，用于检测最新评价
+    targetActivity.lastReviewTime = new Date().getTime();
+    
+ 
+    
+    // 关闭评价表单
+    reviewFormEl.style.display = "none";
+    
+    // 更新UI以反映新评价
+    if (currentPhase.status === 'planning') {
+      renderActivitiesList();
+    } else {
+      renderExecutionList();
+    }
+    debouncedSave();
+    // 显示保存提示
+    statusEl.innerHTML = '';
+    statusEl.createEl("div", {
+      text: `✅ 评价已添加，数据已自动保存到 JSON`,
+      attr: {style: "color: #4CAF50; background-color: #e8f5e9; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+    });
+    
+    // 显示修改前后的对比
+    const changesMsg = statusEl.createEl("div", {
+      attr: {style: "margin-top: 5px; font-size: 0.9em; color: #555;"}
+    });
+    
+    if (oldExperience !== targetActivity.experience || oldRating !== targetActivity.rating) {
+      changesMsg.innerHTML = `
+        <span>评价已更新:</span>
+        ${oldRating !== targetActivity.rating ? 
+          `<span>评分: ${oldRating || '无'} → ${targetActivity.rating}</span><br>` : ''}
+        ${oldExperience !== targetActivity.experience ? 
+          `<span>描述: ${oldExperience ? '已修改' : '新增'}</span>` : ''}
+      `;
+    } else {
+      changesMsg.textContent = "评价未变更";
+    }
+  });
+}
+
+// 同步单个活动进度条宽度
+function syncActivityProgressBar(activity) {
+  if (!activity || activity.status !== 'in-progress') return;
+  const barEl = containerEl.querySelector(`.activity-progress-bar[data-activity-id=\"${activity.id}\"]`);
+  if (!barEl) return;
+  const now = new Date();
+  const start = activity.actualStart ? new Date(activity.actualStart) : now;
+  const elapsed = (now - start) / (60 * 1000);
+  const total = activity.allocatedDuration || activity.expectedDuration || 0;
+  if (total <= 0) {
+    barEl.style.width = '0%';
+    return;
+  }
+  const pct = Math.min(100, Math.max(0, (elapsed / total) * 100));
+  barEl.style.width = `${pct}%`;
+}
+
+// 刷新当前活动卡片上的数字/剩余显示
+function updateActivityLiveUI(activity, phaseRemainingMinutes = null) {
+  if (!activity || activity.status !== 'in-progress') return;
+
+  const now = new Date();
+  const start = activity.actualStart ? new Date(activity.actualStart) : now;
+  const elapsed = (now - start) / (60 * 1000);
+  const total = activity.allocatedDuration || activity.expectedDuration || 0;
+  const remaining = Math.max(0, total - elapsed);
+
+  // 更新时间文本
+  const actualEl = containerEl.querySelector(`.activity-actual-text[data-activity-id=\"${activity.id}\"]`);
+  if (actualEl) {
+    actualEl.textContent = `${formatDuration(elapsed)} / ${formatDuration(total)} (本活动)`;
+  }
+
+  // 更新阶段剩余文本（如果存在）
+  const phaseEl = containerEl.querySelector(`.activity-phase-remaining[data-activity-id=\"${activity.id}\"]`);
+  if (phaseEl) {
+    const text = phaseRemainingMinutes != null
+      ? `阶段剩余: ${formatDuration(phaseRemainingMinutes)}`
+      : phaseEl.textContent; // fallback
+    phaseEl.textContent = text;
+  }
+
+  // 同步进度条
+  syncActivityProgressBar(activity);
+}
+
+// 更新执行状态显示 - 修复进度条显示问题
+// 更新执行显示(包括进度条和当前活动) - 优化版：更清晰的进度显示
+function updateExecutionDisplay() {
+  if (!currentPhase || currentPhase.status !== 'active') return;
+  
+  const now = new Date();
+  const startTime = new Date(currentPhase.startTime);
+  const plannedEndTime = new Date(startTime.getTime() + currentPhase.plannedDuration * 60 * 1000);
+  
+  // 计算总进度
+  const totalDuration = currentPhase.plannedDuration * 60 * 1000; // 毫秒
+  const elapsed = now - startTime;
+  const progress = Math.min(100, (elapsed / totalDuration) * 100);
+  
+  // 更新进度条
+  progressBar.style.width = `${progress}%`;
+  progressBar.setAttribute("aria-valuenow", Math.floor(progress));
+  
+  // 计算剩余时间
+  const remainingMs = Math.max(0, plannedEndTime - now);
+  const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+  const elapsedMinutes = Math.max(0, elapsed / (60 * 1000));
+  const totalMinutes = currentPhase.plannedDuration;
+
+  // 更新进度文本，包含更多信息
+  progressText.innerHTML = `开始: ${formatTime(startTime)} | 结束: ${formatTime(plannedEndTime)} | ` +
+                         `已进行: ${formatDuration(elapsedMinutes)} | 总时长: ${formatDuration(totalMinutes)} | ` +
+                         `剩余: ${formatDuration(remainingMinutes)} | ` +
+                         `进度: ${Math.floor(progress)}%`;
+
+  // 查找当前进行中的活动
+  const currentActivity = currentPhase.activities.find(a => a.status === 'in-progress');
+  
+  // 更新当前活动卡片的实时数值与进度背景
+  if (currentActivity) {
+    updateActivityLiveUI(currentActivity, remainingMinutes);
+  }
+  
+  // 显示当前活动信息
+  if (currentActivity) {
+    currentActivityName.innerHTML = `<strong>${currentActivity.project}</strong>`;
+    
+    // 如果缺少 actualStart，立即补齐，避免读/预览模式不刷新
+    if (!currentActivity.actualStart) {
+      currentActivity.actualStart = new Date();
+      debouncedSave();
+    }
+
+    // 计算当前活动已进行时间
+    const activityElapsed = (now - new Date(currentActivity.actualStart)) / (60 * 1000);
+    const allocatedTime = currentActivity.allocatedDuration || currentActivity.expectedDuration;
+    const activityRemaining = Math.max(0, allocatedTime - activityElapsed);
+    
+    // 更新当前活动卡片上的进度背景
+    syncActivityProgressBar(currentActivity);
+
+    // 显示当前活动的时间信息
+    currentActivityTime.innerHTML = `已进行: ${formatDuration(activityElapsed)} | ` +
+                                   `预计剩余: ${formatDuration(activityRemaining)} | ` +
+                                   `总计划: ${formatDuration(allocatedTime)}`;
+  } else {
+    currentActivityName.textContent = "无进行中的活动";
+    currentActivityTime.textContent = "";
+  }
+  
+  // 查找下一个待处理的活动
+  const nextActivityIndex = currentPhase.activities.findIndex(a => a.status === 'pending');
+  
+  // 显示下一个活动信息
+  if (nextActivityIndex !== -1) {
+    const nextActivity = currentPhase.activities[nextActivityIndex];
+    nextActivityName.innerHTML = `下一个: <strong>${nextActivity.project}</strong> (计划时间: ${formatDuration(nextActivity.allocatedDuration || nextActivity.expectedDuration)})`;
+  } else {
+    nextActivityName.textContent = "没有更多待处理的活动";
+  }
+  
+  // ==================== 【新增】实时更新剩余时间统计 ====================
+  renderRemainingTimeStats();
+}
+
+
+function startNextActivity() {
+  if (!currentPhase) return;
+
+  // 完成当前活动
+  const currentActivity = currentPhase.activities.find(a => a.status === 'in-progress');
+  if (currentActivity) {
+    currentActivity.status = 'completed';
+    currentActivity.actualEnd = new Date();
+    currentPhase.lastTransitionTime = new Date();
+  }
+
+  // 开始下一个活动
+  const nextActivity = currentPhase.activities.find(a => a.status === 'pending');
+  if (nextActivity) {
+    nextActivity.status = 'in-progress';
+    nextActivity.actualStart = new Date();
+
+    // 在下一个活动开始时，立即重新分配剩余时间
+    allocateRemainingTime();
+    updateExecutionDisplay(); // 立即刷新数字与条
+  } else {
+    // 如果没有下一个活动，提示完成
+    new Notice("所有活动已完成！");
+  }
+
+  // 保存和更新 UI
+  debouncedSave();
+  renderExecutionList();
+  updateExecutionDisplay();
+}
+
+// 添加新活动
+function addActivity() {
+  if (!currentPhase) return;
+  
+  const project = projectInput.value.trim();
+  const duration = parseInt(projectDurationInput.value);
+  
+  if (!project) {
+    statusEl.setText("请输入活动名称");
+    statusEl.setAttribute("style", "color: red;");
+    return;
+  }
+  
+  if (isNaN(duration) || duration <= 0) {
+    statusEl.setText("请输入有效的时长");
+    statusEl.setAttribute("style", "color: red;");
+    return;
+  }
+  
+  const newActivity = {
+    id: generateId(),
+    project,
+    expectedDuration: duration,  // 心理预期时长
+    status: 'pending'
+    
+  };
+  
+  currentPhase.activities.push(newActivity);
+  projectInput.value = "";
+  projectDurationInput.value = "15";
+
+  // 重新分配时间（根据阶段选择不同函数）
+  if (currentPhase.status === 'active') {
+    // 执行阶段：从当前活动预计结束时间开始重新分配
+    allocateRemainingTime();
+  } else {
+    // 规划阶段：按心理预期比例分配
+    allocateTimeByExpectation();
+  }
+
+  renderActivitiesList();
+  debouncedSave();
+
+  // 显示保存提示
+  statusEl.innerHTML = '';
+  statusEl.createEl("div", {
+    text: "✅ 活动已添加，数据已自动保存到 JSON",
+    attr: {style: "color: #4CAF50; background-color: #e8f5e9; padding: 5px; border-radius: 3px;"}
+  });
+}
+
+// 手动保存当前状态（执行阶段）
+
+
+// 手动保存当前状态（规划阶段）
+// DELETE the autoSaveTick, saveCurrentState, and savePlanState functions.
+// REPLACE them with this single, unified save function:
+
+async function saveCurrentState() {
+  if (window.timePlannerIsSaving) {
+    console.warn("SAVE BLOCKED: A save operation is already in progress.");
+    return;
+  }
+  if (!currentPhase) {
+    console.log("No active plan to save.");
+    return;
+  }
+
+  // --- Visual Feedback: Indicate Saving ---
+  if (saveExecutionBtn) saveExecutionBtn.setText("保存中...");
+  if (savePlanBtn) savePlanBtn.setText("保存中...");
+
+  try {
+    const success = await saveCurrentStateJSON();  // 使用 JSON 存储
+    if (success) {
+      console.log("SUCCESS: Current state saved to JSON.");
+      // --- Visual Feedback: Indicate Success ---
+      if (saveExecutionBtn) saveExecutionBtn.setText("已保存");
+      if (savePlanBtn) savePlanBtn.setText("已保存");
+    } else {
+      throw new Error("Failed to save activity plan to JSON.");
+    }
+  } catch (error) {
+    console.error("Save failed:", error);
+    // --- Visual Feedback: Indicate Error ---
+    if (saveExecutionBtn) saveExecutionBtn.setText("保存失败");
+    if (savePlanBtn) savePlanBtn.setText("保存失败");
+  }
+}
+
+
+// 创建新的时间阶段
+function createPhase() {
+  const durationValue = parseInt(durationInput.value);
+  const startTimeValue = startTimeInput.value;
+  
+  if (isNaN(durationValue) || durationValue <= 0) {
+    statusEl.setText("请输入有效的时长");
+    statusEl.setAttribute("style", "color: red;");
+    return;
+  }
+  
+  if (!startTimeValue) {
+    statusEl.setText("请选择开始时间");
+    statusEl.setAttribute("style", "color: red;");
+    return;
+  }
+  
+  // 解析开始时间
+  const [hours, minutes] = startTimeValue.split(':').map(Number);
+  const startTime = new Date();
+  startTime.setHours(hours, minutes, 0, 0);
+  
+  // 创建新的时间阶段
+  currentPhase = {
+    startTime,
+    plannedDuration: durationValue,
+    activities: [],
+    status: 'planning',
+    totalExpectedDuration: 0,
+    lastTransitionTime: null // 添加转换点时间标记
+  };
+  
+  // 更新UI状态
+  lastUIState = { phase: 'planning', timestamp: Date.now() };
+  
+  // 显示活动规划表单
+  phaseFormEl.style.display = "none";
+  activitiesFormEl.style.display = "block";
+  executionPanelEl.style.display = "none";
+  
+  statusEl.setText("已创建新的时间阶段，请添加活动");
+  statusEl.setAttribute("style", "color: green;");
+  
+  // 保存到localStorage
+
+}
+
+// 完成时间阶段并生成记录
+function completePhase() {
+  if (!currentPhase) return;
+
+  // 结束所有进行中的活动
+  const activeActivity = currentPhase.activities.find(a => a.status === 'in-progress');
+  if (activeActivity) {
+    activeActivity.status = 'completed';
+    activeActivity.actualEnd = new Date();
+  }
+
+  // 将当前阶段转换为条目记录（用于生成报告）
+  const newEntries = convertPhaseToEntries(currentPhase);
+
+  // 保存最终状态到 JSON（包含所有已完成活动的时间记录）
+  savePlanToJSON();
+
+  // 更新状态显示
+  statusEl.setText("已完成时间阶段");
+  statusEl.setAttribute("style", "color: green;");
+
+  // 重置UI到初始状态
+  currentPhase = null;
+  lastUIState = { phase: 'initial', timestamp: Date.now() };
+
+  // 清除执行面板刷新定时器
+  if (window.timePlannerDisplayIntervalId) {
+    clearInterval(window.timePlannerDisplayIntervalId);
+    window.timePlannerDisplayIntervalId = null;
+  }
+
+  // 新增：停止自动保存
+
+
+  // 清除localStorage
+  try {
+    localStorage.removeItem(`time-phase-${getCurrentFilePath()}`);
+  } catch (e) {
+    console.warn("清除localStorage时出错:", e);
+  }
+
+  // 返回到初始计划界面
+  phaseFormEl.style.display = "block";
+  activitiesFormEl.style.display = "none";
+  executionPanelEl.style.display = "none";
+  reviewFormEl.style.display = "none";
+
+  // 清空表单输入，为新计划做准备
+  durationInput.value = "120";
+  startTimeInput.value = "";
+  activityListEl.innerHTML = "";
+
+  // 提示用户可以开始新计划
+  new Notice("✅ 时间阶段已完成，JSON历史已清空，可开始新计划");
+
+  // 刷新视图
+  if (renderViewFn) renderViewFn();
+}
+// 1. 先定义添加CSS样式的函数
+function addFixedButtonStyles() {
+  // 检查是否已添加样式（避免重复添加）
+  if (document.getElementById('time-planner-fixed-styles')) return;
+  
+  const styleEl = document.createElement('style');
+  styleEl.id = 'time-planner-fixed-styles';
+  styleEl.textContent = `
+    .fixed-time-btn {
+      transition: all 0.3s ease;
+    }
+    
+    .fixed-time-btn.fixed {
+      animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); }
+    }
+    
+    /* 其他可能需要的样式 */
+    .current-activity-row {
+      background-color: #e3f2fd;
+    }
+    
+    .next-activity-row {
+      background-color: #f1f8e9;
+    }
+  `;
+  document.head.appendChild(styleEl);
+}
+
+
+// 初始化UI基于阶段状态
+function initUIBasedOnPhaseStatus() {
+// 添加CSS样式
+  addFixedButtonStyles();
+  
+  if (!currentPhase) {
+    phaseFormEl.style.display = "block";
+    activitiesFormEl.style.display = "none";
+    executionPanelEl.style.display = "none";
+    reviewFormEl.style.display = "none";
+    return;
+  }
+  if (!currentPhase) {
+    phaseFormEl.style.display = "block";
+    activitiesFormEl.style.display = "none";
+    executionPanelEl.style.display = "none";
+    reviewFormEl.style.display = "none";
+    return;
+  }
+  
+  if (currentPhase.status === 'planning') {
+    phaseFormEl.style.display = "none";
+    activitiesFormEl.style.display = "block";
+    executionPanelEl.style.display = "none";
+    reviewFormEl.style.display = "none";
+    renderActivitiesList();
+    updateAllocationSummary();
+  } else if (currentPhase.status === 'active') {
+    phaseFormEl.style.display = "none";
+    activitiesFormEl.style.display = "none";
+    executionPanelEl.style.display = "block";
+    reviewFormEl.style.display = "none";
+    
+    // 确保时间刷新定时器运行
+    ensureExecutionTicker();
+    
+    calculateExpectedTimes();
+    renderExecutionList();
+    updateExecutionDisplay();
+  } else {
+    phaseFormEl.style.display = "block";
+    activitiesFormEl.style.display = "none";
+    executionPanelEl.style.display = "none";
+    reviewFormEl.style.display = "none";
+  }
+}
+
+// 添加事件监听器
+createPhaseBtn.addEventListener("click", createPhase);
+addActivityBtn.addEventListener("click", addActivity);
+startPhaseBtn.addEventListener("click", () => {
+  if (!currentPhase || currentPhase.activities.length === 0) {
+    statusEl.setText("请先添加活动");
+    statusEl.setAttribute("style", "color: red;");
+    return;
+  }
+  
+  // 更新阶段状态
+  currentPhase.status = 'active';
+  currentPhase.startTime = new Date(); // 使用当前时间作为实际开始时间
+  currentPhase.lastTransitionTime = new Date();
+  
+  // 开始第一个活动
+  currentPhase.activities[0].status = 'in-progress';
+  currentPhase.activities[0].actualStart = new Date();
+  
+  // 更新UI状态
+  lastUIState = { phase: 'active', timestamp: Date.now() };
+  
+  // 显示执行面板
+  phaseFormEl.style.display = "none";
+  activitiesFormEl.style.display = "none";
+  executionPanelEl.style.display = "block";
+  
+  // 启动定时器
+  ensureExecutionTicker();
+  debouncedSave();
+  // 更新首次显示
+  calculateExpectedTimes();
+  renderExecutionList();
+  updateExecutionDisplay();
+  
+  // 保存到localStorage
+
+});
+
+nextActivityBtn.addEventListener("click", startNextActivity);
+finishPhaseBtn.addEventListener("click", completePhase);
+
+// 确保阅读/预览模式也有定时刷新，并立即刷新一次
+ensureExecutionTicker();
+updateExecutionDisplay();
+extendDurationBtn.addEventListener("click", showExtendDurationModal);
+
+// ================== ▼▼▼ REPLACE your final initialization logic WITH THIS ▼▼▼ ==================
+async function initialize() {
+  // **THE CRITICAL FIX**: Reset the global saving flag at the start of every run.
+  // This makes the script self-healing if a reload occurs mid-save.
+  window.timePlannerIsSaving = false;
+
+  // 从 JSON 加载（JSON 是唯一的数据存储）
+  const restored = await tryAutoRestoreFromJSON();
+  if (restored) {
+    currentPhase = restored;  // 关键！将恢复的数据赋值给 currentPhase
+    showToast("✅ 已从 JSON 恢复数据", "success");
+  }
+
+  // 根据加载的数据自动进入相应界面（规划或执行）
+  initUIBasedOnPhaseStatus();
+}
+
+// Call the master initialization function to start the script.
+initialize();
+// ================== ▲▲▲ REPLACE your final initialization logic WITH THIS ▲▲▲ ==================
+
+
+```
