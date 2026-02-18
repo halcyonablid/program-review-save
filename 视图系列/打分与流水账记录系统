@@ -1,0 +1,1898 @@
+
+```dataviewjs
+// ============================================================
+// 📊 时间统计与评估视图 (v6.1 JSON极速版 + 手动时间)
+// ============================================================
+
+let startDate = null;
+let endDate = null;
+
+// --- 0. JSON 存储配置 ---
+const JSON_FILENAME = "TimeLog_Database.json";
+const currentFolder = dv.current().file.folder;
+const DB_PATH = currentFolder + "/" + JSON_FILENAME;
+const SETTINGS_FILENAME = "TimeLog_Settings.json";
+const SETTINGS_PATH = currentFolder + "/" + SETTINGS_FILENAME;
+const DEFAULT_RANGE = { start: "2025-11-01", end: "2026-12-31" };
+const COMMENT_FIELD = "comment";
+const ITEM_FIELD = "事项";
+
+const generateId = () =>
+    Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+// --- 1. 核心交互组件 (UI保持一致) ---
+class QuickSuggester extends obsidian.FuzzySuggestModal {
+    constructor(app, items, onChoose) {
+        super(app);
+        this.items = items;
+        this.onChoose = onChoose;
+    }
+    getItems() { return this.items; }
+    getItemText(item) { return item; }
+    onChooseItem(item, evt) { this.onChoose(item); }
+}
+
+class QuickPrompt extends obsidian.Modal {
+    constructor(app, title, placeholder, onSubmit, defaultValue = "") {
+        super(app);
+        this.titleStr = title;
+        this.placeholder = placeholder;
+        this.defaultValue = defaultValue;
+        this.onSubmit = onSubmit;
+    }
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl("h3", { text: this.titleStr });
+        const inputContainer = contentEl.createDiv();
+        const input = inputContainer.createEl("input", { type: "text", value: this.defaultValue });
+        input.placeholder = this.placeholder;
+        input.style.width = "100%";
+        input.focus();
+        
+        const btnContainer = contentEl.createDiv({ style: "margin-top: 15px; text-align: right;" });
+        const confirmBtn = btnContainer.createEl("button", { text: "确定", cls: "mod-cta" });
+        const submit = () => { if(input.value) { this.close(); this.onSubmit(input.value); }};
+        confirmBtn.onclick = submit;
+        input.addEventListener("keypress", (e) => { if (e.key === "Enter") submit(); });
+    }
+    onClose() { this.contentEl.empty(); }
+}
+
+const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
+const suggester = (items) => new Promise(r => new QuickSuggester(app, items, r).open());
+
+class RecordModal extends obsidian.Modal {
+    constructor(app, existingItems, onFinish, initialRecord = null) {
+        super(app);
+        this.items = existingItems || [];
+        this.onFinish = onFinish;
+        this.submitted = false;
+        this.initialRecord = initialRecord;
+    }
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        const isEdit = !!this.initialRecord;
+        contentEl.createEl("h3", { text: isEdit ? "✏️ 修改时间记录" : "➕ 添加新的时间记录" });
+
+        if (this.modalEl) {
+            this.modalEl.style.width = "720px";
+            this.modalEl.style.maxWidth = "90vw";
+        }
+
+        const form = contentEl.createEl("div", {
+            attr: { style: "display:flex; flex-direction:column; gap:12px; margin-top:10px;" }
+        });
+
+        const itemRow = form.createEl("div", { attr: { style: "display:flex; flex-direction:column; gap:6px;" } });
+        itemRow.createEl("div", { text: "事项", attr: { style: "font-weight:600;" } });
+        const itemInput = itemRow.createEl("input", {
+            type: "text",
+            value: this.initialRecord?.item || "",
+            attr: { placeholder: "例如：3-稳健执行" }
+        });
+        itemInput.style.width = "100%";
+        const dataListId = `timelog-item-list-${Date.now()}`;
+        itemInput.setAttribute("list", dataListId);
+        const itemList = itemRow.createEl("datalist", { attr: { id: dataListId } });
+        this.items.forEach(it => itemList.createEl("option", { value: it }));
+
+        const commentLabel = form.createEl("div", { text: "comment / 评论", attr: { style: "font-weight:600;" } });
+        const commentArea = form.createEl("textarea", {
+            attr: {
+                rows: 10,
+                maxlength: "1000",
+                placeholder: "记录你做了什么、为什么、结果如何..."
+            }
+        });
+        commentArea.value = this.initialRecord?.comment || "";
+        commentArea.style.width = "100%";
+        commentArea.style.minHeight = "220px";
+        commentArea.style.resize = "vertical";
+        const counter = form.createEl("div", {
+            text: "0/1000",
+            attr: { style: "text-align:right; color:var(--text-muted); font-size:12px;" }
+        });
+        const updateCounter = () => { counter.textContent = `${commentArea.value.length}/1000`; };
+        commentArea.addEventListener("input", updateCounter);
+        updateCounter();
+
+        const metaRow = form.createEl("div", { attr: { style: "display:flex; gap:12px; flex-wrap:wrap;" } });
+        const timeCol = metaRow.createEl("div", { attr: { style: "flex:2 1 240px; display:flex; flex-direction:column; gap:6px;" } });
+        timeCol.createEl("div", { text: "时间 (YYYY-MM-DD HH:mm)", attr: { style: "font-weight:600;" } });
+        const timeInput = timeCol.createEl("input", {
+            type: "text",
+            value: this.initialRecord?.timestamp || moment().format("YYYY-MM-DD HH:mm"),
+            attr: { placeholder: "YYYY-MM-DD HH:mm" }
+        });
+
+        const durationCol = metaRow.createEl("div", { attr: { style: "flex:1 1 120px; display:flex; flex-direction:column; gap:6px;" } });
+        durationCol.createEl("div", { text: "耗时(分钟)", attr: { style: "font-weight:600;" } });
+        const durationInput = durationCol.createEl("input", {
+            type: "number",
+            value: this.initialRecord?.duration ? String(this.initialRecord.duration) : "",
+            attr: { placeholder: "90", min: "1" }
+        });
+
+        const scoreCol = metaRow.createEl("div", { attr: { style: "flex:1 1 120px; display:flex; flex-direction:column; gap:6px;" } });
+        scoreCol.createEl("div", { text: "评分(1-10)", attr: { style: "font-weight:600;" } });
+        const scoreInput = scoreCol.createEl("input", {
+            type: "number",
+            value: this.initialRecord?.score ? String(this.initialRecord.score) : "",
+            attr: { placeholder: "5", min: "1", max: "10" }
+        });
+
+        const actions = contentEl.createEl("div", { attr: { style: "display:flex; justify-content:flex-end; gap:10px; margin-top:14px;" } });
+        const cancelBtn = actions.createEl("button", { text: "取消" });
+        const okBtn = actions.createEl("button", { text: "保存", cls: "mod-cta" });
+
+        const submit = () => {
+            const comment = (commentArea.value || "").trim();
+            if (!comment) { new Notice("请输入 comment/评论"); return; }
+            if (comment.length > 1000) { new Notice("评论最多 1000 字"); return; }
+
+            const item = (itemInput.value || "").trim();
+            if (!item) { new Notice("请输入事项"); return; }
+
+            const timestamp = (timeInput.value || "").trim();
+            if (!moment(timestamp, "YYYY-MM-DD HH:mm", true).isValid()) {
+                new Notice("时间格式应为 YYYY-MM-DD HH:mm");
+                return;
+            }
+
+            const duration = parseInt(durationInput.value, 10);
+            if (!duration || duration <= 0) { new Notice("请输入正确的耗时（分钟）"); return; }
+
+            const score = parseInt(scoreInput.value, 10);
+            if (!score || score < 1 || score > 10) { new Notice("评分范围 1-10"); return; }
+
+            this.submitted = true;
+            this.close();
+            this.onFinish({ comment, item, timestamp, duration, score });
+        };
+
+        cancelBtn.onclick = () => { this.close(); };
+        okBtn.onclick = submit;
+        itemInput.focus();
+    }
+    onClose() {
+        this.contentEl.empty();
+        if (!this.submitted) this.onFinish(null);
+    }
+}
+
+const openRecordModal = (existingItems = [], initialRecord = null) =>
+    new Promise(res => new RecordModal(app, existingItems, res, initialRecord).open());
+
+// --- 2. 数据处理逻辑 (JSON核心) ---
+
+const normalizeRecords = (raw) => {
+    let records = {};
+    let needsSave = false;
+
+    if (Array.isArray(raw)) {
+        raw.forEach(entry => {
+            if (!entry || typeof entry !== "object") return;
+            const id = entry.id || generateId();
+            const cloned = { ...entry };
+            if (cloned.id) delete cloned.id;
+            records[id] = cloned;
+        });
+        needsSave = true;
+    } else if (raw && typeof raw === "object") {
+        if (raw.records && typeof raw.records === "object" && !Array.isArray(raw.records)) {
+            records = { ...raw.records };
+            needsSave = true;
+        } else {
+            records = { ...raw };
+        }
+    }
+
+    Object.keys(records).forEach(id => {
+        const rec = records[id];
+        if (!rec || typeof rec !== "object") { delete records[id]; return; }
+        if (rec.issue !== undefined && rec[COMMENT_FIELD] === undefined) {
+            rec[COMMENT_FIELD] = rec.issue;
+            delete rec.issue;
+            needsSave = true;
+        }
+        if (rec.category !== undefined && rec[ITEM_FIELD] === undefined) {
+            rec[ITEM_FIELD] = rec.category;
+            delete rec.category;
+            needsSave = true;
+        }
+        if (rec[COMMENT_FIELD] === undefined) { rec[COMMENT_FIELD] = ""; needsSave = true; }
+        if (rec[ITEM_FIELD] === undefined) { rec[ITEM_FIELD] = ""; needsSave = true; }
+        records[id] = rec;
+    });
+
+    return { records, needsSave };
+};
+
+// 读取 JSON
+const loadData = async () => {
+    if (!await app.vault.adapter.exists(DB_PATH)) return {};
+    const content = await app.vault.adapter.read(DB_PATH);
+    let raw = null;
+    try { raw = JSON.parse(content); } catch (e) { return {}; }
+    const { records, needsSave } = normalizeRecords(raw);
+    if (needsSave) await saveData(records, true);
+    return records;
+};
+
+// 写入 JSON
+const saveData = async (newData, skipRender = false) => {
+    const file = app.vault.getAbstractFileByPath(DB_PATH);
+    const jsonString = JSON.stringify(newData, null, 2);
+    if (file) await app.vault.modify(file, jsonString);
+    else await app.vault.create(DB_PATH, jsonString);
+    if (!skipRender) renderView(); // 保存后刷新
+};
+
+const loadSettings = async () => {
+    if (!await app.vault.adapter.exists(SETTINGS_PATH)) return { ...DEFAULT_RANGE };
+    const content = await app.vault.adapter.read(SETTINGS_PATH);
+    try {
+        const data = JSON.parse(content);
+        const start = data?.start || DEFAULT_RANGE.start;
+        const end = data?.end || DEFAULT_RANGE.end;
+        return { start, end };
+    } catch (e) {
+        return { ...DEFAULT_RANGE };
+    }
+};
+
+const saveSettings = async (settings) => {
+    const file = app.vault.getAbstractFileByPath(SETTINGS_PATH);
+    const jsonString = JSON.stringify(settings, null, 2);
+    if (file) await app.vault.modify(file, jsonString);
+    else await app.vault.create(SETTINGS_PATH, jsonString);
+};
+
+const collectExistingItems = (allLogs = {}) => {
+    const existingItems = new Set([
+        "3-稳健执行", "4-为自己的系统设计", "2-历史的信息archieve", 
+        "1-解决导致卡顿的问题", "5-向历史的不完备做封堵", 
+        "6-协同合作统合综效", "2A-明确问题带来信息增量扩展问题圈"
+    ]);
+    Object.values(allLogs).forEach(log => {
+        const item = log?.[ITEM_FIELD] || log?.category;
+        if (item) existingItems.add(item);
+    });
+    return Array.from(existingItems).sort();
+};
+
+// 【核心修改】添加新记录逻辑：支持自定义时间
+async function addNewRecord() {
+    let allLogs = await loadData();
+    const itemList = collectExistingItems(allLogs);
+
+    const result = await openRecordModal(itemList);
+    if (!result) return;
+
+    const newEntry = {
+        timestamp: result.timestamp,
+        [COMMENT_FIELD]: result.comment,
+        [ITEM_FIELD]: result.item,
+        duration: result.duration,
+        score: Number(result.score)
+    };
+
+    const newId = generateId();
+    allLogs[newId] = newEntry;
+
+    await saveData(allLogs);
+    new Notice(`✅ 记录已添加: ${result.timestamp}`);
+}
+
+async function editRecord(recordId) {
+    const allLogs = await loadData();
+    const oldRecord = allLogs?.[recordId];
+    if (!oldRecord) {
+        new Notice("未找到该记录，可能已被删除");
+        return;
+    }
+
+    const initialRecord = {
+        timestamp: (oldRecord?.timestamp || "").toString(),
+        comment: (oldRecord?.[COMMENT_FIELD] ?? oldRecord?.issue ?? "").toString(),
+        item: (oldRecord?.[ITEM_FIELD] ?? oldRecord?.category ?? "").toString(),
+        duration: Number(oldRecord?.duration) || 0,
+        score: Number(oldRecord?.score) || 0
+    };
+    const itemList = collectExistingItems(allLogs);
+    const result = await openRecordModal(itemList, initialRecord);
+    if (!result) return;
+
+    allLogs[recordId] = {
+        ...oldRecord,
+        timestamp: result.timestamp,
+        [COMMENT_FIELD]: result.comment,
+        [ITEM_FIELD]: result.item,
+        duration: result.duration,
+        score: Number(result.score)
+    };
+    delete allLogs[recordId].issue;
+    delete allLogs[recordId].category;
+
+    await saveData(allLogs);
+    new Notice(`✅ 记录已修改: ${result.timestamp}`);
+}
+
+// --- 3. 主渲染逻辑 (封装以便调用) ---
+const renderView = async () => {
+    dv.container.innerHTML = ""; // 清空画布
+    const rangeSettings = await loadSettings();
+    const startStr = rangeSettings.start || DEFAULT_RANGE.start;
+    const endStr = rangeSettings.end || DEFAULT_RANGE.end;
+    const startMoment = moment(startStr, "YYYY-MM-DD", true);
+    const endMoment = moment(endStr, "YYYY-MM-DD", true);
+    const safeStart = startMoment.isValid() ? startMoment : moment(DEFAULT_RANGE.start, "YYYY-MM-DD", true);
+    const safeEnd = endMoment.isValid() ? endMoment : moment(DEFAULT_RANGE.end, "YYYY-MM-DD", true);
+    startDate = safeStart.startOf("day").toDate();
+    endDate = safeEnd.endOf("day").toDate();
+
+    if (!startMoment.isValid() || !endMoment.isValid()) {
+        await saveSettings({ start: safeStart.format("YYYY-MM-DD"), end: safeEnd.format("YYYY-MM-DD") });
+    }
+
+    const logs = await loadData();
+    const logEntries = Object.entries(logs || {});
+    
+    if (logEntries.length === 0 && !await app.vault.adapter.exists(DB_PATH)) {
+        dv.paragraph(`⚠️ 未找到数据库: <code>${JSON_FILENAME}</code><br>请确保已运行迁移脚本，并将文件放置在当前目录。`);
+        return;
+    }
+
+    // 预处理数据以便显示
+    let allEntries = [];
+    for (const [recordId, log] of logEntries) {
+        let logDate = new Date(log.timestamp);
+        if (isNaN(logDate.getTime())) continue;
+        const comment = (log?.[COMMENT_FIELD] ?? log?.issue ?? "").toString();
+        const itemName = (log?.[ITEM_FIELD] ?? log?.category ?? "").toString();
+
+        if (logDate >= startDate && logDate <= endDate) {
+            allEntries.push({
+                id: recordId,
+                dateObj: logDate,
+                dateStr: moment(logDate).format("YYYY-MM-DD"),
+                timeStr: moment(logDate).format("HH:mm"),
+                comment: comment,
+                item: itemName,
+                durationMin: Number(log.duration) || 0,
+                score: Number(log.score) || 0
+            });
+        }
+    }
+
+    // 格式化函数
+    function formatMin(m) {
+        if(!m) return "0m";
+        if(m < 60) return `${m}m`;
+        const h = Math.floor(m / 60);
+        const min = m % 60;
+        return min > 0 ? `${h}h ${min}m` : `${h}h`;
+    }
+
+    function goldenAngleColor(idx, total) {
+        const GOLDEN_ANGLE = 137.508;
+        const hue = (idx * GOLDEN_ANGLE) % 360;
+        const satLevels = [60, 70, 80, 55, 85];
+        const lightLevels = [58, 66, 50, 72, 44];
+        const cycle = Math.floor(idx / 360);
+        const sat = satLevels[cycle % satLevels.length];
+        const light = lightLevels[Math.floor(cycle / satLevels.length) % lightLevels.length];
+        return {
+            fill: `hsl(${hue},${sat}%,${light}%)`,
+            border: `hsl(${hue},${Math.min(90, sat + 10)}%,${Math.max(30, light - 18)}%)`,
+        };
+    }
+
+    // 渲染按钮
+    const btnContainer = dv.el("div", "", { attr: { style: "margin-bottom: 20px; padding: 15px; background: var(--background-primary-alt); border: 1px dashed var(--background-modifier-border); border-radius: 8px;" }});
+
+    const rangeRow = btnContainer.createEl("div", {
+        attr: { style: "display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;" }
+    });
+    rangeRow.createEl("span", { text: "📅 展示范围:", attr: { style: "font-weight:600;" } });
+    const startInput = rangeRow.createEl("input", { type: "date", value: safeStart.format("YYYY-MM-DD") });
+    const endInput = rangeRow.createEl("input", { type: "date", value: safeEnd.format("YYYY-MM-DD") });
+    const saveRangeBtn = rangeRow.createEl("button", { text: "保存范围", cls: "mod-cta" });
+
+    saveRangeBtn.onclick = async () => {
+        if (!startInput.value || !endInput.value) { new Notice("请输入开始/结束日期"); return; }
+        if (moment(endInput.value).isBefore(moment(startInput.value))) { new Notice("结束日期不能早于开始"); return; }
+        await saveSettings({ start: startInput.value, end: endInput.value });
+        renderView();
+    };
+
+    const addRow = btnContainer.createEl("div", { attr: { style: "text-align:center;" } });
+    const btn = addRow.createEl("button", { text: "➕ 添加新的时间记录", attr: { style: "background-color: var(--interactive-accent); color: var(--text-on-accent); padding: 8px 24px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" }});
+    btn.onclick = addNewRecord;
+
+    if (allEntries.length === 0) {
+        dv.paragraph("📝 还没有数据，点击上方按钮开始记录！");
+    } else {
+        const group = allEntries.reduce((acc, e) => {
+            if (!acc[e.dateStr]) acc[e.dateStr] = [];
+            acc[e.dateStr].push(e);
+            return acc;
+        }, {});
+
+        let allItems = Array.from(new Set(allEntries.map(e => e.item))).sort();
+        const colorPairMap = {};
+        allItems.forEach((item, idx) => {
+            colorPairMap[item] = goldenAngleColor(idx, allItems.length);
+        });
+
+        // 1. 堆叠图
+        dv.header(3, "📊 质量评估堆叠图");
+        const blockHeight = 60;
+        const minChartHeight = 280;
+        let chartHtml = `<div style="display:flex;align-items:flex-end;gap:12px;overflow-x:auto;padding: 10px 0;">`;
+        
+        Object.keys(group).sort().forEach(date => {
+            const entries = group[date].sort((a, b) => b.score - a.score);
+            let stack = entries.map(e => {
+                const color = colorPairMap[e.item] || {fill:"#ddd", border:"#444"};
+                let shortItem = e.item.split('-')[1] || e.item; 
+                if(shortItem.length > 4) shortItem = shortItem.substring(0,4)+"..";
+                const commentTitle = (e.comment || "").replace(/\n/g, " ");
+                
+                return `<div style="width:50px;height:${blockHeight}px;background:${color.fill};border:2px solid ${color.border};border-radius:6px;margin-bottom:3px;display:flex;flex-direction:column;justify-content:center;align-items:center;cursor:pointer;box-sizing: border-box;transition: transform 0.1s;" 
+                    data-record-id="${e.id}"
+                    title="${e.timeStr} | ${e.item}\n评论: ${commentTitle}\n耗时: ${e.durationMin}分钟\n评分: ${e.score}\n点击可编辑" 
+                    onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                    <span style="font-size:15px;font-weight:bold;color:#222;line-height:1.2;">${e.score}</span>
+                    <span style="font-size:9px;color:#444;width:44px;text-align:center;overflow:hidden;white-space:nowrap;">${shortItem}</span>
+                </div>`;
+            }).join('');
+            
+            const dayTotal = entries.reduce((a,b)=>a+b.durationMin,0);
+            chartHtml += `<div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-height:${minChartHeight}px;">
+                ${stack}
+                <div style="margin-top:5px;font-size:12px;font-weight:bold;color:var(--text-muted);">${date.slice(5)}</div>
+                <div style="font-size:10px;color:var(--text-faint);">${formatMin(dayTotal)}</div>
+            </div>`;
+        });
+        chartHtml += `</div>`;
+        const chartContainer = dv.el("div", "", { attr: { style: "margin-top: 2px;" } });
+        chartContainer.innerHTML = chartHtml;
+        chartContainer.querySelectorAll("[data-record-id]").forEach(block => {
+            const recordId = block.getAttribute("data-record-id");
+            block.addEventListener("click", (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                if (recordId) editRecord(recordId);
+            });
+        });
+
+        // 图例
+        let legendHtml = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;margin-bottom:30px;padding:10px;background:var(--background-secondary);border-radius:6px;">`;
+        allItems.forEach(item => {
+            const c = colorPairMap[item];
+            legendHtml += `<span style="padding:2px 8px;border-radius:4px;background:${c.fill};border:1px solid ${c.border};font-size:12px;color:var(--text-normal);">${item}</span>`;
+        });
+        legendHtml += `</div>`;
+        dv.paragraph(legendHtml);
+
+        // 2. 表格
+        let tableData = [];
+        Object.keys(group).sort().reverse().forEach(date => {
+            const entries = group[date].sort((a, b) => b.dateObj - a.dateObj);
+            const totalMin = entries.reduce((a, b) => a + b.durationMin, 0);
+            
+            entries.forEach((e, i) => {
+                tableData.push([
+                    i === 0 ? `**${date}**` : "",
+                    e.timeStr,
+                    e.item,
+                    e.comment,
+                    formatMin(e.durationMin),
+                    e.score,
+                    i === 0 ? formatMin(totalMin) : ""
+                ]);
+            });
+        });
+        const details = dv.el("details", "", { attr: { style: "margin-top:6px;" } });
+        details.createEl("summary", { text: "📋 详细记录表", attr: { style: "cursor:pointer; font-weight:600;" } });
+
+        const headers = ["日期", "时刻", "事项", "comment/评论", "耗时", "评分", "日合计"];
+        const table = details.createEl("table", { cls: "dataview table-view-table" });
+        const thead = table.createEl("thead");
+        const headerRow = thead.createEl("tr");
+        headers.forEach(h => headerRow.createEl("th", { text: h }));
+
+        const tbody = table.createEl("tbody");
+        tableData.forEach(row => {
+            const tr = tbody.createEl("tr");
+            row.forEach(cell => {
+                const td = tr.createEl("td");
+                const text = (cell ?? "").toString();
+                const boldMatch = text.match(/^\*\*(.*)\*\*$/);
+                if (boldMatch) {
+                    td.createEl("strong", { text: boldMatch[1] });
+                } else {
+                    td.setText(text);
+                }
+            });
+        });
+    }
+};
+
+// 启动
+renderView();
+
+```
+
+```dataviewjs
+/*
+╔══════════════════════════════════════════════════════════════════════╗
+║  打分系统 - 单页面内联评分视图 v2.3                                   ║
+║  功能: 标签页切换 + JSON持久化 + 状态恢复 + 全局状态管理               ║
+║  启发: 参考时间线视图的 window.xxx 全局状态管理                       ║
+╚══════════════════════════════════════════════════════════════════════╝
+*/
+
+// ═════════════════════════════════════════════════════════════════════
+// 全局状态管理 (刷新后保持)
+// ═════════════════════════════════════════════════════════════════════
+
+// 本地日期格式化函数 (避免 toISOString 的 UTC 时区问题)
+function getLocalDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+if (window.scoringTab === undefined) window.scoringTab = "score";
+if (window.scoringViewMode === undefined) window.scoringViewMode = "unified";
+if (window.scoringRangeMode === undefined) window.scoringRangeMode = "today";
+if (window.scoringCustomDate === undefined) window.scoringCustomDate = getLocalDateString();
+if (window.scoringScores === undefined) window.scoringScores = {};
+// 流水账日期筛选 (默认显示全部，设一个很早的开始日期)
+if (window.scoringActivityStartDate === undefined) window.scoringActivityStartDate = "2024-01-01";
+if (window.scoringActivityEndDate === undefined) window.scoringActivityEndDate = getLocalDateString();
+
+// ═════════════════════════════════════════════════════════════════════
+// 配置 - 使用当前笔记的文件夹路径
+// ═════════════════════════════════════════════════════════════════════
+
+// 获取当前笔记的文件对象，从而得到其所在文件夹
+const currentNote = dv.current().file.path;
+const currentFolder = currentNote.substring(0, currentNote.lastIndexOf('/')) + '/';
+
+const CONFIG = {
+  dataPath: currentFolder,  // 当前笔记所在文件夹
+  scoresFile: "daily-scores.json",
+  activityFile: "activity-log.json"
+};
+
+console.log("打分系统数据路径:", CONFIG.dataPath + CONFIG.scoresFile);
+
+const DIMENSIONS = {
+  D1: { name: "睡眠质量", layer: "物质层", icon: "🌙", help: { 5: "≥7.5h 自然醒+精神饱满", 4: "7-7.5h 基本自然醒", 3: "6-7h 闹钟叫醒", 2: "5-6h 多次闹钟", 1: "<5h 严重不足" }},
+  D2: { name: "能量水平", layer: "物质层", icon: "⚡", help: { 5: "充沛无打哈欠", 4: "偶有疲倦能恢复", 3: "有一定疲倦感", 2: "频繁疲倦", 1: "几乎无法集中" }},
+  D3: { name: "环境整洁度", layer: "执行层", icon: "📦", help: { 5: "极整洁无杂物", 4: "少量物品", 3: "有些乱能找", 2: "杂物较多", 1: "无法工作" }},
+  D4: { name: "任务启动数", layer: "执行层", icon: "🚀", help: { 5: "≥8个", 4: "5-7个", 3: "3-4个", 2: "1-2个", 1: "0个" }},
+  D5: { name: "任务完成率", layer: "执行层", icon: "✅", help: { 5: "≥90%", 4: "70-89%", 3: "50-69%", 2: "25-49%", 1: "<25%" }},
+  D6: { name: "信息收集量", layer: "决策层", icon: "📚", help: { 5: "≥5次主动查证", 4: "3-4次", 3: "1-2次", 2: "仅被动接收", 1: "未收集" }},
+  D7: { name: "计划调整次数", layer: "决策层", icon: "🔄", help: { 5: "0次完全按计划", 4: "1次合理调整", 3: "2-3次", 2: "4-5次", 1: "≥6次失控" }}
+};
+
+const LAYER_WEIGHTS = { "物质层": 0.30, "执行层": 0.50, "决策层": 0.20 };
+const LAYER_DIMS = { "物质层": ["D1", "D2"], "执行层": ["D3", "D4", "D5"], "决策层": ["D6", "D7"] };
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 数据操作
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function loadData(fileName) {
+  try {
+    const path = CONFIG.dataPath + fileName;
+    const file = app.vault.getAbstractFileByPath(path);
+    if (!file) return null;
+    return JSON.parse(await app.vault.read(file));
+  } catch (e) { return null; }
+}
+
+// 初始化数据文件（如果不存在则创建）
+async function initDataFiles() {
+  const initialData = { version: "1.0", records: [], lastUpdated: new Date().toISOString() };
+
+  // 检查并创建 daily-scores.json
+  const scoresPath = CONFIG.dataPath + CONFIG.scoresFile;
+  try {
+    const scoresFile = app.vault.getAbstractFileByPath(scoresPath);
+    if (!scoresFile) {
+      await app.vault.create(scoresPath, JSON.stringify(initialData, null, 2));
+    }
+  } catch (e) {
+    if (!e.message.includes("already exists")) {
+      console.error("处理 daily-scores.json 失败:", e);
+    }
+  }
+
+  // 检查并创建 activity-log.json
+  const activityPath = CONFIG.dataPath + CONFIG.activityFile;
+  try {
+    const activityFile = app.vault.getAbstractFileByPath(activityPath);
+    if (!activityFile) {
+      await app.vault.create(activityPath, JSON.stringify(initialData, null, 2));
+    }
+  } catch (e) {
+    if (!e.message.includes("already exists")) {
+      console.error("处理 activity-log.json 失败:", e);
+    }
+  }
+}
+
+async function saveScoreRecord(date, scores, layerScores, dailyAvg) {
+  try {
+    const path = CONFIG.dataPath + CONFIG.scoresFile;
+    console.log("保存评分到:", path);
+    let data = { version: "1.0", records: [], lastUpdated: new Date().toISOString() };
+
+    // 重新获取文件引用
+    let file = app.vault.getAbstractFileByPath(path);
+    console.log("评分文件存在:", !!file);
+    if (file) {
+      data = JSON.parse(await app.vault.read(file));
+    } else {
+      console.error("找不到文件:", path);
+      return false;
+    }
+
+    const existingIdx = data.records.findIndex(r => r.date === date);
+    if (existingIdx >= 0) {
+      data.records[existingIdx] = { ...data.records[existingIdx], scores, layer_scores: layerScores, daily_avg: dailyAvg };
+    } else {
+      data.records.push({ id: crypto.randomUUID(), date, scores, layer_scores: layerScores, daily_avg: dailyAvg, timestamp: new Date().toISOString() });
+    }
+    data.lastUpdated = new Date().toISOString();
+
+    // 再次获取文件引用进行修改
+    file = app.vault.getAbstractFileByPath(path);
+    if (file) {
+      await app.vault.modify(file, JSON.stringify(data, null, 2));
+      return true;
+    }
+    return false;
+  } catch (e) { console.error("保存评分失败:", e); return false; }
+}
+
+async function saveActivityRecord(record) {
+  try {
+    const path = CONFIG.dataPath + CONFIG.activityFile;
+    console.log("保存流水账到:", path);
+    let data = { version: "1.0", records: [], lastUpdated: new Date().toISOString() };
+
+    // 重新获取文件引用
+    let file = app.vault.getAbstractFileByPath(path);
+    console.log("流水账文件存在:", !!file);
+    if (file) {
+      data = JSON.parse(await app.vault.read(file));
+    } else {
+      console.error("找不到文件:", path);
+      return false;
+    }
+
+    data.records.push({ ...record, id: crypto.randomUUID(), created_at: new Date().toISOString() });
+    data.lastUpdated = new Date().toISOString();
+
+    // 再次获取文件引用进行修改
+    file = app.vault.getAbstractFileByPath(path);
+    if (file) {
+      await app.vault.modify(file, JSON.stringify(data, null, 2));
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error("保存流水账失败:", e);
+    return false;
+  }
+}
+
+function getLevel(score) {
+  if (score >= 4.5) return "🟢 卓越";
+  if (score >= 3.5) return "🟢 良好";
+  if (score >= 2.5) return "🟡 一般";
+  if (score >= 1.5) return "🟠 欠佳";
+  return "🔴 告警";
+}
+
+function getLevelClass(score) {
+  if (score >= 4.5) return "level-excellent";
+  if (score >= 3.5) return "level-good";
+  if (score >= 2.5) return "level-normal";
+  if (score >= 1.5) return "level-poor";
+  return "level-bad";
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 主渲染
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function main() {
+  // 先初始化数据文件
+  await initDataFiles();
+
+  const container = dv.container;
+  container.innerHTML = "";
+
+  // 如果没有用户选择的评分，从今日评分加载
+  let scores = { ...window.scoringScores };
+  const today = getLocalDateString();
+
+  if (Object.keys(scores).length === 0) {
+    const data = await loadData(CONFIG.scoresFile);
+    const todayRecord = data?.records?.find(r => r.date === today);
+    if (todayRecord) scores = { ...todayRecord.scores };
+  }
+
+  let message = { text: "", type: "", show: false };
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 顶部控制栏
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  const header = container.createEl("div", { cls: "scoring-header" });
+  header.createEl("h1", { text: "📊 评分系统" });
+
+  const controls = header.createEl("div", { cls: "controls" });
+
+  // 视图模式切换
+  const viewModes = [
+    { id: "unified", label: "📋 统一视图" },
+    { id: "separate", label: "🔀 分离视图" }
+  ];
+
+  viewModes.forEach(mode => {
+    const btn = controls.createEl("button", {
+      cls: `control-btn ${window.scoringViewMode === mode.id ? "active" : ""}`,
+      text: mode.label
+    });
+    btn.onclick = () => {
+      window.scoringViewMode = mode.id;
+      main();
+    };
+  });
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 标签页导航 (分离视图模式显示)
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  const tabs = container.createEl("div", { cls: `tabs ${window.scoringViewMode === "unified" ? "hidden" : ""}` });
+  const tabBtns = [
+    { id: "score", label: "📊 评分" },
+    { id: "activity", label: "📋 流水账" },
+    { id: "dashboard", text: "📈 数据" }
+  ];
+
+  tabBtns.forEach(tab => {
+    const btn = tabs.createEl("button", {
+      cls: `tab-btn ${window.scoringTab === tab.id ? "active" : ""}`,
+      text: tab.label || tab.text
+    });
+    btn.onclick = () => { window.scoringTab = tab.id; main(); };
+  });
+
+  const content = container.createEl("div", { cls: "content" });
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 消息提示
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  function showMessage(text, type = "success") {
+    message = { text, type, show: true };
+    main();
+    setTimeout(() => { message.show = false; main(); }, 3000);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 渲染
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  if (window.scoringViewMode === "unified") {
+    renderUnifiedView(content);
+  } else {
+    switch (window.scoringTab) {
+      case "score": renderScoreView(content); break;
+      case "activity": renderActivityView(content); break;
+      case "dashboard": renderDashboardView(content); break;
+    }
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 统一视图 (评分 + 流水账 + 仪表盘 同屏显示)
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function renderUnifiedView(container) {
+    const section = container.createEl("div", { cls: "unified-section" });
+
+    // 第一行：评分卡片
+    const scoreCard = section.createEl("div", { cls: "card score-card" });
+    await renderScoreCard(scoreCard);
+
+    // 第二行：流水账 + 仪表盘
+    const bottomRow = section.createEl("div", { cls: "bottom-row" });
+
+    const activitySection = bottomRow.createEl("div", { cls: "card half-card" });
+    activitySection.createEl("h3", { text: "📋 流水账" });
+    await renderActivityForm(activitySection);
+
+    const dashSection = bottomRow.createEl("div", { cls: "card half-card" });
+    dashSection.createEl("h3", { text: "📈 数据" });
+    await renderMiniDashboard(dashSection);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 评分卡片组件
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function renderScoreCard(container) {
+    container.createEl("h2", { text: "📊 今日评分" });
+    container.createEl("span", { text: getLocalDateString(), cls: "date-badge" });
+
+    // 计算
+    const layerScores = {};
+    for (const [layer, dims] of Object.entries(LAYER_DIMS)) {
+      const sum = dims.reduce((s, d) => s + (scores[d] || 0), 0);
+      layerScores[layer] = dims.length > 0 ? sum / dims.length : 0;
+    }
+    let dailyAvg = 0;
+    for (const [layer, score] of Object.entries(layerScores)) {
+      dailyAvg += score * LAYER_WEIGHTS[layer];
+    }
+    dailyAvg = Math.round(dailyAvg * 100) / 100;
+
+    // 分数显示
+    const scoreDisplay = container.createEl("div", { cls: "score-display" });
+    scoreDisplay.createEl("span", { text: dailyAvg.toFixed(1), cls: "big-score" });
+    scoreDisplay.createEl("span", { text: "/5.0", cls: "unit" });
+    scoreDisplay.createEl("span", { text: getLevel(dailyAvg), cls: `level-badge ${getLevelClass(dailyAvg)}` });
+
+    // 层级进度条
+    const layersRow = container.createEl("div", { cls: "layers-row" });
+    const layerColors = { "物质层": "#8b5cf6", "执行层": "#06b6d4", "决策层": "#10b981" };
+    for (const [layer, dims] of Object.entries(LAYER_DIMS)) {
+      const item = layersRow.createEl("div", { cls: "layer-item" });
+      item.createEl("div", { text: layer, cls: "layer-label" });
+      const barBg = item.createEl("div", { cls: "bar-bg" });
+      barBg.createEl("div", { cls: "bar-fill", style: `width: ${((layerScores[layer] || 0) / 5) * 100}%; background: ${layerColors[layer]}` });
+      item.createEl("div", { text: (layerScores[layer] || 0).toFixed(2), cls: "layer-value" });
+    }
+
+    // 维度评分
+    const dimsContainer = container.createEl("div", { cls: "dims-container" });
+
+    // D1-D7 说明
+    const helpToggle = container.createEl("div", { cls: "help-toggle" });
+    const helpBtn = helpToggle.createEl("button", { text: "📖 D1-D7 说明", cls: "help-btn" });
+    const helpContent = helpToggle.createEl("div", { cls: "help-content", style: "display: none;" });
+
+    helpBtn.onclick = () => {
+      if (helpContent.style.display === "none") {
+        helpContent.style.display = "block";
+        helpBtn.textContent = "📖 收起说明";
+      } else {
+        helpContent.style.display = "none";
+        helpBtn.textContent = "📖 D1-D7 说明";
+      }
+    };
+
+    // 生成说明内容
+    const helpTable = helpContent.createEl("table", { cls: "help-table" });
+    helpTable.innerHTML = `
+      <tr><th>维度</th><th>名称</th><th>层级</th><th>5分标准</th><th>1分标准</th></tr>
+      <tr><td>D1</td><td>睡眠质量</td><td>物质层</td><td>≥7.5h 自然醒+精神饱满</td><td><5h 严重不足</td></tr>
+      <tr><td>D2</td><td>能量水平</td><td>物质层</td><td>充沛无打哈欠</td><td>几乎无法集中</td></tr>
+      <tr><td>D3</td><td>环境整洁度</td><td>执行层</td><td>极整洁无杂物</td><td>无法工作</td></tr>
+      <tr><td>D4</td><td>任务启动数</td><td>执行层</td><td>≥8个</td><td>0个</td></tr>
+      <tr><td>D5</td><td>任务完成率</td><td>执行层</td><td>≥90%</td><td><25%</td></tr>
+      <tr><td>D6</td><td>信息收集量</td><td>决策层</td><td>≥5次主动查证</td><td>未收集</td></tr>
+      <tr><td>D7</td><td>计划调整次数</td><td>决策层</td><td>0次完全按计划</td><td>≥6次失控</td></tr>
+    `;
+
+    ["物质层", "执行层", "决策层"].forEach(layer => {
+      const layerGroup = dimsContainer.createEl("div", { cls: "layer-group" });
+      layerGroup.createEl("div", { text: `${layer} (${LAYER_WEIGHTS[layer] * 100}%)`, cls: "layer-title" });
+
+      LAYER_DIMS[layer].forEach(dimId => {
+        const dim = DIMENSIONS[dimId];
+        const dimRow = layerGroup.createEl("div", { cls: "dim-row" });
+
+        dimRow.createEl("span", { text: `${dim.icon} ${dimId}`, cls: "dim-icon" });
+        dimRow.createEl("span", { text: dim.name, cls: "dim-name" });
+
+        const btnRow = dimRow.createEl("div", { cls: "btn-row" });
+        [1, 2, 3, 4, 5].forEach(s => {
+          const btn = btnRow.createEl("button", {
+            cls: `score-btn ${scores[dimId] === s ? "selected" : ""} score-${s}`,
+            text: s
+          });
+          btn.onclick = () => { window.scoringScores[dimId] = s; main(); };
+        });
+
+        if (scores[dimId]) {
+          dimRow.createEl("span", { text: dim.help[scores[dimId]], cls: "anchor-text" });
+        }
+      });
+    });
+
+    // 操作按钮
+    const actionRow = container.createEl("div", { cls: "action-row" });
+    const saveBtn = actionRow.createEl("button", { text: "💾 保存评分", cls: "btn save-btn" });
+    const clearBtn = actionRow.createEl("button", { text: "🗑️ 清空", cls: "btn clear-btn" });
+
+    saveBtn.onclick = async () => {
+      const allScored = Object.keys(DIMENSIONS).every(d => scores[d]);
+      if (!allScored) { showMessage("⚠️ 请完成所有7个维度的评分", "error"); return; }
+      if (await saveScoreRecord(getLocalDateString(), scores, layerScores, dailyAvg)) {
+        showMessage(`✅ 已保存！日均分: ${dailyAvg.toFixed(1)}/5.0`, "success");
+      } else { showMessage("❌ 保存失败", "error"); }
+    };
+
+    clearBtn.onclick = () => { window.scoringScores = {}; main(); };
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 流水账表单组件
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function refreshActivityList(listContainer) {
+    listContainer.innerHTML = "";
+    const today = getLocalDateString();
+    const data = await loadData(CONFIG.activityFile);
+    const todayRecords = data?.records?.filter(r => r.datetime.startsWith(today)) || [];
+    todayRecords.sort((a, b) => new Date(b.datetime) - new Date(a.datetime)).slice(0, 5).forEach(r => {
+      const item = listContainer.createEl("div", { cls: "activity-item-sm" });
+      item.createEl("span", { text: r.datetime.slice(11, 16), cls: "item-time-sm" });
+      item.createEl("span", { text: r.activity, cls: "item-desc-sm" });
+    });
+  }
+
+  async function renderActivityForm(container) {
+    const form = container.createEl("div", { cls: "activity-form" });
+
+    // 时间 + 事项
+    const row1 = form.createEl("div", { cls: "form-row" });
+    const timeInput = row1.createEl("input", { type: "time", cls: "time-input", value: new Date().toTimeString().slice(0, 5) });
+    const activityInput = row1.createEl("input", { type: "text", placeholder: "做的事项...", cls: "activity-input" });
+
+    // 判据
+    const row2 = form.createEl("div", { cls: "form-row" });
+    const criterionInput = row2.createEl("input", { type: "text", placeholder: "判据/依据...", cls: "criterion-input" });
+
+    // 维度标签
+    const tagRow = form.createEl("div", { cls: "tag-row" });
+    tagRow.createEl("span", { text: "维度:", cls: "tag-label" });
+    const selectedTags = new Set();
+
+    Object.keys(DIMENSIONS).forEach(dim => {
+      const tag = tagRow.createEl("span", { cls: "dim-tag", text: dim });
+      tag.onclick = () => {
+        if (selectedTags.has(dim)) { selectedTags.delete(dim); tag.classList.remove("selected"); }
+        else { selectedTags.add(dim); tag.classList.add("selected"); }
+      };
+    });
+
+    // 反思
+    const ref1Row = form.createEl("div", { cls: "form-row" });
+    ref1Row.createEl("span", { text: "二次:", cls: "ref-label" });
+    const ref1Input = ref1Row.createEl("input", { type: "text", placeholder: "反思...", cls: "ref-input" });
+
+    const ref2Row = form.createEl("div", { cls: "form-row" });
+    ref2Row.createEl("span", { text: "三次:", cls: "ref-label" });
+    const ref2Input = ref2Row.createEl("input", { type: "text", placeholder: "深思考...", cls: "ref-input" });
+
+    // 添加按钮
+    const addBtnRow = form.createEl("div", { cls: "add-btn-row" });
+    const addBtn = addBtnRow.createEl("button", { text: "➕ 添加", cls: "btn add-btn" });
+    const msgSpan = addBtnRow.createEl("span", { cls: "msg" });
+
+    addBtn.onclick = async () => {
+      if (!activityInput.value.trim()) { msgSpan.textContent = "⚠️ 填写事项"; msgSpan.className = "msg error"; return; }
+      const record = {
+        datetime: `${getLocalDateString()} ${timeInput.value}`,
+        activity: activityInput.value.trim(),
+        criterion: criterionInput.value.trim(),
+        reflection_1: ref1Input.value.trim(),
+        reflection_2: ref2Input.value.trim(),
+        related_dimensions: Array.from(selectedTags)
+      };
+      const result = await saveActivityRecord(record);
+      if (result) {
+        msgSpan.textContent = "✅ 已添加"; msgSpan.className = "msg success";
+        activityInput.value = criterionInput.value = ref1Input.value = ref2Input.value = "";
+        selectedTags.clear(); document.querySelectorAll(".dim-tag").forEach(t => t.classList.remove("selected"));
+        // 刷新列表
+        await refreshActivityList(listContainer);
+      } else {
+        msgSpan.innerHTML = "❌ 失败<br><small>请检查控制台错误</small>";
+        msgSpan.className = "msg error";
+      }
+    };
+
+    // 今日列表
+    const listContainer = container.createEl("div", { cls: "activity-list-sm" });
+    await refreshActivityList(listContainer);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 迷你仪表盘组件
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function renderMiniDashboard(container) {
+    const data = await loadData(CONFIG.scoresFile);
+    const today = getLocalDateString();
+    const todayRecord = data?.records?.find(r => r.date === today);
+
+    // 今日概览
+    if (todayRecord) {
+      const row = container.createEl("div", { cls: "mini-score-row" });
+      row.createEl("span", { text: todayRecord.daily_avg.toFixed(1), cls: "mini-score" });
+      row.createEl("span", { text: "/5.0", cls: "mini-unit" });
+      row.createEl("span", { text: getLevel(todayRecord.daily_avg), cls: `mini-level ${getLevelClass(todayRecord.daily_avg)}` });
+    } else {
+      container.createEl("div", { text: "今日暂无评分", cls: "empty-text" });
+    }
+
+    // 维度格子
+    if (todayRecord) {
+      const grid = container.createEl("div", { cls: "dims-grid-sm" });
+      Object.entries(todayRecord.scores).forEach(([dimId, score]) => {
+        const box = grid.createEl("div", { cls: `dim-box-sm score-${score}` });
+        box.createEl("span", { text: dimId, cls: "dim-id-sm" });
+        box.createEl("span", { text: score, cls: "dim-score-sm" });
+      });
+    }
+
+    // 近期趋势
+    if (data?.records?.length > 0) {
+      const recent = data.records.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 7).reverse();
+      const trend = container.createEl("div", { cls: "mini-trend" });
+      recent.forEach(d => {
+        const row = trend.createEl("div", { cls: "trend-row-sm" });
+        row.createEl("span", { text: d.date.slice(5), cls: "trend-date-sm" });
+        const barLen = Math.round((d.daily_avg / 5) * 10);
+        row.createEl("span", { text: "█".repeat(barLen) + "░".repeat(10 - barLen), cls: "trend-bar-sm" });
+        row.createEl("span", { text: d.daily_avg.toFixed(1), cls: "trend-val-sm" });
+      });
+    }
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 分离视图 - 评分页
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function renderScoreView(container) {
+    const section = container.createEl("div", { cls: "tab-section" });
+    await renderScoreCard(section);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 分离视图 - 流水账页 (带编辑弹窗)
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function renderActivityView(container) {
+    const section = container.createEl("div", { cls: "tab-section" });
+    section.createEl("h2", { text: "📋 流水账记录" });
+
+    // ═════════════════════════════════════════════════════════════════════════════
+    // 新增表单 (简化为一行)
+    // ═════════════════════════════════════════════════════════════════════════════
+    const addRow = section.createEl("div", { cls: "activity-add-row" });
+    const addTime = addRow.createEl("input", { type: "time", cls: "add-time-input", value: new Date().toTimeString().slice(0, 5) });
+    const addActivity = addRow.createEl("input", { type: "text", placeholder: "做的事项...", cls: "add-activity-input" });
+    const addBtn = addRow.createEl("button", { text: "➕ 添加", cls: "btn add-btn" });
+    const addMsg = addRow.createEl("span", { cls: "add-msg" });
+
+    // ═════════════════════════════════════════════════════════════════════════════
+    // 日期筛选
+    // ═════════════════════════════════════════════════════════════════════════════
+    const filterRow = section.createEl("div", { cls: "activity-filter-row" });
+    filterRow.createEl("span", { text: "📅 筛选:", cls: "filter-label" });
+    const startDateInput = filterRow.createEl("input", { type: "date", cls: "date-input", value: window.scoringActivityStartDate });
+    filterRow.createEl("span", { text: "至", cls: "filter-separator" });
+    const endDateInput = filterRow.createEl("input", { type: "date", cls: "date-input", value: window.scoringActivityEndDate });
+    const filterBtn = filterRow.createEl("button", { text: "应用", cls: "btn filter-btn" });
+
+    // 日期变更后刷新
+    filterBtn.onclick = () => {
+      window.scoringActivityStartDate = startDateInput.value;
+      window.scoringActivityEndDate = endDateInput.value;
+      main();
+    };
+
+    // ═════════════════════════════════════════════════════════════════════════════
+    // 记录列表 (点击编辑)
+    // ═════════════════════════════════════════════════════════════════════════════
+    const listHeader = section.createEl("div", { cls: "activity-list-header" });
+    listHeader.createEl("h3", { text: `📜 ${window.scoringActivityStartDate} 至 ${window.scoringActivityEndDate} 的记录 (点击编辑)` });
+
+    const listContainer = section.createEl("div", { cls: "activity-list-full" });
+
+    // 加载并显示筛选范围内的记录
+    const data = await loadData(CONFIG.activityFile);
+    const filteredRecords = data?.records?.filter(r => {
+      const recordDate = r.datetime.split("T")[0];
+      return recordDate >= window.scoringActivityStartDate && recordDate <= window.scoringActivityEndDate;
+    }) || [];
+
+    filteredRecords.sort((a, b) => new Date(b.datetime) - new Date(a.datetime)).forEach(r => {
+      const item = listContainer.createEl("div", { cls: "activity-item-full" });
+      item.style.cursor = "pointer";
+
+      const itemHeader = item.createEl("div", { cls: "item-header-full" });
+      itemHeader.createEl("span", { text: r.datetime.slice(5, 10), cls: "item-date-full" });
+      itemHeader.createEl("span", { text: r.datetime.slice(11, 16), cls: "item-time-full" });
+      itemHeader.createEl("span", { text: r.activity, cls: "item-desc-full" });
+
+      // 有内容就展示
+      if (r.criterion) {
+        item.createEl("div", { text: `📊 ${r.criterion}`, cls: "item-criterion-full" });
+      }
+      if (r.reflection_1) {
+        item.createEl("div", { text: `💭 ${r.reflection_1}`, cls: "item-reflection-full" });
+      }
+      if (r.reflection_2) {
+        item.createEl("div", { text: `🔮 ${r.reflection_2}`, cls: "item-reflection-full" });
+      }
+      if (r.related_dimensions?.length > 0) {
+        const tagsDiv = item.createEl("div", { cls: "item-tags-full" });
+        r.related_dimensions.forEach(d => tagsDiv.createEl("span", { text: d, cls: "tag-full" }));
+      }
+
+      // 点击弹出编辑弹窗
+      item.onclick = () => showEditModal(r, data, listContainer);
+    });
+
+    if (filteredRecords.length === 0) {
+      listContainer.createEl("div", { text: "暂无记录", cls: "empty-text" });
+    }
+
+    // 添加按钮逻辑
+    addBtn.onclick = async () => {
+      if (!addActivity.value.trim()) { addMsg.textContent = "⚠️ 填写事项"; addMsg.className = "add-msg error"; return; }
+      const record = {
+        datetime: `${getLocalDateString()} ${addTime.value}`,
+        activity: addActivity.value.trim()
+      };
+      const result = await saveActivityRecord(record);
+      if (result) {
+        addMsg.textContent = "✅ 已添加"; addMsg.className = "add-msg success";
+        addActivity.value = "";
+        main();
+      } else {
+        addMsg.textContent = "❌ 失败"; addMsg.className = "add-msg error";
+      }
+    };
+  }
+
+  // 编辑弹窗
+  async function showEditModal(record, data, listContainer) {
+    const modal = document.createElement("div", { cls: "modal-overlay" });
+    modal.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;";
+
+    const modalContent = modal.createEl("div", { cls: "modal-content" });
+    modalContent.style.cssText = "background:var(--background-secondary);border-radius:12px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;";
+
+    modalContent.createEl("h3", { text: "✏️ 编辑流水账", style: "margin:0 0 16px 0;" });
+
+    // 从记录中提取日期
+    const recordDate = record.datetime.split("T")[0];
+    const recordTime = record.datetime.slice(11, 16);
+
+    // 日期 + 时间
+    const datetimeRow = modalContent.createEl("div", { cls: "form-row" });
+    datetimeRow.createEl("span", { text: "日期:", cls: "ref-label" });
+    const editDate = datetimeRow.createEl("input", { type: "date", cls: "date-input", value: recordDate });
+    datetimeRow.createEl("span", { text: "时间:", cls: "ref-label", style: "margin-left:12px;" });
+    const editTime = datetimeRow.createEl("input", { type: "time", cls: "time-input", value: recordTime });
+
+    // 事项
+    const actRow = modalContent.createEl("div", { cls: "form-row" });
+    actRow.createEl("span", { text: "事项:", cls: "ref-label" });
+    const editActivity = actRow.createEl("input", { type: "text", cls: "activity-input", value: record.activity });
+
+    // 判据
+    const critRow = modalContent.createEl("div", { cls: "form-row" });
+    critRow.createEl("span", { text: "判据:", cls: "ref-label" });
+    const editCriterion = critRow.createEl("input", { type: "text", cls: "criterion-input", value: record.criterion || "" });
+
+    // 维度标签
+    const tagRow = modalContent.createEl("div", { cls: "tag-row" });
+    tagRow.createEl("span", { text: "维度:", cls: "tag-label" });
+    const selectedTags = new Set(record.related_dimensions || []);
+
+    Object.keys(DIMENSIONS).forEach(dim => {
+      const tag = tagRow.createEl("span", {
+        cls: `dim-tag ${selectedTags.has(dim) ? "selected" : ""}`,
+        text: dim
+      });
+      tag.onclick = () => {
+        if (selectedTags.has(dim)) { selectedTags.delete(dim); tag.classList.remove("selected"); }
+        else { selectedTags.add(dim); tag.classList.add("selected"); }
+      };
+    });
+
+    // 二次反思
+    const ref1Row = modalContent.createEl("div", { cls: "form-row" });
+    ref1Row.createEl("span", { text: "二次:", cls: "ref-label" });
+    const editRef1 = ref1Row.createEl("input", { type: "text", cls: "ref-input", value: record.reflection_1 || "" });
+
+    // 三次反思
+    const ref2Row = modalContent.createEl("div", { cls: "form-row" });
+    ref2Row.createEl("span", { text: "三次:", cls: "ref-label" });
+    const editRef2 = ref2Row.createEl("input", { type: "text", cls: "ref-input", value: record.reflection_2 || "" });
+
+    // 按钮行
+    const btnRow = modalContent.createEl("div", { style: "display:flex;gap:12px;margin-top:20px;" });
+
+    const saveBtn = btnRow.createEl("button", { text: "💾 保存", cls: "btn save-btn" });
+    const deleteBtn = btnRow.createEl("button", { text: "🗑️ 删除", cls: "btn clear-btn", style: "background:#ef4444;color:white;" });
+    const cancelBtn = btnRow.createEl("button", { text: "取消", cls: "btn clear-btn" });
+
+    // 保存
+    saveBtn.onclick = async () => {
+      // 必填校验：日期
+      if (!editDate.value) {
+        alert("⚠️ 请填写日期");
+        editDate.focus();
+        return;
+      }
+      // 必填校验：时间
+      if (!editTime.value) {
+        alert("⚠️ 请填写时间");
+        editTime.focus();
+        return;
+      }
+      // 必填校验：事项
+      if (!editActivity.value.trim()) {
+        alert("⚠️ 请填写事项");
+        editActivity.focus();
+        return;
+      }
+      // 判据、二次反思、三次反思、维度标签可留空，自动处理
+      const updatedRecord = {
+        ...record,
+        datetime: `${editDate.value} ${editTime.value}`,
+        activity: editActivity.value.trim(),
+        criterion: editCriterion.value.trim() || undefined,
+        reflection_1: editRef1.value.trim() || undefined,
+        reflection_2: editRef2.value.trim() || undefined,
+        related_dimensions: selectedTags.size > 0 ? Array.from(selectedTags) : undefined
+      };
+
+      const idx = data.records.findIndex(r => r.id === record.id);
+      if (idx >= 0) {
+        data.records[idx] = updatedRecord;
+        const file = app.vault.getAbstractFileByPath(CONFIG.dataPath + CONFIG.activityFile);
+        if (file) {
+          await app.vault.modify(file, JSON.stringify(data, null, 2));
+          document.body.removeChild(modal);
+          main(); // 刷新视图
+        }
+      }
+    };
+
+    // 删除
+    deleteBtn.onclick = async () => {
+      if (confirm("确定删除这条记录？")) {
+        data.records = data.records.filter(r => r.id !== record.id);
+        const file = app.vault.getAbstractFileByPath(CONFIG.dataPath + CONFIG.activityFile);
+        if (file) {
+          await app.vault.modify(file, JSON.stringify(data, null, 2));
+          document.body.removeChild(modal);
+          main(); // 刷新视图
+        }
+      }
+    };
+
+    // 取消
+    cancelBtn.onclick = () => document.body.removeChild(modal);
+
+    document.body.appendChild(modal);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 分离视图 - 仪表盘页
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  async function renderDashboardView(container) {
+    const section = container.createEl("div", { cls: "tab-section" });
+    section.createEl("h2", { text: "📈 数据仪表盘" });
+
+    const data = await loadData(CONFIG.scoresFile);
+    const today = getLocalDateString();
+    const todayRecord = data?.records?.find(r => r.date === today);
+
+    // 今日概览
+    const todayCard = section.createEl("div", { cls: "dash-card" });
+    todayCard.createEl("h3", { text: "📅 今日概览" });
+    if (todayRecord) {
+      const row = todayCard.createEl("div", { cls: "today-score" });
+      row.createEl("span", { text: todayRecord.daily_avg.toFixed(1), cls: "big-num" });
+      row.createEl("span", { text: "/5.0", cls: "unit" });
+      row.createEl("span", { text: getLevel(todayRecord.daily_avg), cls: `level-badge ${getLevelClass(todayRecord.daily_avg)}` });
+    } else {
+      todayCard.createEl("p", { text: "今日暂无评分", cls: "empty-text" });
+    }
+
+    // 维度明细
+    if (todayRecord) {
+      const dimsCard = section.createEl("div", { cls: "dash-card" });
+      dimsCard.createEl("h3", { text: "📊 维度明细" });
+      const grid = dimsCard.createEl("div", { cls: "dims-grid" });
+      Object.entries(todayRecord.scores).forEach(([dimId, score]) => {
+        const box = grid.createEl("div", { cls: `dim-box score-${score}` });
+        box.createEl("span", { text: dimId, cls: "dim-id" });
+        box.createEl("span", { text: DIMENSIONS[dimId].name, cls: "dim-name-sm" });
+        box.createEl("span", { text: score, cls: "dim-score" });
+      });
+    }
+
+    // 近期趋势
+    const trendCard = section.createEl("div", { cls: "dash-card" });
+    trendCard.createEl("h3", { text: "📈 近14天趋势" });
+    if (data?.records?.length > 0) {
+      const recent = data.records.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 14).reverse();
+      const chart = trendCard.createEl("div", { cls: "mini-chart" });
+      recent.forEach(d => {
+        const row = chart.createEl("div", { cls: "chart-row" });
+        row.createEl("span", { text: d.date.slice(5), cls: "chart-date" });
+        const barLen = Math.round((d.daily_avg / 5) * 18);
+        row.createEl("span", { text: "█".repeat(barLen) + "░".repeat(18 - barLen), cls: "chart-bar" });
+        row.createEl("span", { text: d.daily_avg.toFixed(1), cls: "chart-value" });
+      });
+    } else {
+      trendCard.createEl("p", { text: "数据积累中...", cls: "empty-text" });
+    }
+
+    // 层级分析
+    const layerCard = section.createEl("div", { cls: "dash-card" });
+    layerCard.createEl("h3", { text: "📊 层级分析 (近7天)" });
+    if (data?.records?.length >= 3) {
+      const recent7 = data.records.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 7);
+      for (const [layer, dims] of Object.entries(LAYER_DIMS)) {
+        const row = layerCard.createEl("div", { cls: "layer-row" });
+        row.createEl("span", { text: layer, cls: "layer-name" });
+        const avg = recent7.reduce((s, r) => s + dims.reduce((ss, d) => ss + (r.scores[d] || 0), 0), 0) / (recent7.length * dims.length);
+        const barBox = row.createEl("div", { cls: "bar-box" });
+        barBox.createEl("div", { cls: "bar-fill", style: `width: ${(avg / 5) * 100}%` });
+        row.createEl("span", { text: avg.toFixed(2), cls: "layer-value" });
+      }
+    } else {
+      layerCard.createEl("p", { text: "需要至少3天数据", cls: "empty-text" });
+    }
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 消息提示
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  if (message.show) {
+    const msgDiv = container.createEl("div", { cls: `message ${message.type}` });
+    msgDiv.textContent = message.text;
+  }
+}
+
+// 启动
+main();
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 样式
+// ═════════════════════════════════════════════════════════════════════════════
+
+const style = document.createElement("style");
+style.textContent = `
+  /* 头部 */
+  .scoring-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 2px solid var(--interactive-accent); }
+  .scoring-header h1 { margin: 0; font-size: 20px; }
+  .controls { display: flex; gap: 8px; }
+  .control-btn { padding: 8px 16px; border: 1px solid var(--background-modifier-border); background: transparent; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .control-btn.active { background: var(--interactive-accent); color: white; border-color: transparent; }
+
+  /* 标签页 */
+  .tabs { display: flex; gap: 8px; padding: 16px 20px; }
+  .tabs.hidden { display: none; }
+  .tab-btn { padding: 10px 20px; border: none; background: var(--background-secondary); border-radius: 8px; cursor: pointer; font-size: 14px; }
+  .tab-btn.active { background: var(--interactive-accent); color: white; }
+
+  .content { padding: 0 20px 20px; }
+
+  /* 卡片 */
+  .card { background: var(--background-secondary); border-radius: 12px; padding: 20px; }
+  .score-card { margin-bottom: 16px; }
+  .half-card { flex: 1; }
+
+  /* 统一视图布局 */
+  .unified-section { display: flex; flex-direction: column; gap: 16px; }
+  .bottom-row { display: flex; gap: 16px; }
+
+  /* 分数显示 */
+  .date-badge { font-size: 12px; color: var(--text-muted); background: var(--background-primary); padding: 4px 8px; border-radius: 4px; margin-left: 12px; }
+  .score-display { display: flex; align-items: baseline; gap: 8px; margin-bottom: 16px; background: var(--background-primary); padding: 16px; border-radius: 8px; }
+  .big-score { font-size: 48px; font-weight: 700; color: var(--interactive-accent); }
+  .unit { font-size: 20px; color: var(--text-muted); }
+  .level-badge { padding: 4px 10px; border-radius: 4px; font-size: 14px; font-weight: 600; }
+  .level-excellent { background: #22c55e; color: white; }
+  .level-good { background: #84cc16; color: white; }
+  .level-normal { background: #eab308; color: black; }
+  .level-poor { background: #f97316; color: white; }
+  .level-bad { background: #ef4444; color: white; }
+
+  /* 层级进度条 */
+  .layers-row { display: flex; gap: 12px; margin-bottom: 16px; }
+  .layer-item { flex: 1; text-align: center; }
+  .layer-label { font-size: 12px; color: var(--text-muted); }
+  .layer-value { font-size: 16px; font-weight: 600; display: block; margin-top: 4px; }
+  .bar-bg { height: 6px; background: var(--background-modifier-border); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .bar-fill { height: 100%; transition: width 0.3s; }
+
+  /* 维度评分 */
+  .dims-container { display: flex; flex-direction: column; gap: 12px; }
+  .layer-group { background: var(--background-primary); border-radius: 8px; padding: 12px; }
+  .layer-title { font-weight: 600; color: var(--interactive-accent); font-size: 13px; margin-bottom: 8px; }
+  .dim-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .dim-icon { font-size: 14px; }
+  .dim-name { font-weight: 500; }
+  .btn-row { display: flex; gap: 3px; }
+  .score-btn { width: 28px; height: 28px; border: 2px solid var(--background-modifier-border); background: transparent; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; transition: all 0.2s; }
+  .score-btn:hover { background: var(--background-modifier-hover); }
+  .score-btn.selected { color: white; border-color: transparent; }
+  .score-btn.score-5.selected { background: #22c55e; }
+  .score-btn.score-4.selected { background: #84cc16; }
+  .score-btn.score-3.selected { background: #eab308; }
+  .score-btn.score-2.selected { background: #f97316; }
+  .score-btn.score-1.selected { background: #ef4444; }
+  .anchor-text { font-size: 11px; color: var(--text-muted); font-style: italic; }
+
+  /* D1-D7 说明 */
+  .help-toggle { margin-bottom: 12px; }
+  .help-btn { padding: 6px 12px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .help-content { margin-top: 8px; padding: 12px; background: var(--background-primary); border-radius: 8px; }
+  .help-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .help-table th, .help-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--background-modifier-border); }
+  .help-table th { background: var(--background-secondary); font-weight: 600; }
+
+  /* 操作按钮 */
+  .action-row { display: flex; gap: 12px; margin-top: 16px; }
+  .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; }
+  .save-btn { background: #22c55e; color: white; }
+  .clear-btn { background: var(--background-modifier-hover); }
+  .add-btn { background: #10b981; color: white; }
+
+  /* 流水账表单 */
+  .activity-form { display: flex; flex-direction: column; gap: 10px; }
+  .form-row { display: flex; gap: 8px; }
+  .form-row input { padding: 8px 10px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); }
+  .time-input { width: 80px; }
+  .activity-input { flex: 1; }
+  .criterion-input { width: 100%; }
+  .tag-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .tag-label { font-size: 12px; color: var(--text-muted); }
+  .dim-tag { padding: 3px 8px; background: var(--background-modifier-border); border-radius: 4px; font-size: 11px; cursor: pointer; }
+  .dim-tag.selected { background: var(--interactive-accent); color: white; }
+  .ref-label { font-size: 12px; color: var(--text-muted); width: 36px; }
+  .ref-input { flex: 1; }
+  .add-btn-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .msg { font-size: 12px; font-weight: 600; }
+  .msg.success { color: #22c55e; }
+  .msg.error { color: #ef4444; }
+
+  /* 活动列表 */
+  .activity-list-sm { margin-top: 12px; max-height: 200px; overflow-y: auto; }
+  .activity-item-sm { display: flex; gap: 8px; padding: 6px; background: var(--background-primary); border-radius: 4px; margin-bottom: 4px; font-size: 12px; }
+  .item-time-sm { color: var(--text-muted); min-width: 45px; }
+  .item-desc-sm { font-weight: 500; }
+
+  /* 迷你仪表盘 */
+  .mini-score-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+  .mini-score { font-size: 32px; font-weight: 700; color: var(--interactive-accent); }
+  .mini-unit { font-size: 16px; color: var(--text-muted); }
+  .mini-level { padding: 3px 8px; border-radius: 4px; font-size: 12px; }
+  .dims-grid-sm { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 12px; }
+  .dim-box-sm { text-align: center; padding: 6px 4px; border-radius: 4px; }
+  .dim-box-sm.score-5 { background: #dcfce7; color: #166534; }
+  .dim-box-sm.score-4 { background: #ecfccb; color: #3f6212; }
+  .dim-box-sm.score-3 { background: #fef9c3; color: #854d0e; }
+  .dim-box-sm.score-2 { background: #ffedd5; color: #9a3412; }
+  .dim-box-sm.score-1 { background: #fee2e2; color: #991b1b; }
+  .dim-id-sm { display: block; font-size: 10px; font-weight: 600; }
+  .dim-score-sm { display: block; font-size: 16px; font-weight: 700; }
+  .mini-trend { font-family: monospace; font-size: 12px; }
+  .trend-row-sm { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+  .trend-date-sm { width: 45px; text-align: right; color: var(--text-muted); }
+  .trend-bar-sm { color: var(--interactive-accent); }
+  .trend-val-sm { font-weight: 600; }
+
+  /* 分离视图样式 */
+  .tab-section { background: var(--background-secondary); border-radius: 12px; padding: 20px; }
+  .tab-section h2 { margin: 0 0 16px 0; font-size: 18px; }
+  .tab-section h3 { margin: 0 0 12px 0; font-size: 14px; color: var(--text-muted); }
+
+  /* 仪表盘卡片 */
+  .dash-card { background: var(--background-primary); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .dash-card h3 { font-size: 14px; color: var(--text-muted); margin-bottom: 12px; }
+  .today-score { display: flex; align-items: baseline; gap: 12px; }
+  .big-num { font-size: 36px; font-weight: 700; color: var(--interactive-accent); }
+
+  /* 维度格子 */
+  .dims-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+  .dim-box { text-align: center; padding: 10px 6px; border-radius: 6px; }
+  .dim-box.score-5 { background: #dcfce7; color: #166534; }
+  .dim-box.score-4 { background: #ecfccb; color: #3f6212; }
+  .dim-box.score-3 { background: #fef9c3; color: #854d0e; }
+  .dim-box.score-2 { background: #ffedd5; color: #9a3412; }
+  .dim-box.score-1 { background: #fee2e2; color: #991b1b; }
+  .dim-id { display: block; font-size: 12px; font-weight: 600; }
+  .dim-name-sm { display: block; font-size: 10px; opacity: 0.8; }
+  .dim-score { display: block; font-size: 20px; font-weight: 700; }
+
+  /* 趋势图 */
+  .mini-chart { font-family: monospace; font-size: 13px; }
+  .chart-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .chart-date { width: 50px; text-align: right; color: var(--text-muted); }
+  .chart-bar { color: var(--interactive-accent); letter-spacing: -1px; }
+  .chart-value { width: 36px; text-align: right; font-weight: 600; }
+
+  /* 层级分析 */
+  .layer-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .layer-name { width: 60px; font-weight: 600; font-size: 13px; }
+  .bar-box { flex: 1; height: 16px; background: var(--background-secondary); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--interactive-accent); }
+  .layer-value { width: 40px; text-align: right; font-weight: 600; font-size: 13px; }
+
+  /* 活动列表 */
+  .activity-list { margin-top: 16px; max-height: 400px; overflow-y: auto; }
+  .activity-item { padding: 12px; background: var(--background-primary); border-radius: 6px; margin-bottom: 8px; }
+  .item-header { display: flex; gap: 12px; align-items: baseline; margin-bottom: 6px; }
+  .item-time { font-size: 12px; color: var(--text-muted); min-width: 50px; }
+  .item-desc { font-weight: 600; }
+  .item-criterion { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .item-refs { margin-top: 6px; }
+  .ref-text { font-size: 12px; padding-left: 12px; border-left: 2px solid; margin-bottom: 4px; }
+  .ref-text:first-child { border-color: #6366f1; color: #6366f1; }
+  .ref-text:last-child { border-color: #8b5cf6; color: #8b5cf6; }
+  .item-tags { display: flex; gap: 4px; margin-top: 8px; }
+  .tag { padding: 2px 6px; background: var(--interactive-accent); color: white; border-radius: 3px; font-size: 10px; }
+
+  .empty-text { color: var(--text-muted); font-style: italic; font-size: 13px; }
+
+  /* 消息提示 */
+  .message { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-weight: 600; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .message.success { background: #22c55e; color: white; }
+  .message.error { background: #ef4444; color: white; }
+
+  /* 完整流水账列表 */
+  .activity-list-full { margin-top: 16px; max-height: 500px; overflow-y: auto; }
+  .activity-item-full { padding: 12px; background: var(--background-primary); border-radius: 6px; margin-bottom: 8px; transition: transform 0.1s; }
+  .activity-item-full:hover { transform: translateX(4px); border-left: 3px solid var(--interactive-accent); }
+  .item-header-full { display: flex; gap: 12px; align-items: baseline; margin-bottom: 6px; }
+  .item-time-full { font-size: 12px; color: var(--text-muted); min-width: 50px; }
+  .item-desc-full { font-weight: 600; font-size: 14px; }
+  .item-criterion-full { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .item-refs-full { margin-top: 6px; }
+  .ref-text-full { font-size: 12px; padding-left: 12px; border-left: 2px solid; margin-bottom: 4px; }
+  .ref-text-full:first-child { border-color: #6366f1; color: #6366f1; }
+  .ref-text-full:last-child { border-color: #8b5cf6; color: #8b5cf6; }
+  .item-tags-full { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .tag-full { padding: 2px 8px; background: var(--interactive-accent); color: white; border-radius: 3px; font-size: 11px; }
+
+  /* 流水账新增行 */
+  .activity-add-row { display: flex; gap: 8px; align-items: center; padding: 12px; background: var(--background-primary); border-radius: 8px; margin-bottom: 12px; }
+  .add-time-input { width: 90px; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 4px; }
+  .add-activity-input { flex: 1; padding: 6px 10px; border: 1px solid var(--background-modifier-border); border-radius: 4px; }
+  .add-msg { font-size: 12px; font-weight: 600; margin-left: 8px; }
+  .add-msg.success { color: #22c55e; }
+  .add-msg.error { color: #ef4444; }
+
+  /* 流水账日期筛选 */
+  .activity-filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 8px 12px; background: var(--background-secondary); border-radius: 6px; }
+  .filter-label { font-size: 13px; color: var(--text-muted); }
+  .filter-separator { color: var(--text-muted); }
+  .date-input { padding: 4px 8px; border: 1px solid var(--background-modifier-border); border-radius: 4px; }
+  .filter-btn { padding: 4px 12px; background: var(--interactive-accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+
+  /* 流水账列表头部 */
+  .activity-list-header { margin-bottom: 8px; }
+  .activity-list-header h3 { margin: 0; font-size: 14px; color: var(--text-muted); }
+
+  /* 完整列表日期显示 */
+  .item-date-full { font-size: 12px; color: var(--text-muted); min-width: 45px; }
+  .item-reflection-full { font-size: 12px; color: var(--text-muted); margin-top: 4px; padding-left: 12px; border-left: 2px solid; }
+  .item-reflection-full:first-of-type { border-color: #6366f1; }
+  .item-reflection-full:last-of-type { border-color: #8b5cf6; }
+`;
+document.head.appendChild(style);
+```
+```dataviewjs
+// ============================================================
+// 📊 时间统计与评估视图 (v6.1 JSON极速版 + 手动时间)
+// ============================================================
+
+const startDate = new Date("2025-11-01"); 
+const endDate = new Date("2026-12-31");
+endDate.setHours(23,59,59,999);
+
+// --- 0. JSON 存储配置 ---
+const JSON_FILENAME = "TimeLog_Database.json";
+const currentFolder = dv.current().file.folder;
+const DB_PATH = currentFolder + "/" + JSON_FILENAME;
+
+// --- 1. 核心交互组件 (UI保持一致) ---
+class QuickSuggester extends obsidian.FuzzySuggestModal {
+    constructor(app, items, onChoose) {
+        super(app);
+        this.items = items;
+        this.onChoose = onChoose;
+    }
+    getItems() { return this.items; }
+    getItemText(item) { return item; }
+    onChooseItem(item, evt) { this.onChoose(item); }
+}
+
+class QuickPrompt extends obsidian.Modal {
+    constructor(app, title, placeholder, onSubmit, defaultValue = "") {
+        super(app);
+        this.titleStr = title;
+        this.placeholder = placeholder;
+        this.defaultValue = defaultValue;
+        this.onSubmit = onSubmit;
+    }
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl("h3", { text: this.titleStr });
+        const inputContainer = contentEl.createDiv();
+        const input = inputContainer.createEl("input", { type: "text", value: this.defaultValue });
+        input.placeholder = this.placeholder;
+        input.style.width = "100%";
+        input.focus();
+        
+        const btnContainer = contentEl.createDiv({ style: "margin-top: 15px; text-align: right;" });
+        const confirmBtn = btnContainer.createEl("button", { text: "确定", cls: "mod-cta" });
+        const submit = () => { if(input.value) { this.close(); this.onSubmit(input.value); }};
+        confirmBtn.onclick = submit;
+        input.addEventListener("keypress", (e) => { if (e.key === "Enter") submit(); });
+    }
+    onClose() { this.contentEl.empty(); }
+}
+
+const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
+const suggester = (items) => new Promise(r => new QuickSuggester(app, items, r).open());
+
+// --- 2. 数据处理逻辑 (JSON核心) ---
+
+// 读取 JSON
+const loadData = async () => {
+    if (!await app.vault.adapter.exists(DB_PATH)) return [];
+    const content = await app.vault.adapter.read(DB_PATH);
+    try { return JSON.parse(content); } catch (e) { return []; }
+};
+
+// 写入 JSON
+const saveData = async (newData) => {
+    const file = app.vault.getAbstractFileByPath(DB_PATH);
+    const jsonString = JSON.stringify(newData, null, 2);
+    if (file) await app.vault.modify(file, jsonString);
+    else await app.vault.create(DB_PATH, jsonString);
+    renderView(); // 保存后刷新
+};
+
+// 【核心修改】添加新记录逻辑：支持自定义时间
+async function addNewRecord() {
+    let allLogs = await loadData();
+    let existingCategories = new Set([
+        "3-稳健执行", "4-为自己的系统设计", "2-历史的信息archieve", 
+        "1-解决导致卡顿的问题", "5-向历史的不完备做封堵", 
+        "6-协同合作统合综效", "2A-明确问题带来信息增量扩展问题圈"
+    ]); 
+    allLogs.forEach(log => { if(log.category) existingCategories.add(log.category); });
+    let catList = Array.from(existingCategories).sort();
+
+    // (1) 事项
+    const issue = await prompt("做了什么？（事项总结）", "例如：修复了雷达模块BUG");
+    if (!issue) return;
+
+    // (2) 【新增】输入日期时间
+    const defaultTime = moment().format("YYYY-MM-DD HH:mm");
+    const timestampInput = await prompt("确认时间 (YYYY-MM-DD HH:mm)", "可修改以补录", defaultTime);
+    if (!timestampInput) return; // 允许取消
+
+    // (3) 分类
+    const choices = ["[+] 新增分类...", ...catList];
+    let category = await suggester(choices);
+    if (!category) return;
+
+    if (category === "[+] 新增分类...") {
+        category = await prompt("请输入新分类名称：", "例如：7-新业务探索");
+        if (!category) return;
+    }
+
+    // (4) 时长
+    const durationInput = await prompt("耗时（分钟）", "90");
+    if (!durationInput) return;
+    const durationMin = parseInt(durationInput);
+
+    // (5) 打分
+    const score = await prompt("打分（1-10）", "5");
+    if (!score) return;
+
+    // 构建新对象
+    const newEntry = {
+        timestamp: timestampInput, // 使用用户输入的时间
+        issue: issue,
+        category: category,
+        duration: durationMin,
+        score: Number(score)
+    };
+
+    allLogs.push(newEntry);
+    
+    // 按时间排序，确保表格和图表顺序正确
+    allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    await saveData(allLogs);
+    new Notice(`✅ 记录已添加: ${timestampInput}`);
+}
+
+// --- 3. 主渲染逻辑 (封装以便调用) ---
+const renderView = async () => {
+    dv.container.innerHTML = ""; // 清空画布
+    const logs = await loadData();
+    
+    if (logs.length === 0 && !await app.vault.adapter.exists(DB_PATH)) {
+        dv.paragraph(`⚠️ 未找到数据库: <code>${JSON_FILENAME}</code><br>请确保已运行迁移脚本，并将文件放置在当前目录。`);
+        return;
+    }
+
+    // 预处理数据以便显示
+    let allEntries = [];
+    for (let log of logs) {
+        let logDate = new Date(log.timestamp);
+        if (isNaN(logDate.getTime())) continue;
+
+        if (logDate >= startDate && logDate <= endDate) {
+            allEntries.push({
+                dateObj: logDate,
+                dateStr: moment(logDate).format("YYYY-MM-DD"),
+                timeStr: moment(logDate).format("HH:mm"),
+                issue: log.issue,
+                category: log.category,
+                durationMin: log.duration,
+                score: log.score
+            });
+        }
+    }
+
+    // 格式化函数
+    function formatMin(m) {
+        if(!m) return "0m";
+        if(m < 60) return `${m}m`;
+        const h = Math.floor(m / 60);
+        const min = m % 60;
+        return min > 0 ? `${h}h ${min}m` : `${h}h`;
+    }
+
+    function goldenAngleColor(idx, total) {
+        const GOLDEN_ANGLE = 137.508;
+        let hue = (idx * GOLDEN_ANGLE) % 360;
+        return {
+            fill: `hsl(${hue},${65 + ((idx%2)*15)}%,${60 + ((idx%3)*15)}%)`,
+            border: `hsl(${hue},85%,35%)`,
+        };
+    }
+
+    // 渲染按钮
+    const btnContainer = dv.el("div", "", { attr: { style: "margin-bottom: 20px; padding: 15px; background: var(--background-primary-alt); border: 1px dashed var(--background-modifier-border); border-radius: 8px; text-align: center;" }});
+    const btn = btnContainer.createEl("button", { text: "➕ 添加新的时间记录", attr: { style: "background-color: var(--interactive-accent); color: var(--text-on-accent); padding: 8px 24px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" }});
+    btn.onclick = addNewRecord;
+
+    if (allEntries.length === 0) {
+        dv.paragraph("📝 还没有数据，点击上方按钮开始记录！");
+    } else {
+        const group = allEntries.reduce((acc, e) => {
+            if (!acc[e.dateStr]) acc[e.dateStr] = [];
+            acc[e.dateStr].push(e);
+            return acc;
+        }, {});
+
+        let allCategories = Array.from(new Set(allEntries.map(e => e.category))).sort();
+        const colorPairMap = {};
+        allCategories.forEach((cat, idx) => {
+            colorPairMap[cat] = goldenAngleColor(idx, allCategories.length);
+        });
+
+        // 1. 堆叠图
+        dv.header(3, "📊 质量评估堆叠图");
+        const blockHeight = 60;
+        const minChartHeight = 280;
+        let chartHtml = `<div style="display:flex;align-items:flex-end;gap:12px;overflow-x:auto;padding: 10px 0;">`;
+        
+        Object.keys(group).sort().forEach(date => {
+            const entries = group[date].sort((a, b) => b.score - a.score);
+            let stack = entries.map(e => {
+                const color = colorPairMap[e.category] || {fill:"#ddd", border:"#444"};
+                let shortCat = e.category.split('-')[1] || e.category; 
+                if(shortCat.length > 4) shortCat = shortCat.substring(0,4)+"..";
+                
+                return `<div style="width:50px;height:${blockHeight}px;background:${color.fill};border:2px solid ${color.border};border-radius:6px;margin-bottom:3px;display:flex;flex-direction:column;justify-content:center;align-items:center;cursor:pointer;box-sizing: border-box;transition: transform 0.1s;" 
+                    title="${e.timeStr} | ${e.issue}\n分类: ${e.category}\n耗时: ${e.durationMin}分钟\n评分: ${e.score}" 
+                    onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                    <span style="font-size:15px;font-weight:bold;color:#222;line-height:1.2;">${e.score}</span>
+                    <span style="font-size:9px;color:#444;width:44px;text-align:center;overflow:hidden;white-space:nowrap;">${shortCat}</span>
+                </div>`;
+            }).join('');
+            
+            const dayTotal = entries.reduce((a,b)=>a+b.durationMin,0);
+            chartHtml += `<div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-height:${minChartHeight}px;">
+                ${stack}
+                <div style="margin-top:5px;font-size:12px;font-weight:bold;color:var(--text-muted);">${date.slice(5)}</div>
+                <div style="font-size:10px;color:var(--text-faint);">${formatMin(dayTotal)}</div>
+            </div>`;
+        });
+        chartHtml += `</div>`;
+        dv.paragraph(chartHtml);
+
+        // 图例
+        let legendHtml = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;margin-bottom:30px;padding:10px;background:var(--background-secondary);border-radius:6px;">`;
+        allCategories.forEach(cat => {
+            const c = colorPairMap[cat];
+            legendHtml += `<span style="padding:2px 8px;border-radius:4px;background:${c.fill};border:1px solid ${c.border};font-size:12px;color:var(--text-normal);">${cat}</span>`;
+        });
+        legendHtml += `</div>`;
+        dv.paragraph(legendHtml);
+
+        // 2. 表格
+        let tableData = [];
+        Object.keys(group).sort().reverse().forEach(date => {
+            const entries = group[date].sort((a, b) => b.dateObj - a.dateObj);
+            const totalMin = entries.reduce((a, b) => a + b.durationMin, 0);
+            
+            entries.forEach((e, i) => {
+                tableData.push([
+                    i === 0 ? `**${date}**` : "",
+                    e.timeStr,
+                    e.issue,
+                    e.category,
+                    formatMin(e.durationMin),
+                    e.score,
+                    i === 0 ? formatMin(totalMin) : ""
+                ]);
+            });
+        });
+        dv.header(3, "📋 详细记录表");
+        dv.table(["日期", "时刻", "事项内容", "分类", "耗时", "评分", "日合计"], tableData);
+    }
+};
+
+// 启动
+renderView();
+
+```
+
+
