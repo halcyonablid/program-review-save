@@ -1,0 +1,1148 @@
+```dataviewjs
+//=============================================================================
+// SuperMemo Concept 索引管理系统 (Obsidian DataviewJS版)
+// 核心特性：
+// - 展示视图：套圈式展示，不同层级不同颜色，仅显示名称，无计数。
+// - 管理视图：GTD风格，支持拖拽调整层级、添加、编辑、删除。仅显示名称。
+// - 数据存储：使用 localStorage。
+//=============================================================================
+
+(async () => {
+
+// ============ 配置 ============
+const STORAGE_KEY = 'supermemo_concepts_final_v3';
+const SAMPLE_DATA_ENABLED = true;
+
+// ============ 颜色配置 ============
+const COLORS = {
+    yaml: { bg: 'rgba(0, 122, 255, 0.12)', border: 'rgba(0, 122, 255, 0.3)', text: '#007AFF', icon: '◆' },
+    plus: { bg: 'rgba(255, 149, 0, 0.12)', border: 'rgba(255, 149, 0, 0.3)', text: '#D47300', icon: '▲' },
+    dot:  { bg: 'rgba(142, 68, 173, 0.1)', border: 'rgba(142, 68, 173, 0.25)', text: '#8E44AD', icon: '●' }
+};
+
+// ============ 层级颜色配置（用于展示视图）============
+const LEVEL_COLORS = {
+    1: { bg: 'rgba(100, 149, 237, 0.1)', border: 'rgba(100, 149, 237, 0.35)', shadow: 'rgba(100, 149, 237, 0.15)' },
+    2: { bg: 'rgba(46, 204, 113, 0.12)', border: 'rgba(46, 204, 113, 0.4)', shadow: 'rgba(46, 204, 113, 0.15)' },
+    3: { bg: 'rgba(155, 89, 182, 0.14)', border: 'rgba(155, 89, 182, 0.45)', shadow: 'rgba(155, 89, 182, 0.15)' },
+    4: { bg: 'rgba(230, 126, 34, 0.14)', border: 'rgba(230, 126, 34, 0.45)', shadow: 'rgba(230, 126, 34, 0.15)' },
+    5: { bg: 'rgba(233, 30, 99, 0.14)', border: 'rgba(233, 30, 99, 0.45)', shadow: 'rgba(233, 30, 99, 0.15)' },
+    6: { bg: 'rgba(0, 188, 212, 0.14)', border: 'rgba(0, 188, 212, 0.45)', shadow: 'rgba(0, 188, 212, 0.15)' },
+    7: { bg: 'rgba(255, 193, 7, 0.14)', border: 'rgba(255, 193, 7, 0.45)', shadow: 'rgba(255, 193, 7, 0.15)' },
+    8: { bg: 'rgba(63, 81, 181, 0.14)', border: 'rgba(63, 81, 181, 0.45)', shadow: 'rgba(63, 81, 181, 0.15)' },
+    9: { bg: 'rgba(121, 85, 72, 0.14)', border: 'rgba(121, 85, 72, 0.45)', shadow: 'rgba(121, 85, 72, 0.15)' },
+    10: { bg: 'rgba(255, 64, 129, 0.14)', border: 'rgba(255, 64, 129, 0.45)', shadow: 'rgba(255, 64, 129, 0.15)' },
+    11: { bg: 'rgba(0, 150, 136, 0.14)', border: 'rgba(0, 150, 136, 0.45)', shadow: 'rgba(0, 150, 136, 0.15)' },
+    12: { bg: 'rgba(103, 58, 183, 0.14)', border: 'rgba(103, 58, 183, 0.45)', shadow: 'rgba(103, 58, 183, 0.15)' }
+};
+
+// ============ 样式注入 ============
+const styleId = 'sm-concept-final-v3-styles';
+const oldStyle = document.getElementById(styleId);
+if (oldStyle) oldStyle.remove();
+
+const style = document.createElement('style');
+style.id = styleId;
+style.textContent = `
+    .sm-container { font-family: var(--font-text); padding: 10px; }
+
+    /* 图例 */
+    .sm-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 10px; background: var(--background-secondary); border-radius: 8px; margin-bottom: 12px; font-size: 12px; }
+    .sm-legend-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; }
+    .sm-legend-yaml { background: ${COLORS.yaml.bg}; color: ${COLORS.yaml.text}; border-left: 3px solid ${COLORS.yaml.text}; }
+    .sm-legend-plus { background: ${COLORS.plus.bg}; color: ${COLORS.plus.text}; border-left: 3px solid ${COLORS.plus.text}; }
+    .sm-legend-dot { background: ${COLORS.dot.bg}; color: ${COLORS.dot.text}; border-left: 3px solid ${COLORS.dot.text}; }
+
+    /* 工具栏 */
+    .sm-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; padding: 8px; background: var(--background-secondary); border-radius: 6px; }
+    .sm-toolbar button { padding: 6px 14px; border: none; border-radius: 4px; background: var(--interactive-accent); color: var(--text-on-accent); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
+    .sm-toolbar button:hover { opacity: 0.85; transform: translateY(-1px); }
+    .sm-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .sm-toolbar button.secondary { background: var(--background-modifier-border); color: var(--text-normal); }
+
+    /* 字母导航 */
+    .sm-alphabet-nav { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; }
+    .sm-letter-link { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: var(--background-secondary); border-radius: 50%; cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.15s; }
+    .sm-letter-link:hover { background: var(--interactive-accent); color: var(--text-on-accent); transform: scale(1.1); }
+
+    /* 分组标题 */
+    .sm-group-header { margin-top: 16px; border-bottom: 1px solid var(--background-modifier-border); color: var(--text-muted); font-size: 14px; padding-bottom: 4px; font-weight: 600; }
+
+    /* ============ 展示视图样式（套圈式）============ */
+    .sm-nest-container { margin-top: 12px; min-height: 50px; }
+    .sm-group-content { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px; min-height: 30px; padding: 8px 0; align-items: flex-start; }
+
+    /* 胶囊 - 基础样式 */
+    .sm-capsule {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        border-radius: 12px;
+        transition: all 0.2s;
+        margin: 4px;
+        vertical-align: top;
+        padding: 8px 12px;
+    }
+
+    /* 第1层嵌套 - 蓝色 */
+    .sm-capsule.level-1 {
+        border: 2px solid ${LEVEL_COLORS[1].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[1].bg} 0%, rgba(100, 149, 237, 0.03) 100%);
+        box-shadow: 0 1px 4px ${LEVEL_COLORS[1].shadow};
+    }
+    .sm-capsule.level-1:hover {
+        border-color: rgba(100, 149, 237, 0.6);
+        box-shadow: 0 2px 8px rgba(100, 149, 237, 0.25);
+    }
+
+    /* 第2层嵌套 - 绿色 */
+    .sm-capsule.level-1 .sm-capsule.level-2,
+    .sm-capsule.level-2 {
+        border: 2px solid ${LEVEL_COLORS[2].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[2].bg} 0%, rgba(46, 204, 113, 0.04) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[2].shadow};
+    }
+    .sm-capsule.level-1 .sm-capsule.level-2:hover,
+    .sm-capsule.level-2:hover {
+        border-color: rgba(46, 204, 113, 0.6);
+        box-shadow: 0 2px 8px rgba(46, 204, 113, 0.25);
+    }
+
+    /* 第3层嵌套 - 紫色 */
+    .sm-capsule.level-1 .sm-capsule.level-2 .sm-capsule.level-3,
+    .sm-capsule.level-2 .sm-capsule.level-3,
+    .sm-capsule.level-3 {
+        border: 2px solid ${LEVEL_COLORS[3].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[3].bg} 0%, rgba(155, 89, 182, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[3].shadow};
+    }
+    .sm-capsule.level-1 .sm-capsule.level-2 .sm-capsule.level-3:hover,
+    .sm-capsule.level-2 .sm-capsule.level-3:hover,
+    .sm-capsule.level-3:hover {
+        border-color: rgba(155, 89, 182, 0.6);
+        box-shadow: 0 2px 8px rgba(155, 89, 182, 0.25);
+    }
+
+    /* 第4层嵌套 - 橙色 */
+    .sm-capsule.level-4 {
+        border: 2px solid ${LEVEL_COLORS[4].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[4].bg} 0%, rgba(230, 126, 34, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[4].shadow};
+    }
+    .sm-capsule.level-4:hover {
+        border-color: rgba(230, 126, 34, 0.6);
+        box-shadow: 0 2px 8px rgba(230, 126, 34, 0.25);
+    }
+
+    /* 第5层嵌套 - 玫红色 */
+    .sm-capsule.level-5 {
+        border: 2px solid ${LEVEL_COLORS[5].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[5].bg} 0%, rgba(233, 30, 99, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[5].shadow};
+    }
+    .sm-capsule.level-5:hover {
+        border-color: rgba(233, 30, 99, 0.6);
+        box-shadow: 0 2px 8px rgba(233, 30, 99, 0.25);
+    }
+
+    /* 第6层嵌套 - 青色 */
+    .sm-capsule.level-6 {
+        border: 2px solid ${LEVEL_COLORS[6].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[6].bg} 0%, rgba(0, 188, 212, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[6].shadow};
+    }
+    .sm-capsule.level-6:hover {
+        border-color: rgba(0, 188, 212, 0.6);
+        box-shadow: 0 2px 8px rgba(0, 188, 212, 0.25);
+    }
+
+    /* 第7层嵌套 - 琥珀色 */
+    .sm-capsule.level-7 {
+        border: 2px solid ${LEVEL_COLORS[7].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[7].bg} 0%, rgba(255, 193, 7, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[7].shadow};
+    }
+    .sm-capsule.level-7:hover {
+        border-color: rgba(255, 193, 7, 0.6);
+        box-shadow: 0 2px 8px rgba(255, 193, 7, 0.25);
+    }
+
+    /* 第8层嵌套 - 靛蓝色 */
+    .sm-capsule.level-8 {
+        border: 2px solid ${LEVEL_COLORS[8].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[8].bg} 0%, rgba(63, 81, 181, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[8].shadow};
+    }
+    .sm-capsule.level-8:hover {
+        border-color: rgba(63, 81, 181, 0.6);
+        box-shadow: 0 2px 8px rgba(63, 81, 181, 0.25);
+    }
+
+    /* 第9层嵌套 - 棕褐色 */
+    .sm-capsule.level-9 {
+        border: 2px solid ${LEVEL_COLORS[9].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[9].bg} 0%, rgba(121, 85, 72, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[9].shadow};
+    }
+    .sm-capsule.level-9:hover {
+        border-color: rgba(121, 85, 72, 0.6);
+        box-shadow: 0 2px 8px rgba(121, 85, 72, 0.25);
+    }
+
+    /* 第10层嵌套 - 深粉色 */
+    .sm-capsule.level-10 {
+        border: 2px solid ${LEVEL_COLORS[10].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[10].bg} 0%, rgba(255, 64, 129, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[10].shadow};
+    }
+    .sm-capsule.level-10:hover {
+        border-color: rgba(255, 64, 129, 0.6);
+        box-shadow: 0 2px 8px rgba(255, 64, 129, 0.25);
+    }
+
+    /* 第11层嵌套 - 墨绿色 */
+    .sm-capsule.level-11 {
+        border: 2px solid ${LEVEL_COLORS[11].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[11].bg} 0%, rgba(0, 150, 136, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[11].shadow};
+    }
+    .sm-capsule.level-11:hover {
+        border-color: rgba(0, 150, 136, 0.6);
+        box-shadow: 0 2px 8px rgba(0, 150, 136, 0.25);
+    }
+
+    /* 第12层嵌套 - 深紫色 */
+    .sm-capsule.level-12 {
+        border: 2px solid ${LEVEL_COLORS[12].border};
+        background: linear-gradient(135deg, ${LEVEL_COLORS[12].bg} 0%, rgba(103, 58, 183, 0.05) 100%);
+        box-shadow: 0 1px 3px ${LEVEL_COLORS[12].shadow};
+    }
+    .sm-capsule.level-12:hover {
+        border-color: rgba(103, 58, 183, 0.6);
+        box-shadow: 0 2px 8px rgba(103, 58, 183, 0.25);
+    }
+
+    /* 胶囊头部 */
+    .sm-capsule-header {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 10px;
+        border-radius: 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        font-weight: 600;
+        transition: all 0.15s;
+        cursor: pointer;
+    }
+    .sm-capsule-header:hover {
+        transform: scale(1.02);
+        box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+    .sm-capsule-icon { font-size: 10px; }
+    .sm-capsule-label { font-weight: 600; white-space: nowrap; }
+    .sm-capsule-expand { font-size: 10px; opacity: 0.7; margin-left: 2px; }
+
+    /* 子胶囊容器 - 同层级横向排列 */
+    .sm-capsule-children {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+        padding: 8px;
+        background: rgba(255, 255, 255, 0.3);
+        border-radius: 8px;
+        align-items: flex-start;
+        align-content: flex-start;
+    }
+
+    /* 统计栏 */
+    .sm-stats { font-size: 12px; color: var(--text-muted); padding: 10px; border-top: 1px solid var(--background-modifier-border); margin-top: 16px; }
+
+    /* 空状态 */
+    .sm-empty { text-align: center; padding: 40px; color: var(--text-muted); }
+
+    /* ============ 管理视图样式（GTD风格）============ */
+    .sm-mgr-container { background: var(--background-secondary); border-radius: 12px; padding: 20px; min-height: 500px; }
+    .sm-mgr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--interactive-accent); }
+    .sm-mgr-title { font-size: 1.5em; font-weight: 800; color: var(--text-normal); }
+    .sm-mgr-stats { display: none; } /* 隐藏统计信息 */
+    .sm-mgr-item { display: flex; align-items: center; padding: 10px 12px; margin: 4px 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: grab; transition: all 0.2s; user-select: none; }
+    .sm-mgr-item:hover { border-color: var(--interactive-accent); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .sm-mgr-item.drag-over { border: 2px dashed var(--interactive-accent); background: rgba(var(--interactive-accent-rgb), 0.1); }
+    .sm-mgr-item.dragging { opacity: 0.5; transform: scale(0.98); }
+    .sm-mgr-item-icon { font-size: 1.2em; margin-right: 10px; width: 28px; text-align: center; }
+    .sm-mgr-item-info { flex: 1; }
+    .sm-mgr-item-label { font-weight: 600; color: var(--text-normal); }
+    /* 管理视图：移除 meta/统计信息 */
+    .sm-mgr-item-meta { display: none; }
+    .sm-mgr-item-actions { display: flex; gap: 6px; opacity: 0; transition: opacity 0.2s; }
+    .sm-mgr-item:hover .sm-mgr-item-actions { opacity: 1; }
+    .sm-mgr-item-btn { padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); cursor: pointer; font-size: 12px; transition: all 0.2s; }
+    .sm-mgr-item-btn:hover { background: var(--interactive-accent); color: white; border-color: transparent; }
+    .sm-mgr-item-btn.delete:hover { background: #e74c3c; }
+    .sm-mgr-children { margin-left: 30px; border-left: 2px solid var(--background-modifier-border); padding-left: 10px; }
+
+    /* 拖放区 */
+    .sm-mgr-drop-zone { height: 30px; border: 2px dashed transparent; border-radius: 6px; margin: 4px 0; transition: all 0.2s; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.85em; }
+    .sm-mgr-drop-zone.active { border-color: var(--interactive-accent); background: rgba(var(--interactive-accent-rgb), 0.05); }
+    .sm-mgr-drop-zone.active::before { content: "拖放到此处设为顶层"; }
+
+    /* 编辑表单和模态框样式保持不变，以便编辑操作 */
+    .sm-form { background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 15px; margin-bottom: 15px; display: none; }
+    .sm-form.visible { display: block; }
+    .sm-form-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+    .sm-form-label { width: 60px; font-weight: 500; color: var(--text-muted); font-size: 0.9em; }
+    .sm-form-input { flex: 1; padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); font-size: 14px; }
+    .sm-form-input:focus { outline: none; border-color: var(--interactive-accent); }
+    .sm-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+    .sm-modal { width: min(860px, 92vw); max-height: 85vh; background: var(--background-primary); border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); overflow: hidden; display: flex; flex-direction: column; }
+    .sm-modal-header { padding: 14px 16px; background: var(--background-secondary); border-bottom: 1px solid var(--background-modifier-border); font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .sm-modal-footer { padding: 12px; text-align: center; border-top: 1px solid var(--background-modifier-border); }
+    .sm-modal-footer button { border: none; background: none; color: var(--interactive-accent); font-size: 14px; cursor: pointer; font-weight: 500; }
+    .sm-modal-body { padding: 16px; }
+    .sm-note-textarea { width: 100%; min-height: 380px; padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-secondary); color: var(--text-normal); font-size: 14px; resize: vertical; }
+    .sm-note-textarea:focus { outline: none; border-color: var(--interactive-accent); }
+    .sm-note-count { margin-top: 6px; font-size: 11px; color: var(--text-muted); text-align: right; }
+    .sm-capsule-note { font-size: 11px; opacity: 0.75; }
+    .sm-parent-selector { position: relative; flex: 1; }
+    .sm-parent-input-wrapper { display: flex; align-items: center; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); overflow: hidden; }
+    .sm-parent-input-wrapper:focus-within { border-color: var(--interactive-accent); }
+    .sm-parent-input { flex: 1; padding: 8px 12px; border: none; background: transparent; color: var(--text-normal); font-size: 14px; outline: none; }
+    .sm-parent-clear { padding: 0 8px; cursor: pointer; color: var(--text-muted); }
+    .sm-parent-clear:hover { color: var(--text-normal); }
+    .sm-parent-dropdown { position: absolute; top: 100%; left: 0; right: 0; max-height: 250px; overflow-y: auto; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-top: none; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 100; display: none; }
+    .sm-parent-dropdown.visible { display: block; }
+    .sm-parent-option { padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; transition: background 0.1s; }
+    .sm-parent-option:hover, .sm-parent-option.highlighted { background: var(--background-modifier-hover); }
+    .sm-parent-option.selected { background: rgba(var(--interactive-accent-rgb), 0.1); color: var(--interactive-accent); }
+    .sm-parent-empty { padding: 8px 12px; color: var(--text-faint); font-size: 12px; }
+    .sm-parent-stats { padding: 6px 12px; font-size: 11px; color: var(--text-faint); border-top: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+`;
+document.head.appendChild(style);
+
+// ============ 全局状态 ============
+if (!window._smConceptIndex) {
+    window._smConceptIndex = {
+        concepts: {},      // { id: { id, keyword, parentId, order, colorType, createdAt } }
+        managerMode: false,
+        dragId: null
+    };
+}
+const state = window._smConceptIndex;
+
+// ============ 数据管理 ============
+
+function loadData() {
+    try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+            const loadedData = JSON.parse(saved);
+            state.concepts = loadedData.concepts || {};
+            // 补齐缺失字段/排序
+            Object.values(state.concepts).forEach(c => {
+                if (!c.order) c.order = 0;
+                if (!c.colorType) c.colorType = c.parentId ? 'plus' : 'yaml';
+                if (!c.sortLetter) c.sortLetter = getSortLetter(c.keyword || '');
+                if (typeof c.note !== 'string') c.note = '';
+            });
+            // 修复孤儿节点：父级不存在的概念提升为顶层
+            const ids = new Set(Object.keys(state.concepts));
+            Object.values(state.concepts).forEach(c => {
+                if (c.parentId && !ids.has(c.parentId)) {
+                    c.parentId = null;
+                }
+            });
+        }
+    } catch (e) {
+        console.error('加载数据失败:', e);
+        state.concepts = {};
+    }
+}
+
+async function saveData() {
+    const sortedConcepts = Object.values(state.concepts).sort((a, b) => {
+        // 优先按父级分组，顶层在前
+        if (!a.parentId && !b.parentId) {
+            return (a.order || 0) - (b.order || 0);
+        }
+        if (a.parentId === b.parentId) {
+            return (a.order || 0) - (b.order || 0);
+        }
+        return (a.parentId ? 1 : -1) - (b.parentId ? 1 : -1);
+    });
+
+    // 重新赋予order
+    sortedConcepts.forEach((c, index) => {
+        c.order = index;
+    });
+
+    state.concepts = sortedConcepts.reduce((acc, c) => {
+        acc[c.id] = c;
+        return acc;
+    }, {});
+
+    const json = {
+        concepts: state.concepts,
+        version: "1.0",
+        lastModified: moment().format("YYYY-MM-DD HH:mm:ss"),
+        metadata: {
+            total: Object.keys(state.concepts).length,
+            topLevel: Object.values(state.concepts).filter(c => !c.parentId).length
+        }
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(json));
+}
+
+function generateId(keyword) {
+    let hash = 0;
+    for (let i = 0; i < keyword.length; i++) {
+        hash = ((hash << 5) - hash) + keyword.charCodeAt(i);
+        hash = hash & hash;
+    }
+    return 'sm-' + Math.abs(hash).toString(36);
+}
+
+function getSortLetter(keyword) {
+    const firstChar = keyword.charAt(0);
+    return (firstChar && /[A-Za-z]/.test(firstChar)) ? firstChar.toUpperCase() : '#';
+}
+
+function compareConceptName(a, b) {
+    const aName = (a.keyword || '').trim();
+    const bName = (b.keyword || '').trim();
+    return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+// ============ 层级工具函数 ============
+
+function getChildConcepts(parentId) {
+    return Object.values(state.concepts)
+        .filter(c => c.parentId === parentId)
+        .sort(compareConceptName);
+}
+
+function getTopLevelConcepts() {
+    return Object.values(state.concepts)
+        .filter(c => !c.parentId)
+        .sort(compareConceptName);
+}
+
+function getDescendantIds(conceptId) {
+    const descendants = [];
+    const findChildren = (parentId) => {
+        Object.values(state.concepts).forEach(c => {
+            if (c.parentId === parentId) {
+                descendants.push(c.id);
+                findChildren(c.id);
+            }
+        });
+    };
+    findChildren(conceptId);
+    return descendants;
+}
+
+// ============ 渲染函数引用 ============
+let renderViewFn = null;
+
+// ============ 展示视图 ============
+
+function renderDisplayView(container) {
+    container.innerHTML = '';
+    container.className = 'sm-container';
+
+    // 图例
+    const legend = container.createEl('div', { cls: 'sm-legend' });
+    legend.innerHTML = `
+        <span class="sm-legend-item sm-legend-yaml"><span>${COLORS.yaml.icon}</span> 顶层 (蓝色)</span>
+        <span class="sm-legend-item sm-legend-plus"><span>${COLORS.plus.icon}</span> 子级 (橙色)</span>
+        <span class="sm-legend-item sm-legend-dot"><span>${COLORS.dot.icon}</span> 孙级及更深 (紫色)</span>
+    `;
+
+    // 工具栏
+    const toolbar = container.createEl('div', { cls: 'sm-toolbar' });
+
+    const manageBtn = toolbar.createEl('button', { text: '⚙️ 管理概念' });
+    manageBtn.onclick = () => {
+        state.managerMode = true;
+        renderViewFn();
+    };
+
+    const exportBtn = toolbar.createEl('button', { text: '💾 导出', cls: 'secondary' });
+    exportBtn.onclick = exportData;
+
+    const importBtn = toolbar.createEl('button', { text: '📥 导入', cls: 'secondary' });
+    importBtn.onclick = importData;
+
+    const concepts = Object.values(state.concepts);
+
+    if (concepts.length === 0) {
+        container.createEl('div', { cls: 'sm-empty', text: '暂无概念，点击"管理概念"开始添加' });
+        return;
+    }
+
+    // 按字母分组
+    const groups = {};
+    const letters = [];
+    concepts.forEach(c => {
+        const letter = c.sortLetter || getSortLetter(c.keyword || '');
+        if (!groups[letter]) {
+            groups[letter] = [];
+            letters.push(letter);
+        }
+        groups[letter].push(c);
+    });
+    letters.sort();
+
+    // 字母导航
+    const nav = container.createEl('div', { cls: 'sm-alphabet-nav' });
+    letters.forEach(l => {
+        const link = nav.createEl('a', { cls: 'sm-letter-link', text: l });
+        link.onclick = () => {
+            document.getElementById(`sm-group-${l}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        };
+    });
+
+    // 内容区
+    const content = container.createEl('div', { cls: 'sm-nest-container' });
+
+    letters.forEach(letter => {
+        const header = content.createEl('h4', { cls: 'sm-group-header', text: letter });
+        header.id = `sm-group-${letter}`;
+
+        const groupContainer = content.createEl('div', { cls: 'sm-group-content' });
+
+        // 获取该字母组的顶层概念
+        const topLevelInGroup = groups[letter].filter(c => !c.parentId);
+        topLevelInGroup.sort(compareConceptName);
+
+        topLevelInGroup.forEach(c => {
+            renderCapsule(groupContainer, c, 1);
+        });
+    });
+
+    // 统计
+    const stats = container.createEl('div', { cls: 'sm-stats' });
+    const topCount = concepts.filter(c => !c.parentId).length;
+    stats.textContent = `共 ${letters.length} 个分类，${concepts.length} 个概念，${topCount} 个顶层`;
+}
+
+// 渲染单个胶囊（展示视图）- 支持多层级不同颜色
+function renderCapsule(container, concept, level = 1) {
+    const children = getChildConcepts(concept.id);
+    const hasChildren = children.length > 0;
+    const colorType = concept.colorType || (concept.parentId ? 'plus' : 'yaml');
+    const color = COLORS[colorType];
+
+    // 限制层级颜色最多显示12层
+    const displayLevel = Math.min(level, 12);
+
+    const capsule = container.createEl('div', { cls: `sm-capsule level-${displayLevel}` });
+
+    // 胶囊头部 - 使用基础类型颜色作为头部背景
+    const header = capsule.createEl('div', {
+        cls: 'sm-capsule-header',
+        attr: { style: `background: ${color.bg}; color: ${color.text};`, title: '点击记录/评论' }
+    });
+    header.onclick = (e) => {
+        e.stopPropagation();
+        openNoteModal(concept.id);
+    };
+
+    header.createEl('span', { cls: 'sm-capsule-icon', text: color.icon, style: `color: ${color.text};` });
+    header.createEl('span', { cls: 'sm-capsule-label', text: concept.keyword });
+    if (concept.note && concept.note.trim()) {
+        header.createEl('span', { cls: 'sm-capsule-note', text: '📝', attr: { title: '有记录' } });
+    }
+    if (hasChildren) {
+        header.createEl('span', { cls: 'sm-capsule-expand', text: '▼' });
+    }
+
+    // 子概念容器
+    if (hasChildren) {
+        const childrenContainer = capsule.createEl('div', { cls: 'sm-capsule-children' });
+        children.sort(compareConceptName).forEach(child => {
+            renderCapsule(childrenContainer, child, level + 1);
+        });
+    }
+}
+
+function openNoteModal(conceptId) {
+    const concept = state.concepts[conceptId];
+    if (!concept) return;
+
+    const overlay = dv.container.createEl('div', { cls: 'sm-modal-overlay' });
+    overlay.addEventListener('click', () => overlay.remove());
+
+    const modal = overlay.createEl('div', { cls: 'sm-modal sm-note-modal' });
+    modal.addEventListener('click', (e) => e.stopPropagation());
+
+    const header = modal.createEl('div', { cls: 'sm-modal-header' });
+    header.createEl('span', { text: `📝 记录 - ${concept.keyword}` });
+    const closeBtn = header.createEl('button', { text: '×', attr: { style: 'background: none; border: none; cursor: pointer; font-size: 16px;' } });
+    closeBtn.onclick = () => overlay.remove();
+
+    const body = modal.createEl('div', { cls: 'sm-modal-body' });
+    const textarea = body.createEl('textarea', {
+        cls: 'sm-note-textarea',
+        attr: { maxlength: '1000', placeholder: '写下评论或记录（最多1000字）...' }
+    });
+    textarea.value = concept.note || '';
+    const count = body.createEl('div', { cls: 'sm-note-count', text: `${textarea.value.length}/1000` });
+
+    textarea.addEventListener('input', () => {
+        count.textContent = `${textarea.value.length}/1000`;
+    });
+
+    const footer = modal.createEl('div', { cls: 'sm-modal-footer' });
+    const cancelBtn = footer.createEl('button', { text: '取消' });
+    cancelBtn.onclick = () => overlay.remove();
+    const saveBtn = footer.createEl('button', { text: '保存', attr: { style: 'color: var(--interactive-accent); font-weight: 600;' } });
+    saveBtn.onclick = async () => {
+        concept.note = textarea.value.trim();
+        await saveData();
+        overlay.remove();
+        renderViewFn();
+        new Notice('✅ 已保存记录');
+    };
+
+    textarea.focus();
+}
+
+// ============ 管理视图 ============
+
+function renderManagerView(container) {
+    container.innerHTML = '';
+    container.className = 'sm-mgr-container';
+
+    // 头部
+    const header = container.createEl('div', { cls: 'sm-mgr-header' });
+    header.createEl('div', { cls: 'sm-mgr-title', text: '🔑 Concept 管理器' });
+
+    const headerActions = header.createEl('div', { cls: 'sm-mgr-actions' });
+    const exitBtn = headerActions.createEl('button', { text: '返回展示视图', cls: 'sm-toolbar button secondary' });
+    exitBtn.style.cssText = 'padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; background: var(--background-modifier-border); color: var(--text-normal);';
+    exitBtn.onclick = () => {
+        state.managerMode = false;
+        renderViewFn();
+    };
+
+    // 统计 (隐藏)
+    const concepts = Object.values(state.concepts);
+    const topCount = concepts.filter(c => !c.parentId).length;
+    const stats = container.createEl('div', { cls: 'sm-mgr-stats' });
+    stats.style.display = 'none'; // 隐藏统计
+
+    // 添加表单
+    const formContainer = container.createEl('div', { cls: 'sm-form visible' });
+    formContainer.innerHTML = `
+        <div style="font-weight: 700; margin-bottom: 12px;">➕ 添加新概念</div>
+        <div class="sm-form-row">
+            <label class="sm-form-label">名称:</label>
+            <input type="text" id="sm-new-keyword" class="sm-form-input" placeholder="输入概念名称...">
+        </div>
+        <div class="sm-form-row">
+            <label class="sm-form-label">父级:</label>
+            <div id="sm-new-parent-selector" class="sm-parent-selector"></div>
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 15px;">
+            <button id="sm-add-btn" class="sm-mgr-item-btn" style="background: var(--interactive-accent); color: var(--text-on-accent); border: none;">添加</button>
+        </div>
+    `;
+    document.getElementById('sm-add-btn').onclick = addConcept;
+    document.getElementById('sm-new-keyword').onkeydown = (e) => { if (e.key === 'Enter') addConcept(); };
+
+    // 初始化父级选择器
+    initParentSelector('sm-new-parent-selector', null, (id) => {});
+
+    // 顶层拖放区
+    const treeContainer = container.createEl('div');
+    const topDropZone = treeContainer.createEl('div', { cls: 'sm-mgr-drop-zone' });
+
+    topDropZone.addEventListener('dragover', (e) => { e.preventDefault(); topDropZone.classList.add('active'); });
+    topDropZone.addEventListener('dragleave', () => { topDropZone.classList.remove('active'); });
+    topDropZone.addEventListener('drop', async (e) => {
+        e.preventDefault(); e.stopPropagation(); topDropZone.classList.remove('active');
+        const draggedId = state.dragId;
+        if (draggedId && state.concepts[draggedId] && state.concepts[draggedId].parentId !== null) {
+            state.concepts[draggedId].parentId = null;
+            state.concepts[draggedId].colorType = 'yaml';
+            await saveData();
+            new Notice('✅ 已移动到顶层');
+            renderViewFn();
+        }
+    });
+
+    // 只获取顶层概念进行分组渲染（子概念由递归函数处理）
+    const topLevelConcepts = concepts.filter(c => !c.parentId);
+    const groups = {};
+    topLevelConcepts.forEach(c => {
+        const letter = c.sortLetter || '#';
+        if (!groups[letter]) groups[letter] = [];
+        groups[letter].push(c);
+    });
+
+    Object.keys(groups).sort().forEach(letter => {
+        const groupHeader = treeContainer.createEl('div', {
+            text: letter,
+            attr: { style: 'font-weight: 600; color: var(--text-muted); margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--background-modifier-border);' }
+        });
+
+        groups[letter].sort(compareConceptName).forEach(c => {
+            renderManagerItem(treeContainer, c);  // 只渲染顶层概念，子概念递归渲染
+        });
+    });
+}
+
+// 渲染管理项 (移除统计信息)
+function renderManagerItem(container, concept) {
+    const children = getChildConcepts(concept.id);
+    const colorType = concept.colorType || 'yaml';
+    const color = COLORS[colorType];
+
+    const item = container.createEl('div', {
+        cls: 'sm-mgr-item',
+        attr: { draggable: 'true', 'data-kw-id': concept.id }
+    });
+
+    // 拖拽事件
+    item.addEventListener('dragstart', (e) => {
+        state.dragId = concept.id;
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+    });
+    item.addEventListener('dragend', () => {
+        state.dragId = null;
+        item.classList.remove('dragging');
+    });
+    item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (state.dragId && state.dragId !== concept.id) {
+            item.classList.add('drag-over');
+        }
+    });
+    item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over');
+    });
+    item.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        item.classList.remove('drag-over');
+        const draggedId = state.dragId;
+        if (draggedId && draggedId !== concept.id && state.concepts[draggedId]) {
+            const descendants = getDescendantIds(draggedId);
+            if (descendants.includes(concept.id)) {
+                new Notice('⚠️ 不能将父级拖入其子级');
+                return;
+            }
+            state.concepts[draggedId].parentId = concept.id;
+            state.concepts[draggedId].colorType = 'plus'; // 子级设为橙色
+            await saveData();
+            new Notice(`✅ 已移动到 "${concept.keyword}" 下`);
+            renderViewFn();
+        }
+    });
+
+    // 图标
+    const icon = item.createEl('div', { cls: 'sm-mgr-item-icon', text: color.icon, attr: { style: `color: ${color.text};` } });
+
+    // 信息 (只保留名称)
+    const info = item.createEl('div', { cls: 'sm-mgr-item-info' });
+    info.createEl('div', { cls: 'sm-mgr-item-label', text: concept.keyword });
+    // INFO: 移除 meta 信息（如子级计数）
+
+    // 操作按钮
+    const actions = item.createEl('div', { cls: 'sm-mgr-item-actions' });
+
+    const editBtn = actions.createEl('button', { text: '✏️', cls: 'sm-mgr-item-btn', attr: { title: '编辑' } });
+    editBtn.onclick = (e) => {
+        e.stopPropagation();
+        openEditModal(concept.id);
+    };
+
+    const deleteBtn = actions.createEl('button', { text: '🗑️', cls: 'sm-mgr-item-btn delete', attr: { title: '删除' } });
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        deleteConcept(concept.id);
+    };
+
+    // 递归渲染子概念
+    if (children.length > 0) {
+        const childContainer = container.createEl('div', { cls: 'sm-mgr-children' });
+        children.sort(compareConceptName).forEach(child => {
+            renderManagerItem(childContainer, child);
+        });
+    }
+}
+
+// ============ 管理操作 ============
+
+function addConcept() {
+    const input = document.getElementById('sm-new-keyword');
+    const selector = window._smParentSelector;
+    const keyword = input.value.trim();
+
+    if (!keyword) { new Notice('⚠️ 请输入名称'); return; }
+
+    const id = generateId(keyword);
+    if (state.concepts[id]) { new Notice('⚠️ 该名称已存在'); return; }
+
+    const parentId = selector ? selector.selectedParentId : null;
+    const sameLevelKids = Object.values(state.concepts).filter(c => c.parentId === parentId);
+
+    state.concepts[id] = {
+        id: id,
+        keyword: keyword,
+        colorType: parentId ? 'plus' : 'yaml', // 有父级设为橙色，否则设为蓝色
+        parentId: parentId,
+        order: sameLevelKids.length,
+        sortLetter: getSortLetter(keyword),
+        note: '',
+        createdAt: new Date().toISOString()
+    };
+
+    saveData();
+    input.value = '';
+    if (selector) selector.setSelected('');
+    renderViewFn();
+    new Notice('✅ 已添加');
+}
+
+function deleteConcept(id) {
+    if (!confirm('确定要删除这个概念吗？其子概念将变为顶层。')) return;
+
+    delete state.concepts[id];
+
+    // 子概念提升为顶层
+    Object.values(state.concepts).forEach(c => {
+        if (c.parentId === id) {
+            c.parentId = null;
+            c.colorType = 'dot'; // 提升后设为默认色
+        }
+    });
+
+    saveData();
+    renderViewFn();
+    new Notice('✅ 已删除');
+}
+
+function openEditModal(id) {
+    const concept = state.concepts[id];
+    if (!concept) return;
+
+    const modalHtml = `
+        <div class="sm-modal-overlay" id="sm-edit-modal">
+            <div class="sm-modal" onclick="event.stopPropagation()">
+                <div class="sm-modal-header">
+                    <span>✏️ 编辑概念</span>
+                    <button onclick="closeEditModal()" style="background: none; border: none; cursor: pointer; font-size: 16px;">×</button>
+                </div>
+                <div style="padding: 16px;">
+                    <div class="sm-form-row">
+                        <label class="sm-form-label">名称:</label>
+                        <input type="text" id="sm-edit-keyword" class="sm-form-input" value="${concept.keyword.replace(/"/g, '&quot;')}">
+                    </div>
+                    <div class="sm-form-row">
+                        <label class="sm-form-label">父级:</label>
+                        <div id="sm-edit-parent-selector" class="sm-parent-selector"></div>
+                    </div>
+                </div>
+                <div class="sm-modal-footer">
+                    <button onclick="closeEditModal()">取消</button>
+                    <button onclick="saveEdit('${id}')" style="color: var(--interactive-accent); font-weight: 600;">保存</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const container = dv.container;
+    const wrapper = container.createEl('div');
+    wrapper.innerHTML = modalHtml;
+    document.getElementById('sm-edit-modal').addEventListener('click', closeEditModal);
+
+
+    // 初始化父级选择器
+    initParentSelector('sm-edit-parent-selector', concept.parentId, (newParentId) => {
+        concept.parentId = newParentId;
+        // 颜色根据新父级确定
+        concept.colorType = newParentId ? 'plus' : 'yaml';
+    }, concept.id);
+}
+
+window.closeEditModal = function() {
+    const modal = document.getElementById('sm-edit-modal');
+    if (modal) modal.remove();
+    window._smParentSelector = null;
+};
+
+window.saveEdit = async function(id) {
+    const concept = state.concepts[id];
+    const newKeyword = document.getElementById('sm-edit-keyword').value.trim();
+
+    if (!newKeyword) { new Notice('⚠️ 名称不能为空'); return; }
+
+    const newId = generateId(newKeyword);
+    if (newId !== id && state.concepts[newId]) {
+        new Notice('⚠️ 该名称已存在');
+        return;
+    }
+
+    concept.keyword = newKeyword;
+    concept.sortLetter = getSortLetter(newKeyword);
+
+    if (newId !== id) {
+        // 同步更新子级parentId
+        Object.values(state.concepts).forEach(c => {
+            if (c.parentId === id) c.parentId = newId;
+        });
+        delete state.concepts[id];
+        concept.id = newId;
+        state.concepts[newId] = concept;
+    }
+
+    await saveData();
+    closeEditModal();
+    renderViewFn();
+    new Notice('✅ 已保存');
+};
+
+// ============ 父级选择器 ============
+
+window._smParentSelector = null;
+
+function initParentSelector(containerId, initialParentId, onSelect, excludeId = null) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    const selector = {
+        element: container,
+        selectedParentId: initialParentId,
+        highlightedIndex: -1,
+        availableParents: [],
+        onSelect: onSelect,
+
+        init: function() {
+            this.wrapper = container.createEl('div', { cls: 'sm-parent-input-wrapper' });
+            this.input = this.wrapper.createEl('input', { type: 'text', cls: 'sm-parent-input', attr: { placeholder: '输入或选择父级...' } });
+            this.clearBtn = this.wrapper.createEl('span', { cls: 'sm-parent-clear', text: '×' });
+            this.dropdown = container.createEl('div', { cls: 'sm-parent-dropdown' });
+
+            this.updateDisplay(this.selectedParentId);
+            this.input.onfocus = () => this.showDropdown();
+            this.input.onblur = () => setTimeout(() => this.dropdown.classList.remove('visible'), 150);
+            this.input.oninput = () => {
+                this.highlightedIndex = -1;
+                this.showDropdown();
+            };
+
+            this.clearBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.setSelected('');
+                this.input.focus();
+            };
+
+            this.input.onkeydown = (e) => {
+                const options = this.dropdown.querySelectorAll('.sm-parent-option');
+                if (options.length === 0) return;
+                if (e.key === 'ArrowDown') { e.preventDefault(); this.highlightedIndex = Math.min(this.highlightedIndex + 1, options.length - 1); this.updateHighlight(options); }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); this.highlightedIndex = Math.max(this.highlightedIndex - 1, 0); this.updateHighlight(options); }
+                else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const index = this.highlightedIndex >= 0 ? this.highlightedIndex : 0;
+                    if (options[index]) options[index].click();
+                }
+                else if (e.key === 'Escape') { this.dropdown.classList.remove('visible'); this.input.blur(); }
+            };
+        },
+
+        updateHighlight: function(options) {
+            options.forEach((opt, i) => opt.classList.toggle('highlighted', i === this.highlightedIndex));
+            if (options[this.highlightedIndex]) options[this.highlightedIndex].scrollIntoView({ block: 'nearest' });
+        },
+
+        renderOptions: function() {
+            this.dropdown.innerHTML = '';
+
+            const filterText = this.input.value.trim().toLowerCase();
+            const filteredParents = filterText
+                ? this.availableParents.filter(c => (c.keyword || '').toLowerCase().includes(filterText))
+                : this.availableParents;
+
+            const topOpt = this.dropdown.createEl('div', {
+                cls: `sm-parent-option ${!this.selectedParentId ? 'selected' : ''}`,
+                attr: { 'data-value': '' }
+            });
+            topOpt.innerHTML = `<span class="sm-parent-option-icon">🏠</span><span class="sm-parent-option-text">-- 顶层 --</span>`;
+            topOpt.onclick = () => this.setSelected('');
+
+            if (filteredParents.length === 0) {
+                this.dropdown.createEl('div', { cls: 'sm-parent-empty', text: '无匹配父级' });
+            }
+
+            filteredParents.forEach(c => {
+                const opt = this.dropdown.createEl('div', {
+                    cls: `sm-parent-option ${this.selectedParentId === c.id ? 'selected' : ''}`,
+                    attr: { 'data-value': c.id }
+                });
+                opt.innerHTML = `<span class="sm-parent-option-icon">${COLORS[c.colorType].icon}</span><span class="sm-parent-option-text">${c.keyword}</span>`;
+                opt.onclick = () => this.setSelected(c.id, c.keyword);
+            });
+
+            const statsText = filterText
+                ? `显示 ${filteredParents.length}/${this.availableParents.length} 个可选父级`
+                : `共 ${this.availableParents.length} 个可选父级`;
+            this.dropdown.createEl('div', { cls: 'sm-parent-stats', text: statsText });
+            this.highlightedIndex = -1;
+        },
+
+        setSelected: function(id, text = '') {
+            this.selectedParentId = id;
+            this.input.value = id ? text : '';
+            this.dropdown.classList.remove('visible');
+            this.input.blur();
+            this.onSelect(id);
+        },
+
+        updateDisplay: function(id) {
+            const c = state.concepts[id];
+            this.input.value = (id && c) ? c.keyword : '';
+            this.renderOptions();
+        },
+
+        showDropdown: function() {
+            const excluded = new Set();
+            if (excludeId) {
+                excluded.add(excludeId);
+                getDescendantIds(excludeId).forEach(id => excluded.add(id));
+            }
+            this.availableParents = Object.values(state.concepts)
+                .filter(c => !excluded.has(c.id))
+                .sort(compareConceptName);
+            this.renderOptions();
+            this.dropdown.classList.add('visible');
+        }
+    };
+
+    selector.init();
+    window._smParentSelector = selector;
+    return selector;
+}
+
+
+// ============ 导出/导入/全局交互 ============
+
+function exportData() {
+    const data = Object.values(state.concepts);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sm_concepts_${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function importData() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const importedArray = JSON.parse(event.target.result);
+                if (!Array.isArray(importedArray)) throw new Error("不是数组格式");
+
+                const newConcepts = {};
+                importedArray.forEach(item => {
+                    const id = item.id || generateId(item.keyword);
+                    newConcepts[id] = {
+                        id: id,
+                        keyword: item.keyword || '未命名',
+                        parentId: item.parentId || null,
+                        colorType: item.colorType || 'dot',
+                        order: item.order || 0,
+                        sortLetter: item.sortLetter || getSortLetter(item.keyword || ''),
+                        note: item.note || '',
+                        createdAt: item.createdAt || new Date().toISOString()
+                    };
+                });
+                if (confirm('导入数据将覆盖现有数据，确定继续吗？')) {
+                    state.concepts = newConcepts;
+                    saveData();
+                    renderViewFn();
+                    new Notice('✅ 导入成功！');
+                }
+            } catch (e) {
+                new Notice('❌ 导入失败：格式错误');
+            }
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+}
+
+function toggleView() {
+    state.managerMode = !state.managerMode;
+    renderViewFn();
+}
+
+// ============ 主渲染函数 ============
+
+function render(container) {
+    if (state.managerMode) {
+        renderManagerView(container);
+    } else {
+        renderDisplayView(container);
+    }
+}
+
+// ============ 主入口 ============
+
+loadData();
+
+if (Object.keys(state.concepts).length === 0 && SAMPLE_DATA_ENABLED) {
+    new Notice('ℹ️ 数据为空，正在加载示例数据...');
+    const sampleData = [
+        { keyword: '000- 通用的构型库', colorType: 'yaml' },
+        { keyword: '记录都在此', colorType: 'yaml' },
+        { keyword: '项目', colorType: 'yaml', parentId: generateId('000- 通用的构型库') },
+        { keyword: 'TPA', colorType: 'dot', parentId: generateId('项目') },
+        { keyword: '工作流', colorType: 'yaml', parentId: generateId('000- 通用的构型库') },
+        { keyword: '内心独白', colorType: 'plus', parentId: generateId('工作流') },
+        { keyword: '维修能力', colorType: 'yaml', parentId: generateId('000- 通用的构型库') },
+        { keyword: '执行模式', colorType: 'yaml', parentId: generateId('000- 通用的构型库') },
+        { keyword: '系统说明', colorType: 'yaml', parentId: generateId('000- 通用的构型库') },
+    ];
+
+    sampleData.forEach(data => {
+        const id = generateId(data.keyword);
+        state.concepts[id] = {
+            id: id,
+            keyword: data.keyword,
+            colorType: data.colorType,
+            parentId: data.parentId || null,
+            order: Object.values(state.concepts).filter(c => c.parentId === data.parentId).length,
+            createdAt: new Date().toISOString()
+        };
+    });
+    saveData();
+}
+
+renderViewFn = () => render(dv.container);
+render(dv.container);
+
+// 绑定全局事件处理
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') { // Ctrl/Cmd + K: 切换视图
+        e.preventDefault();
+        toggleView();
+    }
+});
+
+})();
+```
