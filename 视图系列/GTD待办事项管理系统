@@ -1,8 +1,8 @@
 ```dataviewjs
 // ============================================================
-// 🚀 GTD 管理系统 (v19.0 Timeline完成记录版)
-// 新增：完成事项弹窗记录 + Timeline时间轴视图
-// 特性：完成任务时记录评语，自动追踪项目层级与标签
+// 🚀 GTD 管理系统 (v20.0 多标签筛选与Quick Nav标签版)
+// 新增：多标签筛选 + Quick Nav 项目标签同步显示
+// 调整：移除 Timeline 功能，降低操作阻力
 // ====================================
 
 (async () => {
@@ -10,11 +10,11 @@
     // --- 0. 标签数据文件管理 ---
     const JSON_FILENAME = "GTD_Database.json";
     const TAGS_FILENAME = "GTD_Tags.json";
-    const TIMELINE_FILENAME = "GTD_Timeline.json";  // 新增：时间轴日志文件
     const currentFolder = dv.current().file.folder;
     const DB_PATH = currentFolder + "/" + JSON_FILENAME;
     const TAGS_PATH = currentFolder + "/" + TAGS_FILENAME;
-    const TIMELINE_PATH = currentFolder + "/" + TIMELINE_FILENAME;
+    const TAG_FILTER_STORAGE_KEY = `gtd.tagFilters::${DB_PATH}`;
+    const TAG_FILTER_PRESETS_STORAGE_KEY = `gtd.tagFilterPresets::${DB_PATH}`;
 
     // 默认标签定义（首次使用或文件不存在时）
     const DEFAULT_TAG_DEFINITIONS = {
@@ -68,126 +68,91 @@
     // 加载标签定义
     let TAG_DEFINITIONS = await loadTagDefinitions();
 
-    // ============================================================
-    // 🔷 新增：Timeline 时间轴功能模块
-    // ============================================================
-
-    // --- Timeline 全局状态 ---
-    if (window.gtdTimelineMode === undefined) window.gtdTimelineMode = false;
-
-    // --- Timeline 加载/保存函数 ---
-    const generateTimelineId = () => Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-
-    const loadTimelineData = async () => {
-        try {
-            if (await app.vault.adapter.exists(TIMELINE_PATH)) {
-                const content = await app.vault.adapter.read(TIMELINE_PATH);
-                return JSON.parse(content);
-            }
-        } catch (e) { console.error("加载Timeline数据失败:", e); }
-        return [];  // 返回空数组（无损初始化）
-    };
-
-    const saveTimelineData = async (data) => {
-        const jsonString = JSON.stringify(data, null, 2);
-        const file = app.vault.getAbstractFileByPath(TIMELINE_PATH);
-        if (file) {
-            await app.vault.modify(file, jsonString);
-        } else {
-            await app.vault.create(TIMELINE_PATH, jsonString);
-        }
-    };
-
-    // --- 获取任务的完整层级路径（冒泡上层级）---
-    const getTaskHierarchyPath = (task, allTasks) => {
-        const pathStack = [task.project || "未归类"];
-        let currentTask = task;
-
-        // 向上追溯父任务
-        while (currentTask && currentTask.parentId) {
-            const parent = allTasks.find(t => t.id === currentTask.parentId);
-            if (parent) {
-                pathStack.unshift(parent.content || parent.project);
-                currentTask = parent;
-            } else {
-                break;
-            }
-        }
-        return pathStack.join(" › ");
-    };
-
-    // --- 获取标签的显示信息 ---
-    const getTagDisplayInfo = (tagIds) => {
-        if (!tagIds || tagIds.length === 0) return [];
-        return tagIds.map(tagId => {
-            const def = TAG_DEFINITIONS[tagId];
-            if (!def) return null;
-            return {
-                id: tagId,
-                label: def.label,
-                icon: def.icon,
-                color: def.color
-            };
-        }).filter(Boolean);
-    };
-
-    // --- 记录完成事项到 Timeline ---
-    const recordToTimeline = async (task, index) => {
-        // 1. 弹出评语输入窗口（留空则不记录到Timeline）
-        const rawComment = await prompt(`✅ 完成记录: ${task.content || task.project}`, "记录评语/感想/备注 (留空则不记录到Timeline)");
-        if (rawComment === undefined) return false;  // 用户取消
-
-        // 2. 处理评语：空、空字符串、"空"则视为跳过记录
-        const finalComment = (rawComment === null || rawComment === undefined || rawComment.trim() === "" || rawComment.trim() === "空") ? null : rawComment.trim();
-
-        // 🔷 关键逻辑：如果 finalComment 为 null，直接返回，不创建 Timeline 记录
-        // 但仍然返回 true 以确保任务状态能被正常更新
-        if (finalComment === null) {
-            new Notice(`ℹ️ 任务完成，跳过 Timeline 记录`);
-            return true;
-        }
-
-        // 3. 确认日期（默认今天）- 仅当需要记录时才询问
-        const defaultDate = moment().format("YYYY-MM-DD");
-        const inputDate = await prompt("确认日期", "YYYY-MM-DD", defaultDate);
-        if (inputDate === undefined) return false;
-
-        // 4. 构建完整路径和标签信息
-        const allTasks = await loadData();
-        const projectPath = getTaskHierarchyPath(task, allTasks);
-        const tagInfo = getTagDisplayInfo(task.tags);
-
-        // 5. 创建日志记录
-        const newLog = {
-            id: generateTimelineId(),
-            taskId: task.id,
-            taskTitle: task.content || task.project,
-            projectName: task.project || "未归类",
-            projectPath: projectPath,  // 完整冒泡层级路径
-            tags: task.tags || [],
-            tagInfo: tagInfo,  // 标签详细信息（用于显示）
-            date: inputDate,
-            time: moment().format("HH:mm"),
-            comment: finalComment,
-            timestamp: Date.now()
-        };
-
-        // 6. 保存到独立日志文件
-        const timelineData = await loadTimelineData();
-        timelineData.push(newLog);
-        // 按日期倒序，时间戳正序
-        timelineData.sort((a, b) => {
-            if (a.date !== b.date) return b.date.localeCompare(a.date);
-            return b.timestamp - a.timestamp;
+    const normalizeTagFilterList = (filters) => {
+        const uniq = [];
+        const seen = new Set();
+        (Array.isArray(filters) ? filters : []).forEach((id) => {
+            const key = String(id || "").trim();
+            if (!key || seen.has(key)) return;
+            if (!TAG_DEFINITIONS[key]) return;
+            seen.add(key);
+            uniq.push(key);
         });
-        await saveTimelineData(timelineData);
-
-        new Notice(`📝 已记录到 Timeline [${inputDate}]`);
+        return uniq;
+    };
+    const loadPersistedTagFilters = () => {
+        try {
+            const raw = localStorage.getItem(TAG_FILTER_STORAGE_KEY);
+            if (!raw) return null;
+            return normalizeTagFilterList(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    };
+    const savePersistedTagFilters = (filters) => {
+        try {
+            localStorage.setItem(TAG_FILTER_STORAGE_KEY, JSON.stringify(normalizeTagFilterList(filters)));
+        } catch (e) {}
+    };
+    const setTagFilters = (filters) => {
+        window.gtdTagFilters = normalizeTagFilterList(filters);
+        savePersistedTagFilters(window.gtdTagFilters);
+    };
+    const normalizeTagPresetName = (name) => String(name || "").trim().slice(0, 50);
+    const normalizeTagFilterPresets = (presets) => {
+        const result = [];
+        const seen = new Set();
+        (Array.isArray(presets) ? presets : []).forEach((preset) => {
+            const rawName = typeof preset === "string" ? preset : (preset?.name ?? "");
+            const name = normalizeTagPresetName(rawName);
+            if (!name || seen.has(name)) return;
+            seen.add(name);
+            const filters = normalizeTagFilterList(typeof preset === "string" ? [] : preset?.filters);
+            result.push({
+                name,
+                filters,
+                updatedAt: preset?.updatedAt || moment().format("YYYY-MM-DD HH:mm:ss")
+            });
+        });
+        return result;
+    };
+    const loadPersistedTagFilterPresets = () => {
+        try {
+            const raw = localStorage.getItem(TAG_FILTER_PRESETS_STORAGE_KEY);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return normalizeTagFilterPresets(parsed);
+        } catch (e) {
+            return [];
+        }
+    };
+    const savePersistedTagFilterPresets = (presets) => {
+        try {
+            localStorage.setItem(TAG_FILTER_PRESETS_STORAGE_KEY, JSON.stringify(normalizeTagFilterPresets(presets)));
+        } catch (e) {}
+    };
+    const setTagFilterPresets = (presets) => {
+        window.gtdTagFilterPresets = normalizeTagFilterPresets(presets);
+        savePersistedTagFilterPresets(window.gtdTagFilterPresets);
+    };
+    const isSameFilterSet = (a, b) => {
+        const aa = normalizeTagFilterList(a).slice().sort();
+        const bb = normalizeTagFilterList(b).slice().sort();
+        if (aa.length !== bb.length) return false;
+        for (let i = 0; i < aa.length; i++) if (aa[i] !== bb[i]) return false;
         return true;
     };
+    const getTagPresetSummaryText = (filters) => {
+        const normalized = normalizeTagFilterList(filters);
+        if (normalized.length === 0) return "全部标签";
+        return normalized.map((id) => {
+            const def = TAG_DEFINITIONS[id];
+            return def ? `${def.icon} ${def.label}` : id;
+        }).join(" · ");
+    };
 
     // ============================================================
-    // 🔷 原有标签层级工具函数（保持不变）
+    // 🔷 标签层级工具函数
     // ============================================================
 
     // --- 0.1 标签层级工具函数 ---
@@ -227,24 +192,39 @@
         return Object.keys(TAG_DEFINITIONS).filter(key => TAG_DEFINITIONS[key].parentId === parentId);
     };
 
-    // 检查某个tagId是否匹配筛选条件（包含子孙匹配）
-    const tagMatchesFilter = (itemTags, filterTagId) => {
-        if (!filterTagId || !itemTags || itemTags.length === 0) return false;
-        // 直接匹配
-        if (itemTags.includes(filterTagId)) return true;
-        // 子孙匹配：如果筛选的是父标签，则子孙标签也算匹配
-        const descendants = getDescendantTagIds(filterTagId);
-        return itemTags.some(t => descendants.includes(t));
+    // 标签是否匹配筛选条件（支持多标签，父标签包含子孙标签）
+    const tagMatchesFilter = (itemTags, filterTagIds) => {
+        if (!filterTagIds || filterTagIds.length === 0) return true;
+        if (!itemTags || itemTags.length === 0) return false;
+        const matchesOne = (filterId) => {
+            if (itemTags.includes(filterId)) return true;
+            return itemTags.some(t => getDescendantTagIds(filterId).includes(t));
+        };
+        return filterTagIds.some(matchesOne);
     };
 
     // 初始化全局状态
     if (window.gtdShowOnlyFirstClass === undefined) window.gtdShowOnlyFirstClass = false;
     if (window.gtdShowOnlyFocus === undefined) window.gtdShowOnlyFocus = false;
-    if (window.gtdTagFilter === undefined) window.gtdTagFilter = null;
+    if (!Array.isArray(window.gtdTagFilters)) {
+        if (window.gtdTagFilter) window.gtdTagFilters = [window.gtdTagFilter];
+        else window.gtdTagFilters = [];
+    }
+    if (!Array.isArray(window.gtdTagFilterPresets)) window.gtdTagFilterPresets = loadPersistedTagFilterPresets();
+    else setTagFilterPresets(window.gtdTagFilterPresets);
+    const persistedTagFilters = loadPersistedTagFilters();
+    if (persistedTagFilters !== null) setTagFilters(persistedTagFilters);
+    else setTagFilters(window.gtdTagFilters);
     if (window.gtdKaioKenMode === undefined) window.gtdKaioKenMode = false;
     if (window.gtdTagManagerMode === undefined) window.gtdTagManagerMode = false;
     if (window.gtdRecentIds === undefined) window.gtdRecentIds = [];
     if (window.gtdQuickNavCollapsed === undefined) window.gtdQuickNavCollapsed = {};
+    if (!window.gtdCommentDrawerState || typeof window.gtdCommentDrawerState !== "object") {
+        window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
+    }
+    if (window.gtdCommentPreviewComponent === undefined) window.gtdCommentPreviewComponent = null;
+    if (!(window.gtdOutlinerFileRawCache instanceof Map)) window.gtdOutlinerFileRawCache = new Map();
+    if (!(window.gtdOutlinerMarkerBodyCache instanceof Map)) window.gtdOutlinerMarkerBodyCache = new Map();
 
     window.gtdCurrentDragId = null;
     window.gtdCurrentDragTagId = null;
@@ -424,6 +404,324 @@
         if (renderViewFn) renderViewFn(); 
     };
 
+    const disposeCommentPreviewComponent = () => {
+        const comp = window.gtdCommentPreviewComponent;
+        if (comp && typeof comp.unload === "function") {
+            try { comp.unload(); } catch (e) {}
+        }
+        window.gtdCommentPreviewComponent = null;
+    };
+
+    const getItemById = (id) => gtdList.find(i => i.id === id) || null;
+    const getItemCommentText = (item) => (typeof item?.comment === "string" ? item.comment : "");
+    const summarizeComment = (text, maxLen = 24) => {
+        const clean = String(text || "").replace(/\s+/g, " ").trim();
+        if (!clean) return "";
+        return clean.length > maxLen ? `${clean.slice(0, maxLen)}...` : clean;
+    };
+
+    const normalizeCommentDrawerMode = (mode) => {
+        if (mode === "preview") return "preview";
+        if (mode === "raw") return "raw";
+        if (mode === "embed" || mode === "outliner") return "embed";
+        return "preview";
+    };
+
+    const openCommentDrawer = (itemId, mode = "preview") => {
+        const item = getItemById(itemId);
+        if (!item) return;
+        window.gtdCommentDrawerState = {
+            isOpen: true,
+            itemId,
+            mode: normalizeCommentDrawerMode(mode),
+            draft: getItemCommentText(item)
+        };
+        if (renderViewFn) renderViewFn();
+    };
+
+    const closeCommentDrawer = async (persistDraft = false) => {
+        if (persistDraft) {
+            const state = window.gtdCommentDrawerState || {};
+            const itemId = state?.itemId;
+            if (itemId) {
+                const draftText = typeof state?.draft === "string" ? state.draft : "";
+                await saveItemCommentById(itemId, draftText);
+            }
+        }
+        window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
+        disposeCommentPreviewComponent();
+        if (renderViewFn) renderViewFn();
+    };
+
+    const saveItemCommentById = async (itemId, rawText) => {
+        const finalText = String(rawText || "");
+        window.gtdCommentDrawerState = {
+            isOpen: true,
+            itemId,
+            mode: normalizeCommentDrawerMode(window.gtdCommentDrawerState?.mode),
+            draft: finalText
+        };
+        const currentItem = getItemById(itemId);
+        if (!currentItem) return false;
+        if (getItemCommentText(currentItem) === finalText) return false;
+        await updateGTD((list) => {
+            const idx = list.findIndex(i => i.id === itemId);
+            if (idx < 0) return;
+            if (finalText.trim()) list[idx].comment = finalText;
+            else delete list[idx].comment;
+        });
+        return true;
+    };
+
+    const getCurrentNoteLinkName = () => {
+        const name = String(dv.current()?.file?.name || "");
+        if (name) return name.replace(/\.md$/i, "");
+        const path = String(dv.current()?.file?.path || "");
+        const fallback = path.split("/").pop() || "";
+        return fallback.replace(/\.md$/i, "");
+    };
+
+    const resolveRoamUidToTarget = (uidText) => {
+        const raw = String(uidText || "").trim();
+        if (!raw) return "";
+        if (raw.includes("#")) return raw;
+        const cleanUid = raw.replace(/^\^+/, "");
+        if (!cleanUid) return "";
+        const noteName = getCurrentNoteLinkName();
+        return noteName ? `${noteName}#^${cleanUid}` : `#^${cleanUid}`;
+    };
+
+    const convertRoamRefsToEmbeds = (markdownText) => {
+        const text = String(markdownText || "");
+        return text.replace(/\(\(([^\)\n]+)\)\)/g, (full, uid) => {
+            const target = resolveRoamUidToTarget(uid);
+            if (!target) return full;
+            return `![[${target}]]`;
+        });
+    };
+
+    const buildAliasToTargetMap = (markdownText) => {
+        const text = String(markdownText || "");
+        const map = new Map();
+        const matches = [...text.matchAll(/!\[\[([^\]]+)\]\]/g)];
+        matches.forEach((m) => {
+            const inner = String(m?.[1] || "").trim();
+            if (!inner) return;
+            const parts = inner.split("|");
+            if (parts.length < 2) return;
+            const rawTarget = String(parts[0] || "").trim();
+            const alias = String(parts[parts.length - 1] || "").trim();
+            if (!rawTarget || !alias || map.has(alias)) return;
+            map.set(alias, rawTarget);
+        });
+        return map;
+    };
+
+    const escapeRegExp = (text) => String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const normalizeMarkerId = (markerId) => String(markerId || "").trim().replace(/^\^+/, "");
+
+    const resolveOutlinerMarkerToTarget = (markerId, aliasMap) => {
+        const normalizedId = normalizeMarkerId(markerId);
+        if (!normalizedId) return "";
+        const mappedRaw = aliasMap?.get?.(normalizedId) || "";
+        if (mappedRaw) {
+            const mapped = String(mappedRaw).trim();
+            if (!mapped) return "";
+            if (mapped.includes("#")) return mapped;
+            return `${mapped}#^${normalizedId}`;
+        }
+        return "";
+    };
+
+    const convertOutlinerMarkerBlocks = (markdownText) => {
+        const text = String(markdownText || "");
+        const aliasMap = buildAliasToTargetMap(text);
+        return text.replace(/%%([^\s%]+)%%\n?([\s\S]*?)\n?%%\1%%/g, (full, markerId, body) => {
+            const target = resolveOutlinerMarkerToTarget(markerId, aliasMap);
+            if (!target) return `\n${String(body || "").trim()}\n`;
+            return `![[${target}]]`;
+        });
+    };
+
+    const extractOutlinerMarkedBody = (rawText, markerId) => {
+        const normalizedId = normalizeMarkerId(markerId);
+        if (!normalizedId) return "";
+        const pattern = new RegExp(`%%${escapeRegExp(normalizedId)}%%\\n?([\\s\\S]*?)\\n?%%${escapeRegExp(normalizedId)}%%`, "m");
+        const matched = String(rawText || "").match(pattern);
+        if (!matched) return "";
+        return String(matched[1] || "").trim();
+    };
+
+    const readFileRawWithCache = async (file) => {
+        const path = String(file?.path || "");
+        if (!path) return "";
+        const mtime = Number(file?.stat?.mtime || 0);
+        const rawCache = window.gtdOutlinerFileRawCache;
+        const cached = rawCache.get(path);
+        if (cached && cached.mtime === mtime) return String(cached.raw || "");
+        const raw = await app.vault.read(file);
+        rawCache.set(path, { mtime, raw });
+        return raw;
+    };
+
+    const getOutlinerMarkerBodyCached = async (targetLink, markerId, sourcePath) => {
+        const target = String(targetLink || "").trim();
+        const normalizedId = normalizeMarkerId(markerId);
+        if (!target || !normalizedId) return "";
+        const file = app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+        if (!file) return "";
+
+        const filePath = String(file.path || "");
+        const mtime = Number(file?.stat?.mtime || 0);
+        const cacheKey = `${filePath}::${normalizedId}`;
+        const bodyCache = window.gtdOutlinerMarkerBodyCache;
+        const cached = bodyCache.get(cacheKey);
+        if (cached && cached.mtime === mtime) return String(cached.body || "");
+
+        const raw = await readFileRawWithCache(file);
+        const body = extractOutlinerMarkedBody(raw, normalizedId);
+        bodyCache.set(cacheKey, { mtime, body });
+        return body;
+    };
+
+    const resolveOutlinerAliasEmbedsToBodies = async (markdownText, sourcePath) => {
+        const text = String(markdownText || "");
+        const pattern = /!\[\[([^\]|]+)\|([^\]]+)\]\]/g;
+        const matches = [...text.matchAll(pattern)];
+        if (matches.length === 0) return text;
+        const requestMap = new Map();
+        matches.forEach((m) => {
+            const targetLink = String(m?.[1] || "").trim();
+            const markerId = normalizeMarkerId(m?.[2]);
+            if (!targetLink || !markerId) return;
+            const key = `${targetLink}::${markerId}`;
+            if (!requestMap.has(key)) requestMap.set(key, { targetLink, markerId });
+        });
+        const resolvedBodyMap = new Map();
+        await Promise.all([...requestMap.entries()].map(async ([key, req]) => {
+            let body = "";
+            try {
+                body = await getOutlinerMarkerBodyCached(req.targetLink, req.markerId, sourcePath);
+            } catch (e) {}
+            resolvedBodyMap.set(key, body);
+        }));
+
+        let output = "";
+        let lastIndex = 0;
+        for (const m of matches) {
+            const idx = typeof m.index === "number" ? m.index : -1;
+            if (idx < 0) continue;
+            output += text.slice(lastIndex, idx);
+            const full = String(m[0] || "");
+            const targetLink = String(m[1] || "").trim();
+            const markerId = normalizeMarkerId(m[2]);
+            let replacement = full;
+            if (targetLink && markerId) {
+                const key = `${targetLink}::${markerId}`;
+                const body = String(resolvedBodyMap.get(key) || "");
+                if (body) replacement = `\n${body}\n`;
+            }
+            output += replacement;
+            lastIndex = idx + full.length;
+        }
+        output += text.slice(lastIndex);
+        return output;
+    };
+
+    const renderMarkdownInContainer = async (markdownText, containerEl) => {
+        containerEl.empty();
+        const text = String(markdownText || "");
+        if (!text.trim()) {
+            containerEl.createEl("div", { text: "（暂无内容）", attr: { style: "color:var(--text-faint);font-style:italic;" } });
+            disposeCommentPreviewComponent();
+            return;
+        }
+        const sourcePath = dv.current().file.path;
+        let renderText = convertRoamRefsToEmbeds(convertOutlinerMarkerBlocks(text));
+        renderText = await resolveOutlinerAliasEmbedsToBodies(renderText, sourcePath);
+        disposeCommentPreviewComponent();
+        const component = new obsidian.Component();
+        component.load();
+        window.gtdCommentPreviewComponent = component;
+
+        try {
+            if (obsidian.MarkdownRenderer && typeof obsidian.MarkdownRenderer.render === "function") {
+                await obsidian.MarkdownRenderer.render(app, renderText, containerEl, sourcePath, component);
+            } else if (obsidian.MarkdownRenderer && typeof obsidian.MarkdownRenderer.renderMarkdown === "function") {
+                await obsidian.MarkdownRenderer.renderMarkdown(renderText, containerEl, sourcePath, component);
+            } else {
+                containerEl.setText(renderText);
+            }
+        } catch (e) {
+            console.error("评论预览渲染失败:", e);
+            containerEl.setText(renderText);
+        }
+
+        containerEl.querySelectorAll("a.internal-link").forEach((linkEl) => {
+            linkEl.addEventListener("click", async (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const href = linkEl.getAttribute("data-href") || linkEl.getAttribute("href") || "";
+                if (!href) return;
+                try {
+                    await openLinkForEditing(href);
+                } catch (e) {
+                    console.error("打开评论内部链接失败:", e);
+                    new Notice("⚠️ 打开链接失败，请检查目标是否存在");
+                }
+            });
+        });
+    };
+
+    const extractEmbedTargets = (markdownText) => {
+        const text = String(markdownText || "");
+        const aliasMap = buildAliasToTargetMap(text);
+        const embedMatches = [...text.matchAll(/!\[\[([^\]]+)\]\]/g)];
+        const roamMatches = [...text.matchAll(/\(\(([^\)\n]+)\)\)/g)];
+        const markerMatches = [...text.matchAll(/%%([^\s%]+)%%\n?[\s\S]*?\n?%%\1%%/g)];
+        const targets = [];
+        const seen = new Set();
+        embedMatches.forEach((m) => {
+            const inner = String(m?.[1] || "").trim();
+            if (!inner) return;
+            const target = inner.split("|")[0].trim();
+            if (!target || seen.has(target)) return;
+            seen.add(target);
+            targets.push(target);
+        });
+        roamMatches.forEach((m) => {
+            const inner = String(m?.[1] || "").trim();
+            if (!inner) return;
+            const target = resolveRoamUidToTarget(inner);
+            if (!target || seen.has(target)) return;
+            seen.add(target);
+            targets.push(target);
+        });
+        markerMatches.forEach((m) => {
+            const markerId = String(m?.[1] || "").trim();
+            if (!markerId) return;
+            const target = resolveOutlinerMarkerToTarget(markerId, aliasMap);
+            if (!target || seen.has(target)) return;
+            seen.add(target);
+            targets.push(target);
+        });
+        return targets;
+    };
+
+    const openLinkForEditing = async (linkText) => {
+        const target = String(linkText || "").trim();
+        if (!target) return;
+        const sourcePath = dv.current().file.path;
+        await app.workspace.openLinkText(target, sourcePath, true);
+        const markdownView = app.workspace.getActiveViewOfType?.(obsidian.MarkdownView);
+        if (markdownView && typeof markdownView.getMode === "function" && typeof markdownView.setMode === "function") {
+            if (markdownView.getMode() !== "source") {
+                await markdownView.setMode("source");
+            }
+            markdownView.editor?.focus?.();
+        }
+    };
+
     // --- 功能函数区 ---
     const toggleFirstClass = async (index) => { await updateGTD((list) => { if (list[index]) list[index].isFirstClass = !list[index].isFirstClass; }); };
     const toggleFocusSession = async (index) => { await updateGTD((list) => { if (list[index]) list[index].isFocusSession = !list[index].isFocusSession; }); };
@@ -432,7 +730,8 @@
     
     const modifyTag = async (index) => {
         const item = gtdList[index];
-        const choice = await tagSelector(item.tags); 
+        if (!item) return;
+        const choice = await tagSelector(item.tags);
         if (!choice) return;
         
         await updateGTD((list) => {
@@ -530,8 +829,52 @@
             newItem.project = selectedProject;
             newItem.content = inputName;
         }
+        const siblingOrders = gtdList
+            .filter(i =>
+                i.status === "active" &&
+                (i.type === "next_action" || i.type === "inbox") &&
+                (i.project || null) === (newItem.project || null) &&
+                (i.parentId || null) === (newItem.parentId || null)
+            )
+            .map(i => Number(i?.sortOrder))
+            .filter(v => Number.isFinite(v));
+        if (siblingOrders.length > 0) newItem.sortOrder = Math.max(...siblingOrders) + 10;
         window.gtdRecentIds.push(newId);
         await updateGTD((list) => { list.push(newItem); });
+    };
+
+    const getManualOrder = (item) => {
+        const num = Number(item?.sortOrder);
+        return Number.isFinite(num) ? num : null;
+    };
+
+    const compareByOrderThenName = (a, b) => {
+        const oa = getManualOrder(a);
+        const ob = getManualOrder(b);
+        if (oa !== null && ob !== null && oa !== ob) return oa - ob;
+        if (oa !== null && ob === null) return -1;
+        if (oa === null && ob !== null) return 1;
+        const an = String(a?.content || a?.project || "");
+        const bn = String(b?.content || b?.project || "");
+        return an.localeCompare(bn, "zh");
+    };
+
+    const resequenceSiblingOrders = (list, siblings) => {
+        siblings.forEach((s, idx) => {
+            const ref = list.find(i => i.id === s.id);
+            if (!ref) return;
+            ref.sortOrder = (idx + 1) * 10;
+        });
+    };
+
+    const wouldCreateTaskCycle = (list, draggedId, nextParentId) => {
+        let cursor = nextParentId || null;
+        while (cursor) {
+            if (cursor === draggedId) return true;
+            const cursorItem = list.find(i => i.id === cursor);
+            cursor = cursorItem ? (cursorItem.parentId || null) : null;
+        }
+        return false;
     };
 
     const checkSubtasks = (parentId) => {
@@ -542,19 +885,10 @@
         const item = gtdList[index];
         if (checkSubtasks(item.id)) { new Notice("⚠️ 无法完成：请先完成该任务下的所有子任务！"); return; }
 
-        // 🔷 新增：先记录到 Timeline（用户可取消，但状态仍会变更）
-        await recordToTimeline(item, index);
-
         await updateGTD((list) => { if (list[index]) { list[index].status = "completed"; list[index].completed_date = moment().format("YYYY-MM-DD"); } });
     };
     
     const completeProject = async (index, projectName) => {
-        // 🔷 新增：批量记录任务到 Timeline
-        const tasksToComplete = gtdList.filter(i => i.type === 'next_action' && i.project === projectName && i.status === 'active');
-        for (const task of tasksToComplete) {
-            await recordToTimeline(task, -1);
-        }
-
         await updateGTD((list) => {
             if (list[index]) { list[index].status = "completed"; list[index].completed_date = moment().format("YYYY-MM-DD"); }
             for (let i = 0; i < list.length; i++) {
@@ -594,26 +928,68 @@
         if (!draggedId || draggedId === targetId) return;
         const draggedItem = gtdList.find(i => i.id === draggedId);
         if (!draggedItem) return;
+        const targetItem = targetType === 'task' ? gtdList.find(i => i.id === targetId) : null;
+        if (targetType === 'task' && !targetItem) return;
+        if (targetType === 'task') {
+            const nextParentId = position === 'child' ? targetItem.id : (targetItem.parentId || null);
+            if (wouldCreateTaskCycle(gtdList, draggedId, nextParentId)) {
+                new Notice("⚠️ 无效操作：不能把条目拖到自己的子级链路中");
+                return;
+            }
+        }
         let confirmMsg = ""; let targetName = "";
         if (targetType === 'project') {
             targetName = targetId;
             confirmMsg = `确定要将 <b>[${draggedItem.content}]</b> 移动到项目 <b>[${targetName}]</b> 的顶层吗？`;
         } else {
-            const targetItem = gtdList.find(i => i.id === targetId);
-            if (!targetItem) return;
             targetName = targetItem.content;
             if (position === 'child') confirmMsg = `确定将 <b>[${draggedItem.content}]</b> 设为 <b>[${targetName}]</b> 的子任务吗？`;
-            else confirmMsg = `确定调整 <b>[${draggedItem.content}]</b> 的父级归属到 <b>[${targetName}]</b> 所在层级吗？`;
+            else if (position === 'before') confirmMsg = `确定将 <b>[${draggedItem.content}]</b> 移到 <b>[${targetName}]</b> 前面吗？`;
+            else confirmMsg = `确定将 <b>[${draggedItem.content}]</b> 移到 <b>[${targetName}]</b> 后面吗？`;
         }
         await confirm("确认移动", confirmMsg).then(async () => {
             await updateGTD((list) => {
                 const draggedIndex = list.findIndex(i => i.id === draggedId);
+                if (draggedIndex < 0) return;
                 const item = list[draggedIndex];
-                if (targetType === 'project') { item.parentId = null; item.project = targetName; } else {
+                if (!item) return;
+                if (targetType === 'project') {
+                    item.parentId = null;
+                    item.project = targetName;
+                    const siblingScope = list
+                        .filter(i =>
+                            i.status === "active" &&
+                            (i.type === "next_action" || i.type === "inbox") &&
+                            (i.project || null) === (item.project || null) &&
+                            (i.parentId || null) === null
+                        )
+                        .sort(compareByOrderThenName)
+                        .filter(i => i.id !== item.id);
+                    siblingScope.push(item);
+                    resequenceSiblingOrders(list, siblingScope);
+                } else {
                     const targetIndex = list.findIndex(i => i.id === targetId); const target = list[targetIndex];
-                    if (position === 'child') { item.parentId = target.id; if (item.project !== target.project) item.project = target.project; } else { item.parentId = target.parentId; if (item.project !== target.project) item.project = target.project; }
+                    if (!target) return;
+                    if (position === 'child') { item.parentId = target.id; if (item.project !== target.project) item.project = target.project; }
+                    else { item.parentId = target.parentId; if (item.project !== target.project) item.project = target.project; }
+
+                    const siblingScope = list
+                        .filter(i =>
+                            i.status === "active" &&
+                            (i.type === "next_action" || i.type === "inbox") &&
+                            (i.project || null) === (item.project || null) &&
+                            (i.parentId || null) === (item.parentId || null)
+                        )
+                        .sort(compareByOrderThenName);
+                    const withoutDragged = siblingScope.filter(i => i.id !== item.id);
+                    let insertAt = withoutDragged.length;
+                    if (position === "before" || position === "after") {
+                        const targetPos = withoutDragged.findIndex(i => i.id === target.id);
+                        if (targetPos >= 0) insertAt = position === "before" ? targetPos : targetPos + 1;
+                    }
+                    withoutDragged.splice(insertAt, 0, item);
+                    resequenceSiblingOrders(list, withoutDragged);
                 }
-                list.splice(draggedIndex, 1); list.push(item); 
             });
             new Notice("✅ 移动成功");
         }).catch(() => {});
@@ -750,109 +1126,6 @@
                 groups[projName].forEach(wrap => renderCard(groupDiv, wrap));
             });
         }
-    };
-
-    // ==========================================================
-    // ⏱️ Timeline 时间轴视图
-    // ==========================================================
-    const renderTimelineView = async (container) => {
-        // 加载 Timeline 数据
-        const timelineData = await loadTimelineData();
-
-        const style = `<style>
-            .timeline-container { background: var(--background-secondary); border-radius: 12px; padding: 20px; font-family: sans-serif; min-height: 500px; }
-            .timeline-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--interactive-accent); }
-            .timeline-title { font-size: 1.5em; font-weight: 800; color: var(--text-normal); margin: 0; display: flex; align-items: center; gap: 8px; }
-            .timeline-exit-btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; background: var(--background-modifier-border); color: var(--text-normal); transition: all 0.2s; }
-            .timeline-exit-btn:hover { background: var(--interactive-accent); color: white; }
-            .timeline-empty { text-align: center; padding: 60px 20px; color: var(--text-muted); font-size: 1.1em; }
-            .timeline-empty-icon { font-size: 3em; margin-bottom: 15px; opacity: 0.5; }
-            .timeline-list { display: flex; flex-direction: column; gap: 0; }
-            .timeline-item { display: flex; gap: 15px; padding: 15px 0; border-bottom: 1px solid var(--background-modifier-border); position: relative; }
-            .timeline-item:last-child { border-bottom: none; }
-            .timeline-item::before { content: ''; position: absolute; left: -6px; top: 22px; width: 12px; height: 12px; border-radius: 50%; background: var(--interactive-accent); border: 2px solid var(--background-secondary); }
-            .timeline-date-box { min-width: 80px; text-align: right; }
-            .timeline-date { font-size: 1.1em; font-weight: 700; color: var(--text-normal); }
-            .timeline-time { font-size: 0.8em; color: var(--text-muted); margin-top: 2px; }
-            .timeline-content { flex: 1; }
-            .timeline-path { font-size: 0.85em; color: var(--text-muted); margin-bottom: 6px; padding-left: 10px; border-left: 2px solid var(--interactive-accent); }
-            .timeline-task { font-size: 1.1em; font-weight: 600; color: var(--text-normal); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-            .timeline-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-            .timeline-tag { padding: 2px 8px; border-radius: 12px; font-size: 0.8em; color: white; display: flex; align-items: center; gap: 4px; }
-            .timeline-comment { font-size: 0.95em; color: var(--text-normal); padding: 10px 12px; background: var(--background-primary); border-radius: 8px; border-left: 3px solid var(--interactive-accent); }
-            .timeline-stats { display: flex; gap: 20px; margin-bottom: 20px; padding: 15px; background: var(--background-primary); border-radius: 8px; }
-            .timeline-stat { display: flex; align-items: center; gap: 8px; }
-            .timeline-stat-num { font-size: 1.4em; font-weight: 700; color: var(--interactive-accent); }
-            .timeline-stat-label { font-size: 0.9em; color: var(--text-muted); }
-        </style>`;
-
-        container.innerHTML = style;
-
-        const wrapper = container.createEl("div", { cls: "timeline-container" });
-
-        // 头部
-        const header = wrapper.createEl("div", { cls: "timeline-header" });
-        header.createEl("div", { cls: "timeline-title" }).innerHTML = `⏱️ 完成事项 Timeline`;
-        const exitBtn = header.createEl("button", { text: "返回主界面", cls: "timeline-exit-btn" });
-        exitBtn.onclick = () => { window.gtdTimelineMode = false; if (renderViewFn) renderViewFn(); };
-
-        // 统计信息
-        const totalCount = timelineData.length;
-        const todayCount = timelineData.filter(l => l.date === moment().format("YYYY-MM-DD")).length;
-        const weekCount = timelineData.filter(l => {
-            const d = moment(l.date);
-            return d.isAfter(moment().subtract(7, 'days'));
-        }).length;
-
-        const statsDiv = wrapper.createEl("div", { cls: "timeline-stats" });
-        statsDiv.innerHTML = `
-            <div class="timeline-stat"><span class="timeline-stat-num">${totalCount}</span><span class="timeline-stat-label">总记录</span></div>
-            <div class="timeline-stat"><span class="timeline-stat-num">${todayCount}</span><span class="timeline-stat-label">今日</span></div>
-            <div class="timeline-stat"><span class="timeline-stat-num">${weekCount}</span><span class="timeline-stat-label">本周</span></div>
-        `;
-
-        // 列表
-        if (timelineData.length === 0) {
-            const emptyDiv = wrapper.createEl("div", { cls: "timeline-empty" });
-            emptyDiv.innerHTML = `<div class="timeline-empty-icon">📭</div><div>暂无完成记录</div><div style="font-size:0.9em;margin-top:8px;">完成任务时会自动记录到这里</div>`;
-            return;
-        }
-
-        const listContainer = wrapper.createEl("div", { cls: "timeline-list" });
-
-        timelineData.forEach(log => {
-            const item = listContainer.createEl("div", { cls: "timeline-item" });
-
-            // 日期框
-            const dateBox = item.createEl("div", { cls: "timeline-date-box" });
-            dateBox.createEl("div", { text: log.date, cls: "timeline-date" });
-            dateBox.createEl("div", { text: log.time, cls: "timeline-time" });
-
-            // 内容
-            const content = item.createEl("div", { cls: "timeline-content" });
-
-            // 冒泡层级路径
-            content.createEl("div", { text: log.projectPath, cls: "timeline-path" });
-
-            // 任务名
-            const taskDiv = content.createEl("div", { cls: "timeline-task" });
-            taskDiv.createEl("span", { text: log.taskTitle });
-
-            // 标签
-            if (log.tagInfo && log.tagInfo.length > 0) {
-                const tagsDiv = content.createEl("div", { cls: "timeline-tags" });
-                log.tagInfo.forEach(tag => {
-                    const tagEl = tagsDiv.createEl("span", { cls: "timeline-tag" });
-                    tagEl.style.backgroundColor = tag.color;
-                    tagEl.innerHTML = `${tag.icon} ${tag.label}`;
-                });
-            }
-
-            // 评语（仅当有内容时才显示）
-            if (log.comment) {
-                content.createEl("div", { text: log.comment, cls: "timeline-comment" });
-            }
-        });
     };
 
     // ==========================================================
@@ -1288,6 +1561,7 @@
     };
 
     const renderNormalView = () => {
+        disposeCommentPreviewComponent();
         dv.container.innerHTML = "";
         if (!gtdList) { dv.paragraph(`⏳ 读取数据中...`); return; }
 
@@ -1316,6 +1590,8 @@
             .is-dragging { opacity: 0.4; background: var(--background-modifier-hover); transform: scale(0.99); }
             .completed-line { opacity: 0.9; }
             .ghost-line { opacity: 0.5; font-style: italic; pointer-events: none; }
+            .gtd-drag-handle { color: var(--text-faint); cursor: grab; letter-spacing: -1px; user-select: none; padding: 0 2px; }
+            .gtd-drag-handle:active { cursor: grabbing; }
             .proj-nav-drop-root { border: 1px dashed var(--background-modifier-border); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; color: var(--text-muted); font-size: 0.85em; text-align: center; transition: all 0.2s; }
             .proj-nav-drop-root.drag-over { border-color: #2ecc71; background: rgba(46, 204, 113, 0.15); color: var(--text-normal); }
             .proj-nav-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; padding: 1px 2px; transition: background 0.2s; }
@@ -1323,8 +1599,13 @@
             .proj-nav-row.is-dragging { opacity: 0.45; }
             .proj-nav-toggle { width: 16px; text-align: center; color: var(--text-muted); cursor: pointer; user-select: none; font-size: 11px; }
             .proj-nav-toggle.spacer { opacity: 0.35; cursor: default; }
-            .proj-nav-tag { cursor: pointer; font-size: 0.9em; display:block; background: transparent; padding: 4px 8px; margin-bottom: 2px; border-radius: 4px; color: var(--text-muted); transition: all 0.2s; border: 1px solid transparent; user-select: none; flex: 1; }
+            .proj-nav-tag { cursor: pointer; font-size: 0.9em; display:flex; align-items:center; gap:6px; flex-wrap:nowrap; background: transparent; padding: 4px 8px; margin-bottom: 2px; border-radius: 4px; color: var(--text-muted); transition: all 0.2s; border: 1px solid transparent; user-select: none; flex: 1; }
             .proj-nav-tag:hover { color: var(--interactive-accent); border-color: var(--background-modifier-border); background: var(--background-primary); }
+            .proj-nav-main { color: var(--text-normal); font-weight: 600; line-height: 1.25; white-space: nowrap; }
+            .proj-nav-tags { display: inline-flex; flex-wrap: nowrap; gap: 4px; }
+            .proj-nav-pill { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 10px; font-size: 0.72em; color: var(--text-normal); border: 1px solid var(--background-modifier-border); background: transparent; box-shadow: none; white-space: nowrap; }
+            .proj-nav-tag-edit { cursor: pointer; user-select: none; font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 10px; border: 1px solid transparent; color: var(--text-muted); transition: all 0.2s; }
+            .proj-nav-tag-edit:hover { color: var(--interactive-accent); border-color: var(--background-modifier-border); background: var(--background-primary); }
             .gtd-section-nav { position: fixed; right: 18px; bottom: 18px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 18px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); box-shadow: 0 8px 24px rgba(0,0,0,0.2); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); min-width: 128px; }
             .gtd-section-nav-title { font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; letter-spacing: 0.2px; }
             .gtd-section-nav-row { display: flex; flex-direction: column; gap: 6px; }
@@ -1348,6 +1629,38 @@
             .tag-category-label:hover { background: var(--background-modifier-hover); }
             .tag-category-label.active { color: white; }
             .tag-children-group { display: flex; gap: 4px; flex-wrap: wrap; padding-left: 12px; border-left: 2px solid var(--background-modifier-border); margin-left: 8px; margin-top: 4px; }
+            .tag-preset-toolbar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+            .tag-preset-btn { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--background-modifier-border); cursor: pointer; background: transparent; color: var(--text-normal); font-size: 11px; }
+            .tag-preset-btn:hover { background: var(--background-modifier-hover); }
+            .tag-preset-chip { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--background-modifier-border); cursor: pointer; background: var(--background-secondary); color: var(--text-normal); font-size: 11px; }
+            .tag-preset-chip.active { color: var(--text-on-accent); background: var(--interactive-accent); border-color: transparent; }
+            .gtd-comment-chip { display: inline-flex; align-items: center; max-width: 360px; padding: 2px 8px; border: 1px solid var(--background-modifier-border); border-radius: 10px; font-size: 11px; color: var(--text-muted); background: var(--background-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 8px; cursor: pointer; }
+            .gtd-comment-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+            .gtd-comment-mask { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35); z-index: 9998; }
+            .gtd-comment-drawer { position: fixed; right: 0; top: 0; width: min(760px, 92vw); height: 100vh; background: var(--background-primary); border-left: 1px solid var(--background-modifier-border); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.22); z-index: 9999; display: flex; flex-direction: column; }
+            .gtd-comment-drawer-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 10px; border-bottom: 1px solid var(--background-modifier-border); }
+            .gtd-comment-drawer-title { margin: 0; font-size: 1em; color: var(--text-normal); }
+            .gtd-comment-drawer-sub { margin-top: 3px; color: var(--text-muted); font-size: 12px; }
+            .gtd-comment-drawer-close { border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); border-radius: 6px; cursor: pointer; padding: 2px 8px; }
+            .gtd-comment-drawer-close:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+            .gtd-comment-tabs { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--background-modifier-border); }
+            .gtd-comment-tab-btn { border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+            .gtd-comment-tab-btn.active { color: var(--text-on-accent); background: var(--interactive-accent); border-color: transparent; }
+            .gtd-comment-drawer-body { padding: 12px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+            .gtd-comment-outliner-panel { display: none; flex-direction: column; gap: 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 12px; background: var(--background-primary-alt); }
+            .gtd-comment-outliner-row { display: flex; flex-wrap: wrap; gap: 8px; }
+            .gtd-comment-editor { width: 100%; min-height: 220px; flex: 1; resize: vertical; border-radius: 8px; border: 1px solid var(--background-modifier-border); background: var(--background-primary-alt); color: var(--text-normal); padding: 10px 12px; line-height: 1.6; font-family: var(--font-text); }
+            .gtd-comment-editor:focus { outline: none; border-color: var(--interactive-accent); }
+            .gtd-comment-counter { text-align: right; color: var(--text-muted); font-size: 12px; }
+            .gtd-comment-preview-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 12px; background: var(--background-primary-alt); }
+            .gtd-comment-preview-wrap .internal-link { cursor: pointer; }
+            .gtd-comment-drawer-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 10px 16px 14px; border-top: 1px solid var(--background-modifier-border); }
+            .gtd-comment-drawer-btn { border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-normal); border-radius: 8px; cursor: pointer; padding: 6px 12px; }
+            .gtd-comment-drawer-btn.save { background: var(--interactive-accent); color: var(--text-on-accent); border-color: transparent; }
+            .gtd-comment-drawer-btn:hover { filter: brightness(1.03); }
+            @media (max-width: 768px) {
+                .gtd-comment-drawer { width: 100vw; }
+            }
         `});
 
         const topAnchor = dv.el("div", "", { attr: { id: "gtd-top-anchor", style: "height:0;" } });
@@ -1364,9 +1677,6 @@
         const tagMgrBtnStyle = "background-color: #9b59b6; color: white; padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);";
         createMainBtn("🏷️ 标签管理", () => { window.gtdTagManagerMode = true; if(renderViewFn) renderViewFn(); }, tagMgrBtnStyle);
 
-        const timelineBtnStyle = "background-color: #2980b9; color: white; padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);";
-        createMainBtn("⏱️ Timeline", () => { window.gtdTimelineMode = true; if(renderViewFn) renderViewFn(); }, timelineBtnStyle);
-
         const rightBtns = controlContainer.createEl("div", { attr: { style: "display:flex; flex-direction:column; align-items:flex-end; gap:8px;" } });
         
         const mainFilterRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:8px;" } });
@@ -1377,9 +1687,20 @@
 
         const tagFilterRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; align-items:center;" } });
 
-        const allTagBtn = tagFilterRow.createEl("div", { cls: `tag-filter-btn ${window.gtdTagFilter === null ? 'active' : ''}`, text: "All" });
-        if (window.gtdTagFilter === null) allTagBtn.style.background = "var(--interactive-normal)";
-        allTagBtn.onclick = () => { window.gtdTagFilter = null; if(renderViewFn) renderViewFn(); };
+        const allTagBtn = tagFilterRow.createEl("div", { cls: `tag-filter-btn ${(window.gtdTagFilters || []).length === 0 ? 'active' : ''}`, text: "All" });
+        if ((window.gtdTagFilters || []).length === 0) allTagBtn.style.background = "var(--interactive-normal)";
+        allTagBtn.onclick = () => { setTagFilters([]); if(renderViewFn) renderViewFn(); };
+
+        const toggleTagFilter = (id) => {
+            const nextFilters = Array.isArray(window.gtdTagFilters) ? [...window.gtdTagFilters] : [];
+            if (nextFilters.includes(id)) {
+                setTagFilters(nextFilters.filter(t => t !== id));
+            } else {
+                nextFilters.push(id);
+                setTagFilters(nextFilters);
+            }
+            if(renderViewFn) renderViewFn();
+        };
 
         // [优化] 嵌套层级标签筛选器：有子标签的都展开到下一行显示
         const renderNestedTagFilter = (parentId, container) => {
@@ -1388,7 +1709,7 @@
 
             children.forEach(key => {
                 const def = TAG_DEFINITIONS[key];
-                const isActive = window.gtdTagFilter === key;
+                const isActive = (window.gtdTagFilters || []).includes(key);
                 const subChildren = getChildTags(key);
                 const hasSubChildren = subChildren.length > 0;
 
@@ -1407,10 +1728,7 @@
                             : `🏷️ 标签：点击筛选「${def.label}」及其子标签` }
                     });
                     if (isActive) parentLabel.style.backgroundColor = def.color;
-                    parentLabel.onclick = () => {
-                        window.gtdTagFilter = (window.gtdTagFilter === key) ? null : key;
-                        if(renderViewFn) renderViewFn();
-                    };
+                    parentLabel.onclick = () => toggleTagFilter(key);
 
                     // 子标签容器（新行显示，带左边线表示层级关系）
                     const childContainer = groupWrapper.createEl("div", { cls: "tag-children-group" });
@@ -1423,14 +1741,113 @@
                     const btn = container.createEl("div", { cls: `tag-filter-btn ${isActive ? 'active' : ''}` });
                     btn.innerHTML = `<span>${def.icon}</span> ${def.label}`;
                     if (isActive) btn.style.backgroundColor = def.color;
-                    btn.onclick = () => {
-                        window.gtdTagFilter = (window.gtdTagFilter === key) ? null : key;
-                        if(renderViewFn) renderViewFn();
-                    };
+                    btn.onclick = () => toggleTagFilter(key);
                 }
             });
         };
         renderNestedTagFilter(null, tagFilterRow);
+
+        const activeTagChipRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;" } });
+        if (!window.gtdTagFilters || window.gtdTagFilters.length === 0) {
+            activeTagChipRow.createEl("span", { text: "✓ 显示全部标签", attr: { style: "color:var(--text-muted); font-size:12px;" } });
+        } else {
+            const clearBtn = activeTagChipRow.createEl("button", {
+                text: "清空标签",
+                attr: { style: "padding:2px 8px; border-radius:10px; border:1px solid var(--background-modifier-border); cursor:pointer; background:transparent; color:var(--text-normal); font-size:11px;" }
+            });
+            clearBtn.onclick = () => { setTagFilters([]); if(renderViewFn) renderViewFn(); };
+            window.gtdTagFilters.forEach(id => {
+                const def = TAG_DEFINITIONS[id];
+                const chip = activeTagChipRow.createEl("span", { text: def ? `${def.icon} ${def.label}` : id, attr: { style: `padding:2px 8px; border-radius:10px; color:white; background:${def?.color || "var(--background-modifier-border)"}; font-size:11px; cursor:pointer;` } });
+                chip.onclick = () => toggleTagFilter(id);
+            });
+        }
+
+        const tagPresetToolbar = rightBtns.createEl("div", { cls: "tag-preset-toolbar" });
+        const currentPreset = (window.gtdTagFilterPresets || []).find((preset) => isSameFilterSet(preset.filters, window.gtdTagFilters || []));
+        const savePresetBtn = tagPresetToolbar.createEl("button", { cls: "tag-preset-btn", text: "💾 保存筛选" });
+        savePresetBtn.onclick = async () => {
+            const currentFilters = normalizeTagFilterList(window.gtdTagFilters || []);
+            if (currentFilters.length === 0) {
+                new Notice("⚠️ 请先选择至少一个标签再保存预设");
+                return;
+            }
+            const defaultName = currentPreset?.name || `筛选-${moment().format("MMDD-HHmm")}`;
+            const inputName = await prompt("保存标签筛选预设", "请输入预设名称", defaultName);
+            const name = normalizeTagPresetName(inputName);
+            if (!name) {
+                new Notice("⚠️ 请输入有效名称");
+                return;
+            }
+            const nextPresets = Array.isArray(window.gtdTagFilterPresets) ? [...window.gtdTagFilterPresets] : [];
+            const existingIndex = nextPresets.findIndex((preset) => preset.name === name);
+            const payload = { name, filters: currentFilters, updatedAt: moment().format("YYYY-MM-DD HH:mm:ss") };
+            if (existingIndex >= 0) {
+                nextPresets[existingIndex] = payload;
+                new Notice(`♻️ 已更新筛选预设：${name}`);
+            } else {
+                nextPresets.push(payload);
+                new Notice(`✅ 已保存筛选预设：${name}`);
+            }
+            nextPresets.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+            setTagFilterPresets(nextPresets);
+            if (renderViewFn) renderViewFn();
+        };
+        const applyPresetBtn = tagPresetToolbar.createEl("button", { cls: "tag-preset-btn", text: "📚 读取预设" });
+        applyPresetBtn.onclick = async () => {
+            const presets = Array.isArray(window.gtdTagFilterPresets) ? window.gtdTagFilterPresets : [];
+            if (presets.length === 0) {
+                new Notice("ℹ️ 还没有标签筛选预设");
+                return;
+            }
+            const options = presets.map((preset, idx) => `${idx + 1}. ${preset.name} ｜ ${getTagPresetSummaryText(preset.filters)}`);
+            const picked = await suggester(options);
+            if (!picked) return;
+            const match = picked.match(/^(\d+)\./);
+            const idx = match ? Number(match[1]) - 1 : -1;
+            const selected = idx >= 0 && idx < presets.length ? presets[idx] : null;
+            if (!selected) return;
+            setTagFilters(selected.filters);
+            window.gtdRecentIds = [];
+            new Notice(`🎯 已应用预设：${selected.name}`);
+            if (renderViewFn) renderViewFn();
+        };
+        const deletePresetBtn = tagPresetToolbar.createEl("button", { cls: "tag-preset-btn", text: "🗑️ 删除预设" });
+        deletePresetBtn.onclick = async () => {
+            const presets = Array.isArray(window.gtdTagFilterPresets) ? window.gtdTagFilterPresets : [];
+            if (presets.length === 0) {
+                new Notice("ℹ️ 没有可删除的预设");
+                return;
+            }
+            const options = presets.map((preset, idx) => `${idx + 1}. ${preset.name}`);
+            const picked = await suggester(options);
+            if (!picked) return;
+            const match = picked.match(/^(\d+)\./);
+            const idx = match ? Number(match[1]) - 1 : -1;
+            const selected = idx >= 0 && idx < presets.length ? presets[idx] : null;
+            if (!selected) return;
+            setTagFilterPresets(presets.filter((preset) => preset.name !== selected.name));
+            new Notice(`🗑️ 已删除预设：${selected.name}`);
+            if (renderViewFn) renderViewFn();
+        };
+
+        const tagPresetRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;" } });
+        if (!window.gtdTagFilterPresets || window.gtdTagFilterPresets.length === 0) {
+            tagPresetRow.createEl("span", { text: "暂无筛选预设", attr: { style: "color:var(--text-muted); font-size:12px;" } });
+        } else {
+            window.gtdTagFilterPresets.forEach((preset) => {
+                const chip = tagPresetRow.createEl("button", {
+                    cls: `tag-preset-chip ${isSameFilterSet(preset.filters, window.gtdTagFilters || []) ? 'active' : ''}`,
+                    text: `📌 ${preset.name}`
+                });
+                chip.title = getTagPresetSummaryText(preset.filters);
+                chip.onclick = () => {
+                    setTagFilters(preset.filters);
+                    window.gtdRecentIds = [];
+                    if (renderViewFn) renderViewFn();
+                };
+            });
+        }
 
         const sectionNav = dv.el("div", "", { cls: "gtd-section-nav" });
         sectionNav.createEl("div", { text: "GTD 灵动导航", cls: "gtd-section-nav-title" });
@@ -1459,13 +1876,163 @@
             return visible;
         };
 
-        const renderItemLine = (container, item, originalIndex, isCompleted = false, showProjectContext = false, level = 0, draggable = false, isGhost = false) => {
+        const renderCommentDrawer = () => {
+            const state = window.gtdCommentDrawerState || {};
+            if (!state.isOpen || !state.itemId) return;
+
+            const item = getItemById(state.itemId);
+            if (!item) {
+                window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
+                disposeCommentPreviewComponent();
+                return;
+            }
+
+            let mode = normalizeCommentDrawerMode(state.mode);
+            let draft = typeof state.draft === "string" ? state.draft : getItemCommentText(item);
+
+            const syncDrawerState = () => {
+                window.gtdCommentDrawerState = { isOpen: true, itemId: item.id, mode, draft };
+            };
+            syncDrawerState();
+
+            const mask = dv.container.createEl("div", { cls: "gtd-comment-mask" });
+            const drawer = dv.container.createEl("aside", { cls: "gtd-comment-drawer" });
+            mask.onclick = async () => { await closeCommentDrawer(true); };
+            drawer.addEventListener("click", (e) => e.stopPropagation());
+
+            const header = drawer.createEl("div", { cls: "gtd-comment-drawer-header" });
+            const titleWrap = header.createEl("div");
+            titleWrap.createEl("h3", { cls: "gtd-comment-drawer-title", text: `🗒️ 条目评论：${getDisplayName(item)}` });
+            titleWrap.createEl("div", { cls: "gtd-comment-drawer-sub", text: "默认先预览；支持 ((blockId))，会自动按当前笔记解析并跳转编辑。" });
+            const closeBtn = header.createEl("button", { cls: "gtd-comment-drawer-close", text: "关闭" });
+            closeBtn.onclick = async () => { await closeCommentDrawer(true); };
+
+            const tabs = drawer.createEl("div", { cls: "gtd-comment-tabs" });
+            const previewTabBtn = tabs.createEl("button", { cls: "gtd-comment-tab-btn", text: "预览" });
+            const outlinerTabBtn = tabs.createEl("button", { cls: "gtd-comment-tab-btn", text: "引用块编辑" });
+            const rawTabBtn = tabs.createEl("button", { cls: "gtd-comment-tab-btn", text: "源码兜底" });
+
+            const body = drawer.createEl("div", { cls: "gtd-comment-drawer-body" });
+            const outlinerPanel = body.createEl("div", { cls: "gtd-comment-outliner-panel" });
+            outlinerPanel.createEl("div", {
+                text: "识别 ![[文件|o-id]] / ![[#^...]] / ((blockId)) / %%id%%...%%id%%，点击后跳转到原块。",
+                attr: { style: "color:var(--text-muted);font-size:12px;line-height:1.6;" }
+            });
+            const outlinerRow = outlinerPanel.createEl("div", { cls: "gtd-comment-outliner-row" });
+            const outlinerEmbedBtn = outlinerRow.createEl("button", { cls: "gtd-comment-drawer-btn", text: "跳转编辑引用块" });
+
+            const editor = body.createEl("textarea", { cls: "gtd-comment-editor", text: draft });
+            editor.placeholder = "记录想法、上下文；支持 ![[文件|o-id]]、![[文件#^块]]、((块ID))、%%id%%...%%id%%";
+            const counter = body.createEl("div", { cls: "gtd-comment-counter", text: `${draft.length} 字` });
+            const previewWrap = body.createEl("div", { cls: "gtd-comment-preview-wrap" });
+
+            const refreshPreview = async () => {
+                await renderMarkdownInContainer(draft, previewWrap);
+            };
+
+            const refreshModeUI = async () => {
+                outlinerTabBtn.classList.toggle("active", mode === "embed");
+                rawTabBtn.classList.toggle("active", mode === "raw");
+                previewTabBtn.classList.toggle("active", mode === "preview");
+                outlinerPanel.style.display = mode === "embed" ? "flex" : "none";
+                editor.style.display = mode === "raw" ? "block" : "none";
+                counter.style.display = mode === "raw" ? "block" : "none";
+                previewWrap.style.display = mode === "preview" ? "block" : "none";
+                if (mode === "preview") await refreshPreview();
+                else disposeCommentPreviewComponent();
+            };
+
+            editor.addEventListener("input", () => {
+                draft = editor.value;
+                counter.textContent = `${draft.length} 字`;
+                syncDrawerState();
+            });
+            outlinerEmbedBtn.onclick = async () => {
+                const targets = extractEmbedTargets(draft);
+                if (targets.length === 0) {
+                    new Notice("ℹ️ 当前评论未检测到可跳转引用（![[...]] / ((...)) / %%...%%）");
+                    return;
+                }
+                let selected = targets[0];
+                if (targets.length > 1) {
+                    const options = targets.map((t, idx) => `${idx + 1}. ${t}`);
+                    const picked = await suggester(options);
+                    if (!picked) return;
+                    const m = picked.match(/^\d+\.\s*(.+)$/);
+                    selected = m ? m[1].trim() : picked.trim();
+                }
+                if (!selected) return;
+                await openLinkForEditing(selected);
+            };
+            outlinerTabBtn.onclick = async () => {
+                mode = "embed";
+                syncDrawerState();
+                await refreshModeUI();
+            };
+            rawTabBtn.onclick = async () => {
+                mode = "raw";
+                syncDrawerState();
+                await refreshModeUI();
+                editor.focus();
+            };
+            previewTabBtn.onclick = async () => {
+                mode = "preview";
+                syncDrawerState();
+                await refreshModeUI();
+            };
+
+            const actions = drawer.createEl("div", { cls: "gtd-comment-drawer-actions" });
+            const clearBtn = actions.createEl("button", { cls: "gtd-comment-drawer-btn", text: "清空" });
+            clearBtn.onclick = async () => {
+                draft = "";
+                editor.value = "";
+                counter.textContent = "0 字";
+                syncDrawerState();
+                if (mode === "preview") await refreshPreview();
+                await saveItemCommentById(item.id, "");
+                new Notice("🧹 评论已清空");
+            };
+            const saveBtn = actions.createEl("button", { cls: "gtd-comment-drawer-btn save", text: "保存评论" });
+            saveBtn.onclick = async () => {
+                await saveItemCommentById(item.id, draft);
+                new Notice(draft.trim() ? "💾 评论已保存" : "🧹 评论为空，已清空");
+            };
+
+            if (mode === "raw") {
+                editor.focus();
+                editor.selectionStart = editor.value.length;
+                editor.selectionEnd = editor.value.length;
+            }
+            refreshModeUI();
+        };
+
+        const getProjectLevelBackground = (level) => {
+            const palette = [
+                "rgba(52, 152, 219, 0.06)",
+                "rgba(46, 204, 113, 0.08)",
+                "rgba(241, 196, 15, 0.09)",
+                "rgba(230, 126, 34, 0.09)",
+                "rgba(231, 76, 60, 0.08)",
+                "rgba(155, 89, 182, 0.08)"
+            ];
+            if (!Number.isFinite(level) || level < 0) return palette[0];
+            return palette[level % palette.length];
+        };
+
+        const renderItemLine = (container, item, originalIndex, isCompleted = false, showProjectContext = false, level = 0, draggable = false, isGhost = false, levelBgOverride = "") => {
             const marginLeft = level * 30 + "px";
             const isChild = level > 0;
             const borderStyle = isChild ? (isGhost ? `2px dashed rgba(var(--text-muted-rgb), 0.3)` : `2px solid rgba(var(--interactive-accent-rgb), 0.5)`) : 'none';
-            const bgStyle = isGhost ? `background-color: transparent;` : (isChild ? `background-color: rgba(var(--mono-rgb-100), 0.03);` : ''); 
+            const normalizedLevelBg = String(levelBgOverride || "").trim();
+            const bgStyle = isGhost
+                ? `background-color: transparent;`
+                : (normalizedLevelBg
+                    ? `background-color: ${normalizedLevelBg};`
+                    : (isChild ? `background-color: rgba(var(--mono-rgb-100), 0.03);` : ''));
             const fontStyle = isChild ? `font-size: 0.95em;` : `font-weight: 500;`; 
             const completedClass = isCompleted ? "completed-line" : (isGhost ? "ghost-line" : "");
+            const commentText = getItemCommentText(item);
+            const commentSummary = summarizeComment(commentText, 26);
 
             const line = container.createEl("div", { 
                 cls: `gtd-item-line ${completedClass}`, 
@@ -1474,10 +2041,21 @@
                 } 
             });
 
-            if (draggable && !isCompleted && !isGhost && (item.type === 'next_action' || item.type === 'inbox')) {
-                line.draggable = true;
-                line.addEventListener("dragstart", (e) => { e.stopPropagation(); window.gtdCurrentDragId = item.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", item.id); setTimeout(() => line.classList.add("is-dragging"), 0); });
-                line.addEventListener("dragend", (e) => { e.stopPropagation(); window.gtdCurrentDragId = null; line.classList.remove("is-dragging"); });
+            const canDrag = draggable && !isCompleted && !isGhost && (item.type === 'next_action' || item.type === 'inbox');
+            const beginDrag = (e) => {
+                e.stopPropagation();
+                window.gtdCurrentDragId = item.id;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", item.id);
+                setTimeout(() => line.classList.add("is-dragging"), 0);
+            };
+            const endDrag = (e) => {
+                e.stopPropagation();
+                window.gtdCurrentDragId = null;
+                line.classList.remove("is-dragging");
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+            };
+            if (canDrag) {
                 line.addEventListener("dragover", (e) => {
                     e.preventDefault(); e.stopPropagation();
                     if (window.gtdCurrentDragId === item.id) return;
@@ -1501,6 +2079,13 @@
             }
 
             const actionContainer = line.createEl("span", { attr: { style: "display: inline-flex; align-items: center; gap: 8px; margin-right: 10px; min-width: 100px;" } });
+            if (canDrag) {
+                const dragHandle = actionContainer.createEl("span", { text: "⋮⋮", cls: "gtd-drag-handle", attr: { title: "拖拽调整位置（前/后/子）" } });
+                dragHandle.draggable = true;
+                dragHandle.onmousedown = (e) => { e.stopPropagation(); };
+                dragHandle.addEventListener("dragstart", beginDrag);
+                dragHandle.addEventListener("dragend", endDrag);
+            }
             
             const hasActiveChildren = checkSubtasks(item.id);
             if (!isGhost && hasActiveChildren) {
@@ -1525,6 +2110,11 @@
                 const reactivateBtn = actionContainer.createEl("span", { text: "↩️", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-warning);" }, title: "回退" });
                 if(originalIndex !== -1) reactivateBtn.onclick = (e) => { e.stopPropagation(); item.type === 'project' ? reactivateProject(originalIndex, item.project) : reactivateItem(originalIndex); };
                 actionContainer.createEl("span", { text: "✅", attr: { style: "margin-left:4px; color: var(--interactive-success);" } });
+                const commentBtn = actionContainer.createEl("span", {
+                    text: commentText.trim() ? "💬" : "🗒️",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px;", title: commentText.trim() ? "编辑评论（已填写）" : "添加评论" }
+                });
+                if(originalIndex !== -1) commentBtn.onclick = (e) => { e.stopPropagation(); openCommentDrawer(item.id); };
                 const renameBtn = actionContainer.createEl("span", { text: "✏️", attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px; color:var(--text-muted);" }, title: "重命名 (同步更新子级)" });
                 if(originalIndex !== -1) renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(originalIndex, item.type, displayText); };
                 const deleteBtn = actionContainer.createEl("span", { text: "✖", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-muted); margin-left: 6px;" }, title: "彻底删除" });
@@ -1543,6 +2133,11 @@
 
                 const renameBtn = actionContainer.createEl("span", { text: "✏️", attr: { style: "cursor: pointer; font-size: 14px;" }, title: "重命名" });
                 renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(originalIndex, item.type, displayText); };
+                const commentBtn = actionContainer.createEl("span", {
+                    text: commentText.trim() ? "💬" : "🗒️",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-left:2px;", title: commentText.trim() ? "编辑评论（已填写）" : "添加评论" }
+                });
+                commentBtn.onclick = (e) => { e.stopPropagation(); openCommentDrawer(item.id); };
 
                 // [升级] 标签按钮：如果条目有标签则显示第一个标签的图标，否则显示默认🏷️
                 const firstTagDef = (item.tags && item.tags.length > 0) ? TAG_DEFINITIONS[item.tags[0]] : null;
@@ -1591,6 +2186,18 @@
             }
 
             const link = textEl.createEl("a", { text: displayText, cls: "internal-link", attr: { "data-href": displayText, "href": displayText, "target": "_blank", "rel": "noopener" } });
+            if (!isGhost && commentSummary) {
+                const commentChip = contentSpan.createEl("span", {
+                    cls: "gtd-comment-chip",
+                    text: `💬 ${commentSummary}`,
+                    attr: { title: commentText }
+                });
+                commentChip.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openCommentDrawer(item.id);
+                };
+            }
             
             if (!isGhost && item.tags && item.tags.length > 0) {
                 item.tags.forEach(t => {
@@ -1655,7 +2262,7 @@
 
         const renderTaskTree = (container, tasks, parentId = null, level = 0, ancestorMatchedTag = false) => {
             const currentLevelTasks = tasks.filter(wrap => { return (wrap.item.parentId || null) === parentId; });
-            currentLevelTasks.sort((a, b) => getDisplayName(a.item).localeCompare(getDisplayName(b.item), "zh"));
+            currentLevelTasks.sort((a, b) => compareByOrderThenName(a.item, b.item));
             currentLevelTasks.forEach(wrap => {
                 // [筛选逻辑]
                 // - 标签筛选：匹配标签的条目，其所有子层级都显示（向下继承）
@@ -1670,7 +2277,7 @@
                 };
 
                 // 检查当前条目是否匹配标签
-                const currentMatchesTag = window.gtdTagFilter ? tagMatchesFilter(wrap.item.tags, window.gtdTagFilter) : false;
+                const currentMatchesTag = tagMatchesFilter(wrap.item.tags, window.gtdTagFilters);
                 // 标签向下继承：祖先匹配则子孙都通过
                 const tagInherited = ancestorMatchedTag || currentMatchesTag;
 
@@ -1693,9 +2300,9 @@
                 }
 
                 // 标签模式检查：祖先匹配(向下继承) 或 当前匹配 或 子孙匹配(向上冒泡) 或 新添加的条目
-                if (window.gtdTagFilter) {
+                if (window.gtdTagFilters && window.gtdTagFilters.length > 0) {
                     passTag = tagInherited || checkTreeCondition(wrap.item.id, (item) =>
-                        tagMatchesFilter(item.tags, window.gtdTagFilter) || window.gtdRecentIds.includes(item.id)
+                        tagMatchesFilter(item.tags, window.gtdTagFilters) || window.gtdRecentIds.includes(item.id)
                     );
                 }
 
@@ -1703,7 +2310,7 @@
                 const shouldRender = passFocus && passFirstClass && passTag;
 
                 if (shouldRender) {
-                    renderItemLine(container, wrap.item, wrap.index, false, false, level, true);
+                    renderItemLine(container, wrap.item, wrap.index, false, false, level, true, false, getProjectLevelBackground(level));
                     if (!wrap.item.isCollapsed) {
                         // 传递标签继承状态给子节点
                         renderTaskTree(container, tasks, wrap.item.id, level + 1, tagInherited);
@@ -1767,10 +2374,10 @@
             .filter(({ item }) => !window.gtdShowOnlyFocus || item.isFocusSession || window.gtdRecentIds.includes(item.id))
             // [升级] 工作篮标签筛选：使用tagMatchesFilter支持层级匹配，新添加的条目临时显示
             .filter(({ item }) => {
-                if (window.gtdTagFilter && !tagMatchesFilter(item.tags, window.gtdTagFilter) && !window.gtdRecentIds.includes(item.id)) return false;
+                if (!tagMatchesFilter(item.tags, window.gtdTagFilters) && !window.gtdRecentIds.includes(item.id)) return false;
                 return true;
             })
-            .sort(nameSort);
+            .sort((a, b) => compareByOrderThenName(a.item, b.item));
         if (inboxIndices.length === 0) inboxDiv.createEl("div", { text: "_空空如也_", attr: { style: "color:var(--text-faint);font-style:italic;" } });
         else inboxIndices.forEach(({ item, index }) => renderItemLine(inboxDiv, item, index, false, false, 0, true));
 
@@ -1795,7 +2402,7 @@
             .sort(nameSort)
             .filter(({ item }) => {
                 // 无任何筛选条件时显示所有项目
-                if (!window.gtdShowOnlyFirstClass && !window.gtdShowOnlyFocus && !window.gtdTagFilter) return true;
+                if (!window.gtdShowOnlyFirstClass && !window.gtdShowOnlyFocus && (!window.gtdTagFilters || window.gtdTagFilters.length === 0)) return true;
 
                 const projName = item.project;
                 const subs = gtdList.filter(s => s.type === 'next_action' && s.project === projName && s.status === 'active');
@@ -1827,11 +2434,11 @@
                 }
 
                 // 标签模式检查：项目本身或任意子任务匹配标签即可，新添加的条目临时通过
-                if (window.gtdTagFilter) {
-                    passTag = tagMatchesFilter(item.tags, window.gtdTagFilter) ||
+                if (window.gtdTagFilters && window.gtdTagFilters.length > 0) {
+                    passTag = tagMatchesFilter(item.tags, window.gtdTagFilters) ||
                         window.gtdRecentIds.includes(item.id) ||
                         subs.some(s => checkTreeCondition(s.id, (i) =>
-                            tagMatchesFilter(i.tags, window.gtdTagFilter) || window.gtdRecentIds.includes(i.id)
+                            tagMatchesFilter(i.tags, window.gtdTagFilters) || window.gtdRecentIds.includes(i.id)
                         ));
                 }
 
@@ -1880,9 +2487,30 @@
                 }, 10);
             };
 
+            const createQuickNavTagEditor = (row, item, index) => {
+                const firstTagDef = (item.tags && item.tags.length > 0) ? TAG_DEFINITIONS[item.tags[0]] : null;
+                const icon = firstTagDef ? firstTagDef.icon : "🏷️";
+                const title = firstTagDef ? `修改标签（当前: ${firstTagDef.label}）` : "添加标签";
+                const editBtn = row.createEl("span", { cls: "proj-nav-tag-edit", text: icon, attr: { title } });
+                editBtn.draggable = false;
+                editBtn.onmousedown = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                };
+                editBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await modifyTag(index);
+                };
+                editBtn.addEventListener("dragstart", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+            };
+
             const renderNavTree = (parentId, level = 0, chain = new Set()) => {
                 const children = getVisibleChildren(parentId);
-                children.forEach(({ item }) => {
+                children.forEach(({ item, index }) => {
                     // 防御：若数据中已有循环引用，直接跳过该分支
                     if (chain.has(item.id)) return;
                     const nextChain = new Set(chain);
@@ -1929,8 +2557,20 @@
                         row.createEl("span", { cls: "proj-nav-toggle spacer", text: "•" });
                     }
 
-                    const navTag = row.createEl("span", { text: `📂 ${item.project}`, cls: "proj-nav-tag" });
+                    const navTag = row.createEl("span", { cls: "proj-nav-tag" });
+                    navTag.createEl("span", { text: `📂 ${item.project}`, cls: "proj-nav-main" });
+                    if (item.tags && item.tags.length > 0) {
+                        const navTags = navTag.createEl("span", { cls: "proj-nav-tags" });
+                        item.tags.forEach(t => {
+                            const def = TAG_DEFINITIONS[t];
+                            if (!def) return;
+                            const pill = navTags.createEl("span", { cls: "proj-nav-pill", text: `${def.icon} ${def.label}` });
+                            pill.style.borderColor = def.color;
+                            pill.style.color = def.color;
+                        });
+                    }
                     navTag.onclick = () => jumpToProject(item.id);
+                    createQuickNavTagEditor(row, item, index);
 
                     if (hasChildren && !isCollapsed) renderNavTree(item.id, level + 1, nextChain);
                 });
@@ -1944,7 +2584,7 @@
                 })
                 .sort((a, b) => (a.item.project || "").localeCompare((b.item.project || ""), "zh"));
 
-            rootProjects.forEach(({ item }) => {
+            rootProjects.forEach(({ item, index }) => {
                 const hasChildren = getVisibleChildren(item.id).length > 0;
                 const isCollapsed = !!window.gtdQuickNavCollapsed[item.id];
 
@@ -1986,8 +2626,20 @@
                     row.createEl("span", { cls: "proj-nav-toggle spacer", text: "•" });
                 }
 
-                const navTag = row.createEl("span", { text: `📂 ${item.project}`, cls: "proj-nav-tag" });
+                const navTag = row.createEl("span", { cls: "proj-nav-tag" });
+                navTag.createEl("span", { text: `📂 ${item.project}`, cls: "proj-nav-main" });
+                if (item.tags && item.tags.length > 0) {
+                    const navTags = navTag.createEl("span", { cls: "proj-nav-tags" });
+                    item.tags.forEach(t => {
+                        const def = TAG_DEFINITIONS[t];
+                        if (!def) return;
+                        const pill = navTags.createEl("span", { cls: "proj-nav-pill", text: `${def.icon} ${def.label}` });
+                        pill.style.borderColor = def.color;
+                        pill.style.color = def.color;
+                    });
+                }
                 navTag.onclick = () => jumpToProject(item.id);
+                createQuickNavTagEditor(row, item, index);
 
                 if (hasChildren && !isCollapsed) renderNavTree(item.id, 1, new Set([item.id]));
             });
@@ -1999,7 +2651,18 @@
         else {
             activeProjectsForNav.forEach(({ item: projItem, index: projIndex }) => {
                 const projName = projItem.project;
-                const details = projectDiv.createEl("details", { attr: { id: `proj-${projItem.id}`, open: "", style: "margin-bottom:8px;border-bottom:1px dashed var(--background-modifier-border);padding-bottom:8px;" } });
+                const projCommentText = getItemCommentText(projItem);
+                const projCommentSummary = summarizeComment(projCommentText, 30);
+                const details = projectDiv.createEl("details", { attr: { id: `proj-${projItem.id}`, style: "margin-bottom:8px;border-bottom:1px dashed var(--background-modifier-border);padding-bottom:8px;" } });
+                details.open = !projItem.isCollapsed;
+                details.addEventListener("toggle", async () => {
+                    const nextCollapsed = !details.open;
+                    if (nextCollapsed === !!projItem.isCollapsed) return;
+                    await updateGTD((list) => {
+                        if (!list[projIndex]) return;
+                        list[projIndex].isCollapsed = nextCollapsed;
+                    });
+                });
                 const summary = details.createEl("summary", { attr: { style: "cursor:pointer;margin-bottom:5px;font-weight:600;color:var(--text-normal);" } });
                 
                 summary.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!window.gtdCurrentDragId) return; summary.classList.add("drag-over-project"); });
@@ -2011,6 +2674,12 @@
                 projDoneBtn.onclick = (e) => { e.preventDefault(); completeProject(projIndex, projName); };
                 const projRenameBtn = summaryContent.createEl("span", { text: "✏️", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;" }, title: "重命名项目" });
                 projRenameBtn.onclick = (e) => { e.preventDefault(); renameItem(projIndex, 'project', projName); };
+                const projAddActionBtn = summaryContent.createEl("span", { text: "↳", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;color:var(--text-accent);font-weight:bold;" }, title: "新增下属下一步待办事项" });
+                projAddActionBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    addNewItem('next_action', null, projName);
+                };
                 const projFocusBtn = summaryContent.createEl("span", { text: projItem.isFocusSession ? "🎯" : "◎", attr: { style: `margin-right:6px;cursor:pointer;color: ${projItem.isFocusSession ? '#e91e63' : 'var(--text-muted)'};` }, title: "加入本次执行" });
                 projFocusBtn.onclick = (e) => { e.preventDefault(); toggleFocusSession(projIndex); };
                 const projSchedBtn = summaryContent.createEl("span", { text: "📅", attr: { style: "margin-right:4px;cursor:pointer;font-size:14px;" }, title: "设置计划" });
@@ -2021,8 +2690,29 @@
                 // [修复] 标签设置按钮（项目也可以打标签了！）
                 const projTagBtn = summaryContent.createEl("span", { text: "🏷️", attr: { style: "cursor: pointer; font-size: 14px; margin-right:6px;", title: "设置项目类型" } });
                 projTagBtn.onclick = (e) => { e.preventDefault(); modifyTag(projIndex); };
+                const projCommentBtn = summaryContent.createEl("span", {
+                    text: projCommentText.trim() ? "💬" : "🗒️",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-right:6px;", title: projCommentText.trim() ? "编辑项目评论（已填写）" : "添加项目评论" }
+                });
+                projCommentBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openCommentDrawer(projItem.id);
+                };
 
                 summaryContent.createEl("a", { text: projName, cls: "internal-link", attr: { "data-href": projName, "href": projName, "target": "_blank", "rel": "noopener" } });
+                if (projCommentSummary) {
+                    const projCommentChip = summaryContent.createEl("span", {
+                        cls: "gtd-comment-chip",
+                        text: `💬 ${projCommentSummary}`,
+                        attr: { title: projCommentText }
+                    });
+                    projCommentChip.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openCommentDrawer(projItem.id);
+                    };
+                }
                 
                 // [新增] 渲染项目的标签
                 if (projItem.tags && projItem.tags.length > 0) {
@@ -2051,7 +2741,7 @@
                 if (subActionsRaw.length === 0) subList.createEl("div", { text: "👉 暂无下一步行动", attr: { style: "color:var(--text-muted);font-size:0.9em;padding:4px 0;" } });
                 else {
                     // [核心修复] 项目标签向下继承：如果项目匹配标签筛选，则其所有子任务都显示
-                    const projectMatchesTag = window.gtdTagFilter ? tagMatchesFilter(projItem.tags, window.gtdTagFilter) : false;
+                    const projectMatchesTag = tagMatchesFilter(projItem.tags, window.gtdTagFilters);
                     renderTaskTree(subList, subActionsRaw, null, 0, projectMatchesTag);
                 }
             });
@@ -2060,18 +2750,18 @@
         const doneDiv = dv.el("div", "", { attr: { style: containerStyle } }); 
         doneDiv.createEl("div", { text: "✅ 归档博物馆 (Archive)", attr: { style: headerStyle } });
         renderCompletedTree(doneDiv);
+        renderCommentDrawer();
 
         // 最终挂载顺序：工作篮 -> 导航 -> 日程 -> 项目 -> 归档
         // 注意：dv.el 是直接 append 到 container 的，所以上面的代码顺序就是渲染顺序
     };
 
     renderViewFn = () => {
+        disposeCommentPreviewComponent();
         if (window.gtdTagManagerMode) {
             renderTagManagerView(dv.container);
         } else if (window.gtdKaioKenMode) {
             renderKaioKenView(dv.container);
-        } else if (window.gtdTimelineMode) {
-            renderTimelineView(dv.container);
         } else {
             renderNormalView();
         }
