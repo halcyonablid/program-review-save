@@ -17,6 +17,7 @@
     const TAG_FILTER_STORAGE_KEY = `gtd.tagFilters::${DB_PATH}`;
     const TAG_FILTER_PRESETS_STORAGE_KEY = `gtd.tagFilterPresets::${DB_PATH}`;
     const SCROLL_STATE_STORAGE_KEY = `gtd.scrollState::${currentNotePath}`;
+    const VIEW_CONTEXT_STORAGE_KEY = `gtd.viewContext::${currentNotePath}`;
 
     // 默认标签定义（首次使用或文件不存在时）
     const DEFAULT_TAG_DEFINITIONS = {
@@ -238,6 +239,19 @@
         top: Math.max(0, Number(state?.top) || 0),
         left: Math.max(0, Number(state?.left) || 0)
     });
+    const normalizeViewContext = (state) => {
+        const scroll = normalizeScrollState(state?.scroll || state);
+        const anchorItemId = String(state?.anchorItemId || "").trim() || null;
+        const anchorSectionId = String(state?.anchorSectionId || "").trim() || null;
+        const anchorOffset = Number.isFinite(Number(state?.anchorOffset)) ? Number(state.anchorOffset) : 0;
+        return {
+            scroll,
+            anchorItemId,
+            anchorSectionId,
+            anchorOffset: Math.max(-2000, Math.min(2000, anchorOffset))
+        };
+    };
+    const escapeSelectorValue = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const loadPersistedScrollState = () => {
         try {
             const raw = localStorage.getItem(SCROLL_STATE_STORAGE_KEY);
@@ -255,6 +269,24 @@
         } catch (e) {}
         return normalized;
     };
+    const loadPersistedViewContext = () => {
+        try {
+            const raw = localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY);
+            if (!raw) return null;
+            return normalizeViewContext(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    };
+    const savePersistedViewContext = (state) => {
+        const normalized = normalizeViewContext(state);
+        window.gtdScrollStateRegistry[currentNotePath] = normalized.scroll;
+        try {
+            localStorage.setItem(VIEW_CONTEXT_STORAGE_KEY, JSON.stringify(normalized));
+            localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized.scroll));
+        } catch (e) {}
+        return normalized;
+    };
     const getSavedScrollState = () => {
         const mem = window.gtdScrollStateRegistry[currentNotePath];
         if (mem) return normalizeScrollState(mem);
@@ -264,6 +296,11 @@
             return persisted;
         }
         return { top: 0, left: 0 };
+    };
+    const getSavedViewContext = () => {
+        const persisted = loadPersistedViewContext();
+        if (persisted) return persisted;
+        return normalizeViewContext({ scroll: getSavedScrollState() });
     };
     const findScrollHost = () => {
         let el = dv.container;
@@ -278,10 +315,58 @@
         }
         return document.scrollingElement || document.documentElement;
     };
+    const getHostViewportMetrics = (host) => {
+        const scrollingRoot = document.scrollingElement || document.documentElement;
+        if (!host || host === scrollingRoot || host === document.documentElement || host === document.body) {
+            return { top: 0, bottom: window.innerHeight, height: window.innerHeight };
+        }
+        const rect = host.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, height: rect.height };
+    };
+    const findBestAnchorCandidate = (host) => {
+        const anchors = Array.from(dv.container.querySelectorAll("[data-gtd-anchor-id]"));
+        if (anchors.length === 0) return null;
+        const viewport = getHostViewportMetrics(host);
+        const visible = [];
+        const above = [];
+        anchors.forEach((el) => {
+            const rect = el.getBoundingClientRect();
+            const isVisible = rect.bottom > viewport.top + 8 && rect.top < viewport.bottom - 8;
+            if (isVisible) visible.push({ el, rect });
+            else if (rect.top < viewport.top + 8) above.push({ el, rect });
+        });
+        if (visible.length > 0) {
+            visible.sort((a, b) => Math.abs(a.rect.top - viewport.top - 24) - Math.abs(b.rect.top - viewport.top - 24));
+            return visible[0];
+        }
+        if (above.length > 0) {
+            above.sort((a, b) => b.rect.top - a.rect.top);
+            return above[0];
+        }
+        return null;
+    };
+    const buildCurrentViewContext = (host = findScrollHost()) => {
+        if (!host) return getSavedViewContext();
+        const scroll = normalizeScrollState({ top: host.scrollTop, left: host.scrollLeft });
+        const candidate = findBestAnchorCandidate(host);
+        const viewport = getHostViewportMetrics(host);
+        const anchorElement = candidate?.el || null;
+        const sectionElement = anchorElement?.closest?.("[id^='gtd-section-']") || null;
+        return normalizeViewContext({
+            scroll,
+            anchorItemId: anchorElement?.dataset?.gtdAnchorId || null,
+            anchorSectionId: anchorElement?.dataset?.gtdSectionId || sectionElement?.id || null,
+            anchorOffset: candidate ? candidate.rect.top - viewport.top : 0
+        });
+    };
     const captureScrollState = () => {
-        const host = findScrollHost();
-        if (!host) return getSavedScrollState();
-        return savePersistedScrollState({ top: host.scrollTop, left: host.scrollLeft });
+        const context = buildCurrentViewContext();
+        savePersistedViewContext(context);
+        return context.scroll;
+    };
+    const captureViewContext = () => {
+        const context = buildCurrentViewContext();
+        return savePersistedViewContext(context);
     };
     const bindScrollPersistence = () => {
         const host = findScrollHost();
@@ -291,11 +376,55 @@
         if (currentBinding?.controller) {
             try { currentBinding.controller.abort(); } catch (e) {}
         }
+        if (currentBinding?.frameId) {
+            try { window.cancelAnimationFrame(currentBinding.frameId); } catch (e) {}
+        }
         const controller = new AbortController();
-        const persist = () => savePersistedScrollState({ top: host.scrollTop, left: host.scrollLeft });
-        host.addEventListener("scroll", persist, { passive: true, signal: controller.signal });
-        window.gtdScrollListenerRegistry[currentNotePath] = { host, controller };
-        persist();
+        let frameId = 0;
+        const persistNow = () => {
+            frameId = 0;
+            savePersistedViewContext(buildCurrentViewContext(host));
+        };
+        const schedulePersist = () => {
+            if (frameId) return;
+            frameId = window.requestAnimationFrame(persistNow);
+            window.gtdScrollListenerRegistry[currentNotePath].frameId = frameId;
+        };
+        host.addEventListener("scroll", schedulePersist, { passive: true, signal: controller.signal });
+        window.gtdScrollListenerRegistry[currentNotePath] = { host, controller, frameId: 0 };
+        persistNow();
+    };
+    const applyScrollStateToHost = (host, state) => {
+        if (!host) return;
+        const normalized = normalizeScrollState(state);
+        const maxTop = Math.max(0, host.scrollHeight - host.clientHeight);
+        const maxLeft = Math.max(0, host.scrollWidth - host.clientWidth);
+        host.scrollTop = Math.min(normalized.top, maxTop);
+        host.scrollLeft = Math.min(normalized.left, maxLeft);
+    };
+    const restoreAnchorContext = (host, state) => {
+        const target = normalizeViewContext(state);
+        const anchorId = String(target.anchorItemId || "").trim();
+        if (!anchorId) return false;
+        const anchorEl = dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+        if (!anchorEl) return false;
+        const viewport = getHostViewportMetrics(host);
+        const rect = anchorEl.getBoundingClientRect();
+        const idealOffset = Math.max(20, Math.min(viewport.height * 0.45, Number(target.anchorOffset) || 0));
+        const delta = rect.top - (viewport.top + idealOffset);
+        host.scrollTop += delta;
+        return true;
+    };
+    const restoreSectionContext = (host, state) => {
+        const target = normalizeViewContext(state);
+        const sectionId = String(target.anchorSectionId || "").trim();
+        if (!sectionId) return false;
+        const sectionEl = document.getElementById(sectionId);
+        if (!sectionEl) return false;
+        const viewport = getHostViewportMetrics(host);
+        const rect = sectionEl.getBoundingClientRect();
+        host.scrollTop += rect.top - (viewport.top + 18);
+        return true;
     };
     const restoreScrollState = (state = getSavedScrollState()) => {
         const targetState = normalizeScrollState(state);
@@ -303,10 +432,20 @@
             window.setTimeout(() => {
                 const host = findScrollHost();
                 if (!host) return;
-                const maxTop = Math.max(0, host.scrollHeight - host.clientHeight);
-                const maxLeft = Math.max(0, host.scrollWidth - host.clientWidth);
-                host.scrollTop = Math.min(targetState.top, maxTop);
-                host.scrollLeft = Math.min(targetState.left, maxLeft);
+                applyScrollStateToHost(host, targetState);
+                if (delay === 220) bindScrollPersistence();
+            }, delay);
+        });
+    };
+    const restoreViewContext = (state = getSavedViewContext()) => {
+        const targetState = normalizeViewContext(state);
+        [0, 80, 220].forEach((delay) => {
+            window.setTimeout(() => {
+                const host = findScrollHost();
+                if (!host) return;
+                applyScrollStateToHost(host, targetState.scroll);
+                const restoredByAnchor = restoreAnchorContext(host, targetState);
+                if (!restoredByAnchor) restoreSectionContext(host, targetState);
                 if (delay === 220) bindScrollPersistence();
             }, delay);
         });
@@ -2205,6 +2344,9 @@
                     style: `display: flex; align-items: center; margin-bottom: 4px; padding: 6px 0; margin-left: ${marginLeft}; border-left: ${borderStyle}; padding-left: ${isChild?'10px':'0'}; border-radius: 4px; transition: background 0.2s; ${bgStyle} ${fontStyle}` 
                 } 
             });
+            if (item?.id) line.dataset.gtdAnchorId = String(item.id);
+            const sectionHost = container?.closest?.("[id^='gtd-section-']");
+            if (sectionHost?.id) line.dataset.gtdSectionId = sectionHost.id;
             if (isFocusSession) line.setAttribute("data-focus-badge", "🎯 执行中");
 
             const canDrag = draggable && !isCompleted && !isGhost && (item.type === 'next_action' || item.type === 'inbox');
@@ -2822,6 +2964,8 @@
                 const projCommentText = getItemCommentText(projItem);
                 const projCommentSummary = summarizeComment(projCommentText, 30);
                 const details = projectDiv.createEl("details", { attr: { id: `proj-${projItem.id}`, style: "margin-bottom:8px;border-bottom:1px dashed var(--background-modifier-border);padding-bottom:8px;" } });
+                details.dataset.gtdAnchorId = String(projItem.id);
+                details.dataset.gtdSectionId = "gtd-section-projects";
                 details.open = !projItem.isCollapsed;
                 details.addEventListener("toggle", async () => {
                     const nextCollapsed = !details.open;
@@ -2832,6 +2976,8 @@
                     });
                 });
                 const summary = details.createEl("summary", { attr: { style: "cursor:pointer;margin-bottom:5px;font-weight:600;color:var(--text-normal);" } });
+                summary.dataset.gtdAnchorId = String(projItem.id);
+                summary.dataset.gtdSectionId = "gtd-section-projects";
                 if (projItem.isFocusSession) summary.classList.add("gtd-focus-project");
                 
                 summary.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!window.gtdCurrentDragId) return; summary.classList.add("drag-over-project"); });
@@ -2916,7 +3062,7 @@
             });
         }
         
-        const doneDiv = dv.el("div", "", { attr: { style: containerStyle } }); 
+        const doneDiv = dv.el("div", "", { attr: { id: "gtd-section-archive", style: containerStyle } }); 
         doneDiv.createEl("div", { text: "✅ 归档博物馆 (Archive)", attr: { style: headerStyle } });
         renderCompletedTree(doneDiv);
         renderCommentDrawer();
@@ -2926,7 +3072,8 @@
     };
 
     renderViewFn = () => {
-        const savedScrollState = captureScrollState();
+        const hasExistingAnchors = !!dv.container.querySelector("[data-gtd-anchor-id]");
+        const savedViewContext = hasExistingAnchors ? captureViewContext() : getSavedViewContext();
         disposeCommentPreviewComponent();
         if (window.gtdTagManagerMode) {
             renderTagManagerView(dv.container);
@@ -2935,7 +3082,7 @@
         } else {
             renderNormalView();
         }
-        restoreScrollState(savedScrollState);
+        restoreViewContext(savedViewContext);
     };
     if(renderViewFn) renderViewFn();
 })();
