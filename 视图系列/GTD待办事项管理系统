@@ -11,10 +11,12 @@
     const JSON_FILENAME = "GTD_Database.json";
     const TAGS_FILENAME = "GTD_Tags.json";
     const currentFolder = dv.current().file.folder;
+    const currentNotePath = dv.current().file.path;
     const DB_PATH = currentFolder + "/" + JSON_FILENAME;
     const TAGS_PATH = currentFolder + "/" + TAGS_FILENAME;
     const TAG_FILTER_STORAGE_KEY = `gtd.tagFilters::${DB_PATH}`;
     const TAG_FILTER_PRESETS_STORAGE_KEY = `gtd.tagFilterPresets::${DB_PATH}`;
+    const SCROLL_STATE_STORAGE_KEY = `gtd.scrollState::${currentNotePath}`;
 
     // 默认标签定义（首次使用或文件不存在时）
     const DEFAULT_TAG_DEFINITIONS = {
@@ -225,10 +227,90 @@
     if (window.gtdCommentPreviewComponent === undefined) window.gtdCommentPreviewComponent = null;
     if (!(window.gtdOutlinerFileRawCache instanceof Map)) window.gtdOutlinerFileRawCache = new Map();
     if (!(window.gtdOutlinerMarkerBodyCache instanceof Map)) window.gtdOutlinerMarkerBodyCache = new Map();
+    if (!window.gtdScrollStateRegistry || typeof window.gtdScrollStateRegistry !== "object") window.gtdScrollStateRegistry = {};
+    if (!window.gtdScrollListenerRegistry || typeof window.gtdScrollListenerRegistry !== "object") window.gtdScrollListenerRegistry = {};
 
     window.gtdCurrentDragId = null;
     window.gtdCurrentDragTagId = null;
     window.gtdCurrentDragProjectId = null;
+
+    const normalizeScrollState = (state) => ({
+        top: Math.max(0, Number(state?.top) || 0),
+        left: Math.max(0, Number(state?.left) || 0)
+    });
+    const loadPersistedScrollState = () => {
+        try {
+            const raw = localStorage.getItem(SCROLL_STATE_STORAGE_KEY);
+            if (!raw) return null;
+            return normalizeScrollState(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    };
+    const savePersistedScrollState = (state) => {
+        const normalized = normalizeScrollState(state);
+        window.gtdScrollStateRegistry[currentNotePath] = normalized;
+        try {
+            localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized));
+        } catch (e) {}
+        return normalized;
+    };
+    const getSavedScrollState = () => {
+        const mem = window.gtdScrollStateRegistry[currentNotePath];
+        if (mem) return normalizeScrollState(mem);
+        const persisted = loadPersistedScrollState();
+        if (persisted) {
+            window.gtdScrollStateRegistry[currentNotePath] = persisted;
+            return persisted;
+        }
+        return { top: 0, left: 0 };
+    };
+    const findScrollHost = () => {
+        let el = dv.container;
+        while (el) {
+            const style = window.getComputedStyle(el);
+            const overflowY = style.overflowY || "";
+            const overflowX = style.overflowX || "";
+            const canScrollY = /(auto|scroll|overlay)/.test(overflowY) && el.scrollHeight > el.clientHeight + 4;
+            const canScrollX = /(auto|scroll|overlay)/.test(overflowX) && el.scrollWidth > el.clientWidth + 4;
+            if (canScrollY || canScrollX) return el;
+            el = el.parentElement;
+        }
+        return document.scrollingElement || document.documentElement;
+    };
+    const captureScrollState = () => {
+        const host = findScrollHost();
+        if (!host) return getSavedScrollState();
+        return savePersistedScrollState({ top: host.scrollTop, left: host.scrollLeft });
+    };
+    const bindScrollPersistence = () => {
+        const host = findScrollHost();
+        if (!host) return;
+        const currentBinding = window.gtdScrollListenerRegistry[currentNotePath];
+        if (currentBinding?.host === host) return;
+        if (currentBinding?.controller) {
+            try { currentBinding.controller.abort(); } catch (e) {}
+        }
+        const controller = new AbortController();
+        const persist = () => savePersistedScrollState({ top: host.scrollTop, left: host.scrollLeft });
+        host.addEventListener("scroll", persist, { passive: true, signal: controller.signal });
+        window.gtdScrollListenerRegistry[currentNotePath] = { host, controller };
+        persist();
+    };
+    const restoreScrollState = (state = getSavedScrollState()) => {
+        const targetState = normalizeScrollState(state);
+        [0, 80, 220].forEach((delay) => {
+            window.setTimeout(() => {
+                const host = findScrollHost();
+                if (!host) return;
+                const maxTop = Math.max(0, host.scrollHeight - host.clientHeight);
+                const maxLeft = Math.max(0, host.scrollWidth - host.clientWidth);
+                host.scrollTop = Math.min(targetState.top, maxTop);
+                host.scrollLeft = Math.min(targetState.left, maxLeft);
+                if (delay === 220) bindScrollPersistence();
+            }, delay);
+        });
+    };
 
     // --- 1. 核心交互组件 ---
     class QuickSuggester extends obsidian.FuzzySuggestModal {
@@ -364,6 +446,38 @@
         return fixedCount;
     };
 
+    const repairHierarchyConsistency = (list) => {
+        let fixedMissingParent = 0;
+        let fixedInvalidParentType = 0;
+        let fixedProjectMismatch = 0;
+        const idMap = new Map(list.map(i => [i.id, i]));
+        list.forEach(item => {
+            if (item.status !== "active") return;
+            if (item.type !== "next_action" && item.type !== "inbox") return;
+            const parentId = item.parentId || null;
+            if (!parentId) return;
+            const parent = idMap.get(parentId);
+            if (!parent) {
+                item.parentId = null;
+                fixedMissingParent++;
+                return;
+            }
+            if (item.type === "next_action" && parent.type !== "next_action") {
+                item.parentId = null;
+                fixedInvalidParentType++;
+                return;
+            }
+            if (item.type === "next_action" && parent.type === "next_action") {
+                const parentProject = parent.project || null;
+                if ((item.project || null) !== parentProject) {
+                    item.project = parentProject;
+                    fixedProjectMismatch++;
+                }
+            }
+        });
+        return { fixedMissingParent, fixedInvalidParentType, fixedProjectMismatch };
+    };
+
     const loadData = async () => {
         if (!await app.vault.adapter.exists(DB_PATH)) return [];
         const content = await app.vault.adapter.read(DB_PATH);
@@ -383,6 +497,12 @@
             });
             const repairedCount = repairOrphans(list);
             if (repairedCount > 0) { new Notice(`🚑 自动修复 ${repairedCount} 个父级状态`); modified = true; }
+            const hierarchyFix = repairHierarchyConsistency(list);
+            const hierarchyFixCount = hierarchyFix.fixedMissingParent + hierarchyFix.fixedInvalidParentType + hierarchyFix.fixedProjectMismatch;
+            if (hierarchyFixCount > 0) {
+                new Notice(`🧩 自动修复层级异常 ${hierarchyFixCount} 处（孤儿/跨类型/项目不同步）`);
+                modified = true;
+            }
             if (modified) {
                 const jsonString = JSON.stringify(list, null, 2);
                 const file = app.vault.getAbstractFileByPath(DB_PATH);
@@ -802,9 +922,11 @@
         await updateGTD((list) => { if (list[index]) list[index].deadline = newDate ? newDate : null; });
     };
 
-    const addNewItem = async (type, parentId = null, defaultProject = null) => {
+    const addNewItem = async (type, parentId = null, defaultProject = null, insertAfterId = null) => {
         let placeholder = type === 'project' ? "例如：年度总结报告" : (type === 'inbox' ? "例如：买牛奶" : "例如：整理Excel数据");
-        let title = parentId ? "添加子任务" : `添加【${type === 'project' ? '项目' : (type === 'inbox' ? '工作篮任务' : '下一步行动')}】`;
+        let title = insertAfterId
+            ? "添加同级任务"
+            : (parentId ? "添加子任务" : `添加【${type === 'project' ? '项目' : (type === 'inbox' ? '工作篮任务' : '下一步行动')}】`);
         const inputName = await prompt(title, placeholder);
         if (!inputName) return;
         const newId = Date.now().toString();
@@ -838,9 +960,33 @@
             )
             .map(i => Number(i?.sortOrder))
             .filter(v => Number.isFinite(v));
-        if (siblingOrders.length > 0) newItem.sortOrder = Math.max(...siblingOrders) + 10;
+        if (insertAfterId) {
+            // 同级新增由下方 update 回调精确插入在锚点后
+        } else if (parentId) {
+            // 新增子任务默认置顶，后续需要时再手动拖拽调整
+            newItem.sortOrder = siblingOrders.length > 0 ? Math.min(...siblingOrders) - 10 : 0;
+        } else if (siblingOrders.length > 0) {
+            newItem.sortOrder = Math.max(...siblingOrders) + 10;
+        }
         window.gtdRecentIds.push(newId);
-        await updateGTD((list) => { list.push(newItem); });
+        await updateGTD((list) => {
+            list.push(newItem);
+
+            if (!insertAfterId) return;
+            const siblingScope = list
+                .filter(i =>
+                    i.status === "active" &&
+                    (i.type === "next_action" || i.type === "inbox") &&
+                    (i.project || null) === (newItem.project || null) &&
+                    (i.parentId || null) === (newItem.parentId || null)
+                )
+                .sort(compareByOrderThenName);
+            const withoutNew = siblingScope.filter(i => i.id !== newId);
+            const anchorPos = withoutNew.findIndex(i => i.id === insertAfterId);
+            const insertAt = anchorPos >= 0 ? anchorPos + 1 : withoutNew.length;
+            withoutNew.splice(insertAt, 0, newItem);
+            resequenceSiblingOrders(list, withoutNew);
+        });
     };
 
     const getManualOrder = (item) => {
@@ -875,6 +1021,22 @@
             cursor = cursorItem ? (cursorItem.parentId || null) : null;
         }
         return false;
+    };
+
+    const getDescendantIds = (list, rootId) => {
+        const result = [];
+        const stack = [rootId];
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current) continue;
+            list.forEach(i => {
+                if ((i.parentId || null) === current) {
+                    result.push(i.id);
+                    stack.push(i.id);
+                }
+            });
+        }
+        return result;
     };
 
     const checkSubtasks = (parentId) => {
@@ -931,68 +1093,71 @@
         const targetItem = targetType === 'task' ? gtdList.find(i => i.id === targetId) : null;
         if (targetType === 'task' && !targetItem) return;
         if (targetType === 'task') {
+            if (draggedItem.type !== targetItem.type) {
+                new Notice("⚠️ 不支持 Inbox 与下一步行动 的跨类型拖拽，避免条目被隐藏");
+                return;
+            }
             const nextParentId = position === 'child' ? targetItem.id : (targetItem.parentId || null);
             if (wouldCreateTaskCycle(gtdList, draggedId, nextParentId)) {
                 new Notice("⚠️ 无效操作：不能把条目拖到自己的子级链路中");
                 return;
             }
         }
-        let confirmMsg = ""; let targetName = "";
-        if (targetType === 'project') {
-            targetName = targetId;
-            confirmMsg = `确定要将 <b>[${draggedItem.content}]</b> 移动到项目 <b>[${targetName}]</b> 的顶层吗？`;
-        } else {
-            targetName = targetItem.content;
-            if (position === 'child') confirmMsg = `确定将 <b>[${draggedItem.content}]</b> 设为 <b>[${targetName}]</b> 的子任务吗？`;
-            else if (position === 'before') confirmMsg = `确定将 <b>[${draggedItem.content}]</b> 移到 <b>[${targetName}]</b> 前面吗？`;
-            else confirmMsg = `确定将 <b>[${draggedItem.content}]</b> 移到 <b>[${targetName}]</b> 后面吗？`;
-        }
-        await confirm("确认移动", confirmMsg).then(async () => {
-            await updateGTD((list) => {
-                const draggedIndex = list.findIndex(i => i.id === draggedId);
-                if (draggedIndex < 0) return;
-                const item = list[draggedIndex];
-                if (!item) return;
-                if (targetType === 'project') {
-                    item.parentId = null;
-                    item.project = targetName;
-                    const siblingScope = list
-                        .filter(i =>
-                            i.status === "active" &&
-                            (i.type === "next_action" || i.type === "inbox") &&
-                            (i.project || null) === (item.project || null) &&
-                            (i.parentId || null) === null
-                        )
-                        .sort(compareByOrderThenName)
-                        .filter(i => i.id !== item.id);
-                    siblingScope.push(item);
-                    resequenceSiblingOrders(list, siblingScope);
-                } else {
-                    const targetIndex = list.findIndex(i => i.id === targetId); const target = list[targetIndex];
-                    if (!target) return;
-                    if (position === 'child') { item.parentId = target.id; if (item.project !== target.project) item.project = target.project; }
-                    else { item.parentId = target.parentId; if (item.project !== target.project) item.project = target.project; }
+        const targetName = targetType === 'project' ? targetId : targetItem.content;
+        await updateGTD((list) => {
+            const draggedIndex = list.findIndex(i => i.id === draggedId);
+            if (draggedIndex < 0) return;
+            const item = list[draggedIndex];
+            if (!item) return;
+            const previousProject = item.project || null;
+            if (targetType === 'project') {
+                item.parentId = null;
+                item.project = targetName;
+                const siblingScope = list
+                    .filter(i =>
+                        i.status === "active" &&
+                        (i.type === "next_action" || i.type === "inbox") &&
+                        (i.project || null) === (item.project || null) &&
+                        (i.parentId || null) === null
+                    )
+                    .sort(compareByOrderThenName)
+                    .filter(i => i.id !== item.id);
+                siblingScope.push(item);
+                resequenceSiblingOrders(list, siblingScope);
+            } else {
+                const targetIndex = list.findIndex(i => i.id === targetId); const target = list[targetIndex];
+                if (!target) return;
+                if (position === 'child') { item.parentId = target.id; if (item.project !== target.project) item.project = target.project; }
+                else { item.parentId = target.parentId; if (item.project !== target.project) item.project = target.project; }
 
-                    const siblingScope = list
-                        .filter(i =>
-                            i.status === "active" &&
-                            (i.type === "next_action" || i.type === "inbox") &&
-                            (i.project || null) === (item.project || null) &&
-                            (i.parentId || null) === (item.parentId || null)
-                        )
-                        .sort(compareByOrderThenName);
-                    const withoutDragged = siblingScope.filter(i => i.id !== item.id);
-                    let insertAt = withoutDragged.length;
-                    if (position === "before" || position === "after") {
-                        const targetPos = withoutDragged.findIndex(i => i.id === target.id);
-                        if (targetPos >= 0) insertAt = position === "before" ? targetPos : targetPos + 1;
-                    }
-                    withoutDragged.splice(insertAt, 0, item);
-                    resequenceSiblingOrders(list, withoutDragged);
+                const siblingScope = list
+                    .filter(i =>
+                        i.status === "active" &&
+                        (i.type === "next_action" || i.type === "inbox") &&
+                        (i.project || null) === (item.project || null) &&
+                        (i.parentId || null) === (item.parentId || null)
+                    )
+                    .sort(compareByOrderThenName);
+                const withoutDragged = siblingScope.filter(i => i.id !== item.id);
+                let insertAt = withoutDragged.length;
+                if (position === "before" || position === "after") {
+                    const targetPos = withoutDragged.findIndex(i => i.id === target.id);
+                    if (targetPos >= 0) insertAt = position === "before" ? targetPos : targetPos + 1;
                 }
-            });
-            new Notice("✅ 移动成功");
-        }).catch(() => {});
+                withoutDragged.splice(insertAt, 0, item);
+                resequenceSiblingOrders(list, withoutDragged);
+            }
+            const currentProject = item.project || null;
+            if (previousProject !== currentProject) {
+                const descendants = getDescendantIds(list, item.id);
+                descendants.forEach((childId) => {
+                    const child = list.find(i => i.id === childId);
+                    if (!child) return;
+                    if (child.type === "next_action" || child.type === "inbox") child.project = currentProject;
+                });
+            }
+        });
+        new Notice("✅ 移动成功");
     };
 
     const moveProjectUnderParent = async (draggedProjectId, targetParentProjectId = null) => {
@@ -1022,20 +1187,12 @@
             cursor = cursorItem ? (cursorItem.parentId || null) : null;
         }
 
-        const fromName = draggedProject.project || "未命名项目";
-        const targetName = targetParent ? (targetParent.project || "未命名项目") : "顶层";
-        const msg = targetParent
-            ? `确定将项目 <b>[${fromName}]</b> 设为 <b>[${targetName}]</b> 的子项目吗？`
-            : `确定将项目 <b>[${fromName}]</b> 移动到顶层吗？`;
-
-        await confirm("确认调整项目层级", msg).then(async () => {
-            await updateGTD((list) => {
-                const idx = list.findIndex(i => i.id === draggedProjectId && i.type === "project");
-                if (idx < 0) return;
-                list[idx].parentId = nextParentId;
-            });
-            new Notice("✅ 项目层级已更新");
-        }).catch(() => {});
+        await updateGTD((list) => {
+            const idx = list.findIndex(i => i.id === draggedProjectId && i.type === "project");
+            if (idx < 0) return;
+            list[idx].parentId = nextParentId;
+        });
+        new Notice("✅ 项目层级已更新");
     };
 
     // ==========================================================
@@ -1582,11 +1739,48 @@
         const btnStyle = "background-color: var(--interactive-accent); color: var(--text-on-accent); padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; margin-right: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);";
 
         dv.container.createEl("style", { text: `
-            .gtd-item-line { user-select: none; }
+            .gtd-item-line { user-select: none; position: relative; }
+            .gtd-item-line.is-first-class {
+                box-shadow: inset 3px 0 0 rgba(241, 196, 15, 0.78);
+                background-image: linear-gradient(90deg, rgba(241, 196, 15, 0.20) 0%, rgba(241, 196, 15, 0.11) 28%, rgba(241, 196, 15, 0.04) 56%, transparent 88%);
+            }
+            .gtd-item-line.is-focus-session {
+                border-right: 2px solid rgba(233, 30, 99, 0.55);
+                box-shadow: none;
+                background-image: linear-gradient(270deg, rgba(233, 30, 99, 0.14) 0%, rgba(233, 30, 99, 0.08) 28%, rgba(233, 30, 99, 0.03) 58%, transparent 88%);
+            }
+            .gtd-item-line.is-first-class.is-focus-session {
+                box-shadow: inset 3px 0 0 rgba(241, 196, 15, 0.78);
+                background-image:
+                    linear-gradient(90deg, rgba(241, 196, 15, 0.16) 0%, rgba(241, 196, 15, 0.07) 24%, rgba(241, 196, 15, 0.02) 52%, transparent 75%),
+                    linear-gradient(270deg, rgba(233, 30, 99, 0.13) 0%, rgba(233, 30, 99, 0.07) 30%, rgba(233, 30, 99, 0.02) 58%, transparent 88%);
+            }
+            .gtd-item-line.is-focus-session::after {
+                content: attr(data-focus-badge);
+                position: absolute;
+                right: 8px;
+                top: -8px;
+                background: #e91e63;
+                color: #fff;
+                border-radius: 999px;
+                font-size: 10px;
+                line-height: 1;
+                padding: 2px 6px;
+                letter-spacing: 0.3px;
+                box-shadow: 0 2px 6px rgba(233, 30, 99, 0.35);
+            }
             .drag-over-top { border-top: 3px solid #2ecc71 !important; }
             .drag-over-bottom { border-bottom: 3px solid #2ecc71 !important; }
             .drag-over-child { background-color: rgba(46, 204, 113, 0.2) !important; border-left: 3px solid #2ecc71 !important; }
             .drag-over-project { background-color: rgba(46, 204, 113, 0.3) !important; border: 2px dashed #2ecc71 !important; border-radius: 6px; }
+            summary.gtd-focus-project {
+                border: none;
+                border-right: 2px solid rgba(233, 30, 99, 0.5);
+                border-radius: 8px;
+                padding: 4px 8px;
+                background: linear-gradient(270deg, rgba(233, 30, 99, 0.12) 0%, rgba(233, 30, 99, 0.06) 32%, transparent 86%);
+                box-shadow: none;
+            }
             .is-dragging { opacity: 0.4; background: var(--background-modifier-hover); transform: scale(0.99); }
             .completed-line { opacity: 0.9; }
             .ghost-line { opacity: 0.5; font-style: italic; pointer-events: none; }
@@ -1606,17 +1800,6 @@
             .proj-nav-pill { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 10px; font-size: 0.72em; color: var(--text-normal); border: 1px solid var(--background-modifier-border); background: transparent; box-shadow: none; white-space: nowrap; }
             .proj-nav-tag-edit { cursor: pointer; user-select: none; font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 10px; border: 1px solid transparent; color: var(--text-muted); transition: all 0.2s; }
             .proj-nav-tag-edit:hover { color: var(--interactive-accent); border-color: var(--background-modifier-border); background: var(--background-primary); }
-            .gtd-section-nav { position: fixed; right: 18px; bottom: 18px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 18px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); box-shadow: 0 8px 24px rgba(0,0,0,0.2); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); min-width: 128px; }
-            .gtd-section-nav-title { font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; letter-spacing: 0.2px; }
-            .gtd-section-nav-row { display: flex; flex-direction: column; gap: 6px; }
-            .gtd-section-nav-btn { padding: 4px 10px; border-radius: 14px; border: 1px solid var(--background-modifier-border); cursor: pointer; font-size: 12px; background: var(--background-primary); color: var(--text-normal); transition: all 0.2s; white-space: nowrap; text-align: left; }
-            .gtd-section-nav-btn:hover { border-color: var(--interactive-accent); color: var(--interactive-accent); transform: translateY(-1px); }
-            .gtd-section-nav-btn.top { background: var(--interactive-accent); color: var(--text-on-accent); border-color: transparent; }
-            .gtd-section-nav-btn.top:hover { color: var(--text-on-accent); filter: brightness(1.06); }
-            @media (max-width: 768px) {
-                .gtd-section-nav { right: 10px; bottom: 10px; padding: 8px; border-radius: 14px; }
-                .gtd-section-nav-btn { font-size: 11px; padding: 4px 8px; }
-            }
             @keyframes highlight-pulse { 0% { background-color: rgba(255, 235, 59, 0.4); } 50% { background-color: rgba(255, 235, 59, 0.2); } 100% { background-color: transparent; } }
             .highlight-target { animation: highlight-pulse 1.5s ease-out; border-radius: 8px; }
             .tag-pill { display: inline-flex; align-items: center; gap: 4px; padding: 0px 6px; border-radius: 10px; font-size: 0.75em; margin-left: 6px; font-weight: 500; color: white; opacity: 0.9; vertical-align: middle; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
@@ -1849,27 +2032,6 @@
             });
         }
 
-        const sectionNav = dv.el("div", "", { cls: "gtd-section-nav" });
-        sectionNav.createEl("div", { text: "GTD 灵动导航", cls: "gtd-section-nav-title" });
-        const sectionNavRow = sectionNav.createEl("div", { cls: "gtd-section-nav-row" });
-        const jumpToSection = (sectionId) => {
-            const target = dv.container.querySelector(`#${sectionId}`);
-            if (!target) { new Notice("定位失败：目标模块不存在"); return; }
-            target.scrollIntoView({ behavior: "smooth", block: "start" });
-            target.classList.add("highlight-target");
-            setTimeout(() => target.classList.remove("highlight-target"), 1200);
-        };
-        const createSectionNavBtn = (parent, text, sectionId, extraCls = "") => {
-            const btn = parent.createEl("button", { text, cls: `gtd-section-nav-btn ${extraCls}`.trim() });
-            btn.onclick = () => jumpToSection(sectionId);
-        };
-        createSectionNavBtn(sectionNavRow, "📥 工作篮", "gtd-section-inbox");
-        createSectionNavBtn(sectionNavRow, "⚡ 快速导航", "gtd-section-quick-nav");
-        createSectionNavBtn(sectionNavRow, "📅 日程", "gtd-section-schedule");
-        createSectionNavBtn(sectionNavRow, "📂 项目清单", "gtd-section-projects");
-        createSectionNavBtn(sectionNavRow, "⬆ 回到顶部", "gtd-top-anchor", "top");
-
-
         const filterFn = (item) => {
             let visible = true;
             if (window.gtdShowOnlyFirstClass && item.isFirstClass !== true && !window.gtdRecentIds.includes(item.id)) visible = false;
@@ -2034,12 +2196,16 @@
             const commentText = getItemCommentText(item);
             const commentSummary = summarizeComment(commentText, 26);
 
+            const isFocusSession = !isCompleted && !isGhost && item.isFocusSession === true;
+            const isFirstClass = !isCompleted && !isGhost && item.isFirstClass === true;
+            const lineClass = `gtd-item-line ${completedClass} ${isFirstClass ? "is-first-class" : ""} ${isFocusSession ? "is-focus-session" : ""}`.trim();
             const line = container.createEl("div", { 
-                cls: `gtd-item-line ${completedClass}`, 
+                cls: lineClass, 
                 attr: { 
                     style: `display: flex; align-items: center; margin-bottom: 4px; padding: 6px 0; margin-left: ${marginLeft}; border-left: ${borderStyle}; padding-left: ${isChild?'10px':'0'}; border-radius: 4px; transition: background 0.2s; ${bgStyle} ${fontStyle}` 
                 } 
             });
+            if (isFocusSession) line.setAttribute("data-focus-badge", "🎯 执行中");
 
             const canDrag = draggable && !isCompleted && !isGhost && (item.type === 'next_action' || item.type === 'inbox');
             const beginDrag = (e) => {
@@ -2151,6 +2317,8 @@
                 tagBtn.onclick = (e) => { e.stopPropagation(); modifyTag(originalIndex); };
 
                 if (item.type === 'next_action') {
+                    const addSiblingBtn = actionContainer.createEl("span", { text: "＋", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-accent); font-weight: bold;", title: "在后面添加同级任务" } });
+                    addSiblingBtn.onclick = (e) => { e.stopPropagation(); addNewItem('next_action', item.parentId || null, item.project, item.id); };
                     const addSubBtn = actionContainer.createEl("span", { text: "↳", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-accent); font-weight: bold;" }, title: "添加子任务" });
                     addSubBtn.onclick = (e) => { e.stopPropagation(); addNewItem('next_action', item.id, item.project); };
                 }
@@ -2664,6 +2832,7 @@
                     });
                 });
                 const summary = details.createEl("summary", { attr: { style: "cursor:pointer;margin-bottom:5px;font-weight:600;color:var(--text-normal);" } });
+                if (projItem.isFocusSession) summary.classList.add("gtd-focus-project");
                 
                 summary.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!window.gtdCurrentDragId) return; summary.classList.add("drag-over-project"); });
                 summary.addEventListener("dragleave", (e) => { e.stopPropagation(); summary.classList.remove("drag-over-project"); });
@@ -2757,6 +2926,7 @@
     };
 
     renderViewFn = () => {
+        const savedScrollState = captureScrollState();
         disposeCommentPreviewComponent();
         if (window.gtdTagManagerMode) {
             renderTagManagerView(dv.container);
@@ -2765,6 +2935,7 @@
         } else {
             renderNormalView();
         }
+        restoreScrollState(savedScrollState);
     };
     if(renderViewFn) renderViewFn();
 })();
