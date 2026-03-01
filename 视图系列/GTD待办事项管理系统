@@ -23,6 +23,8 @@
     const VIEW_STATE_DEBUG_ENABLED = false;
     const MAX_VIEW_DEBUG_ENTRIES = 24;
     const AUTO_PERSIST_INTERVAL_MS = 8000;
+    const USER_SCROLL_INTENT_WINDOW_MS = 1800;
+    const TOP_OVERWRITE_GUARD_MIN_SCROLL = 160;
 
     // 默认标签定义（首次使用或文件不存在时）
     const DEFAULT_TAG_DEFINITIONS = {
@@ -119,6 +121,7 @@
             result.push({
                 name,
                 filters,
+                createdAt: preset?.createdAt || preset?.updatedAt || moment().format("YYYY-MM-DD HH:mm:ss"),
                 updatedAt: preset?.updatedAt || moment().format("YYYY-MM-DD HH:mm:ss")
             });
         });
@@ -244,7 +247,9 @@
             expandedProjectIds: [],
             nextContextOverride: null,
             isRestoring: false,
-            hasUserMovedSinceRestore: false
+            hasUserMovedSinceRestore: false,
+            timerIds: [],
+            interactionAbortController: null
         };
     }
     if (!window.gtdViewContextFileRegistry || typeof window.gtdViewContextFileRegistry !== "object") {
@@ -259,6 +264,7 @@
     if (!window.gtdAutoPersistRegistry || typeof window.gtdAutoPersistRegistry !== "object") window.gtdAutoPersistRegistry = {};
     if (!window.gtdViewDebugRegistry || typeof window.gtdViewDebugRegistry !== "object") window.gtdViewDebugRegistry = {};
     if (!window.gtdViewTraceRegistry || typeof window.gtdViewTraceRegistry !== "object") window.gtdViewTraceRegistry = {};
+    if (!window.gtdUserScrollIntentRegistry || typeof window.gtdUserScrollIntentRegistry !== "object") window.gtdUserScrollIntentRegistry = {};
 
     window.gtdCurrentDragId = null;
     window.gtdCurrentDragTagId = null;
@@ -345,6 +351,8 @@
     const shouldPersistTraceEvent = (event) => [
         "script_boot",
         "bind_scroll_host",
+        "persist_guard_top",
+        "restore_cancelled",
         "restore_start",
         "restore_finish",
         "restore_anchor_hit",
@@ -512,6 +520,17 @@
         const persisted = loadPersistedViewContext();
         if (persisted) return persisted;
         return normalizeViewContext({ scroll: getSavedScrollState() });
+    };
+    const markUserScrollIntent = (type = "unknown") => {
+        window.gtdUserScrollIntentRegistry[currentNotePath] = {
+            ts: Date.now(),
+            type: String(type || "unknown")
+        };
+    };
+    const hasRecentUserScrollIntent = (maxAgeMs = USER_SCROLL_INTENT_WINDOW_MS) => {
+        const state = window.gtdUserScrollIntentRegistry[currentNotePath];
+        if (!state?.ts) return false;
+        return (Date.now() - Number(state.ts || 0)) <= maxAgeMs;
     };
     const getScrollRange = (el) => {
         if (!el) return 0;
@@ -686,6 +705,17 @@
         window.gtdRenderRestoreState.expandedItemIds = [];
         window.gtdRenderRestoreState.expandedProjectIds = [];
     };
+    const cancelPendingRestoreTimers = () => {
+        const state = window.gtdRenderRestoreState;
+        (Array.isArray(state.timerIds) ? state.timerIds : []).forEach((timerId) => {
+            try { window.clearTimeout(timerId); } catch (e) {}
+        });
+        state.timerIds = [];
+        if (state.interactionAbortController) {
+            try { state.interactionAbortController.abort(); } catch (e) {}
+            state.interactionAbortController = null;
+        }
+    };
     const isRestoreExpandedItem = (itemId) => window.gtdRenderRestoreState.expandedItemIds.includes(String(itemId || ""));
     const isRestoreExpandedProject = (itemId) => window.gtdRenderRestoreState.expandedProjectIds.includes(String(itemId || ""));
     const persistCurrentViewContext = (options = {}) => {
@@ -716,7 +746,27 @@
             });
             return null;
         }
-        return savePersistedViewContext(buildCurrentViewContext(host), options);
+        const nextContext = buildCurrentViewContext(host);
+        const previousContext = getSavedViewContext();
+        const reason = String(options?.reason || "unknown");
+        const shouldGuardTopOverwrite =
+            options?.force !== true &&
+            options?.allowTopOverwrite !== true &&
+            ["scroll", "auto", "lifecycle"].includes(reason) &&
+            Number(nextContext.scroll?.top || 0) <= 2 &&
+            Number(previousContext.scroll?.top || 0) >= TOP_OVERWRITE_GUARD_MIN_SCROLL &&
+            hasRecentUserScrollIntent() !== true;
+        if (shouldGuardTopOverwrite) {
+            appendViewDebugLog("persist_guard_top", {
+                reason,
+                nextScrollTop: nextContext.scroll.top,
+                previousScrollTop: previousContext.scroll.top,
+                anchorItemId: nextContext.anchorItemId,
+                previousAnchorItemId: previousContext.anchorItemId
+            });
+            return previousContext;
+        }
+        return savePersistedViewContext(nextContext, options);
     };
     const bindScrollPersistence = () => {
         const host = findScrollHost();
@@ -735,6 +785,14 @@
             frameId = 0;
             persistCurrentViewContext({ reason: "scroll" });
         };
+        const markWheelIntent = () => markUserScrollIntent("wheel");
+        const markTouchIntent = () => markUserScrollIntent("touchmove");
+        const markKeyIntent = (event) => {
+            const key = String(event?.key || "");
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(key)) {
+                markUserScrollIntent(`key:${key}`);
+            }
+        };
         const schedulePersist = () => {
             if (!window.gtdRenderRestoreState.isRestoring) {
                 window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
@@ -743,6 +801,9 @@
             frameId = window.requestAnimationFrame(persistNow);
             window.gtdScrollListenerRegistry[currentNotePath].frameId = frameId;
         };
+        host.addEventListener("wheel", markWheelIntent, { passive: true, signal: controller.signal });
+        host.addEventListener("touchmove", markTouchIntent, { passive: true, signal: controller.signal });
+        window.addEventListener("keydown", markKeyIntent, { signal: controller.signal });
         host.addEventListener("scroll", schedulePersist, { passive: true, signal: controller.signal });
         window.gtdScrollListenerRegistry[currentNotePath] = { host, controller, frameId: 0 };
         appendViewDebugLog("bind_scroll_host", {
@@ -923,8 +984,39 @@
     const restoreViewContext = (state = getSavedViewContext(), options = {}) => {
         const targetState = normalizeViewContext(state);
         const maskDuringRestore = options?.maskDuringRestore === true;
+        cancelPendingRestoreTimers();
         window.gtdRenderRestoreState.isRestoring = true;
         window.gtdRenderRestoreState.hasUserMovedSinceRestore = false;
+        const finalizeRestore = (host, restoredByAnchor = false) => {
+            cancelPendingRestoreTimers();
+            window.gtdRenderRestoreState.isRestoring = false;
+            const committedContext = savePersistedViewContext(buildCurrentViewContext(host), {
+                reason: "restore_commit",
+                immediate: true
+            });
+            bindScrollPersistence();
+            bindLifecyclePersistence();
+            bindAutoPersistence();
+            appendViewDebugLog("restore_finish", {
+                finalScrollTop: committedContext?.scroll?.top ?? host?.scrollTop ?? 0,
+                targetScrollTop: targetState.scroll.top,
+                restoredByAnchor,
+                host: getScrollHostDebugLabel(host),
+                hostRange: getScrollRange(host)
+            });
+            if (maskDuringRestore) setRestorePresentationState(false);
+        };
+        const abortRestoreOnInteraction = (reason) => {
+            if (!window.gtdRenderRestoreState.isRestoring) return;
+            const host = findScrollHost();
+            appendViewDebugLog("restore_cancelled", {
+                reason,
+                host: getScrollHostDebugLabel(host),
+                scrollTop: Number(host?.scrollTop || 0)
+            });
+            window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
+            finalizeRestore(host, false);
+        };
         appendViewDebugLog("restore_start", {
             scrollTop: targetState.scroll.top,
             section: targetState.anchorSectionId,
@@ -934,11 +1026,29 @@
             delays: Array.isArray(options?.delays) ? options.delays : null
         });
         if (maskDuringRestore) setRestorePresentationState(true);
+        const initialHost = findScrollHost();
+        const interactionAbortController = new AbortController();
+        window.gtdRenderRestoreState.interactionAbortController = interactionAbortController;
+        if (initialHost) {
+            initialHost.addEventListener("wheel", () => abortRestoreOnInteraction("wheel"), { passive: true, signal: interactionAbortController.signal });
+            initialHost.addEventListener("touchmove", () => abortRestoreOnInteraction("touchmove"), { passive: true, signal: interactionAbortController.signal });
+            initialHost.addEventListener("scroll", () => {
+                if (window.gtdRenderRestoreState.isRestoring) abortRestoreOnInteraction("scroll");
+            }, { passive: true, signal: interactionAbortController.signal });
+        }
+        window.addEventListener("keydown", (event) => {
+            const key = String(event?.key || "");
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(key)) {
+                abortRestoreOnInteraction(`key:${key}`);
+            }
+        }, { signal: interactionAbortController.signal });
+        window.addEventListener("mousedown", () => abortRestoreOnInteraction("mousedown"), { signal: interactionAbortController.signal });
         const restoreDelays = Array.isArray(options?.delays) && options.delays.length > 0
             ? options.delays
             : [0, 120, 360, 900, 1800];
         restoreDelays.forEach((delay, index) => {
-            window.setTimeout(() => {
+            const timerId = window.setTimeout(() => {
+                if (!window.gtdRenderRestoreState.isRestoring) return;
                 const host = findScrollHost();
                 if (!host) return;
                 applyScrollStateToHost(host, targetState.scroll);
@@ -947,24 +1057,10 @@
                     restoreSectionContext(host, targetState);
                 }
                 if (index === restoreDelays.length - 1) {
-                    window.gtdRenderRestoreState.isRestoring = false;
-                    const committedContext = savePersistedViewContext(buildCurrentViewContext(host), {
-                        reason: "restore_commit",
-                        immediate: true
-                    });
-                    bindScrollPersistence();
-                    bindLifecyclePersistence();
-                    bindAutoPersistence();
-                    appendViewDebugLog("restore_finish", {
-                        finalScrollTop: committedContext?.scroll?.top ?? host.scrollTop,
-                        targetScrollTop: targetState.scroll.top,
-                        restoredByAnchor,
-                        host: getScrollHostDebugLabel(host),
-                        hostRange: getScrollRange(host)
-                    });
-                    if (maskDuringRestore) setRestorePresentationState(false);
+                    finalizeRestore(host, restoredByAnchor);
                 }
             }, delay);
+            window.gtdRenderRestoreState.timerIds.push(timerId);
         });
     };
 
@@ -1807,7 +1903,9 @@
                     .sort(compareByOrderThenName);
                 const withoutDragged = siblingScope.filter(i => i.id !== item.id);
                 let insertAt = withoutDragged.length;
-                if (position === "before" || position === "after") {
+                if (position === "child") {
+                    insertAt = 0;
+                } else if (position === "before" || position === "after") {
                     const targetPos = withoutDragged.findIndex(i => i.id === target.id);
                     if (targetPos >= 0) insertAt = position === "before" ? targetPos : targetPos + 1;
                 }
@@ -2644,7 +2742,15 @@
             }
             const nextPresets = Array.isArray(window.gtdTagFilterPresets) ? [...window.gtdTagFilterPresets] : [];
             const existingIndex = nextPresets.findIndex((preset) => preset.name === name);
-            const payload = { name, filters: currentFilters, updatedAt: moment().format("YYYY-MM-DD HH:mm:ss") };
+            const now = moment().format("YYYY-MM-DD HH:mm:ss");
+            const payload = {
+                name,
+                filters: currentFilters,
+                createdAt: existingIndex >= 0
+                    ? nextPresets[existingIndex]?.createdAt || nextPresets[existingIndex]?.updatedAt || now
+                    : now,
+                updatedAt: now
+            };
             if (existingIndex >= 0) {
                 nextPresets[existingIndex] = payload;
                 new Notice(`♻️ 已更新筛选预设：${name}`);
@@ -2652,7 +2758,6 @@
                 nextPresets.push(payload);
                 new Notice(`✅ 已保存筛选预设：${name}`);
             }
-            nextPresets.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
             setTagFilterPresets(nextPresets);
             if (renderViewFn) renderViewFn();
         };
