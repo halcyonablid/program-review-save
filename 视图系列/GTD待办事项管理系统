@@ -10,14 +10,19 @@
     // --- 0. 标签数据文件管理 ---
     const JSON_FILENAME = "GTD_Database.json";
     const TAGS_FILENAME = "GTD_Tags.json";
+    const VIEW_STATE_FILENAME = "GTD_ViewState.json";
     const currentFolder = dv.current().file.folder;
     const currentNotePath = dv.current().file.path;
     const DB_PATH = currentFolder + "/" + JSON_FILENAME;
     const TAGS_PATH = currentFolder + "/" + TAGS_FILENAME;
+    const VIEW_STATE_PATH = currentFolder + "/" + VIEW_STATE_FILENAME;
     const TAG_FILTER_STORAGE_KEY = `gtd.tagFilters::${DB_PATH}`;
     const TAG_FILTER_PRESETS_STORAGE_KEY = `gtd.tagFilterPresets::${DB_PATH}`;
     const SCROLL_STATE_STORAGE_KEY = `gtd.scrollState::${currentNotePath}`;
     const VIEW_CONTEXT_STORAGE_KEY = `gtd.viewContext::${currentNotePath}`;
+    const VIEW_STATE_DEBUG_ENABLED = false;
+    const MAX_VIEW_DEBUG_ENTRIES = 24;
+    const AUTO_PERSIST_INTERVAL_MS = 8000;
 
     // 默认标签定义（首次使用或文件不存在时）
     const DEFAULT_TAG_DEFINITIONS = {
@@ -230,6 +235,30 @@
     if (!(window.gtdOutlinerMarkerBodyCache instanceof Map)) window.gtdOutlinerMarkerBodyCache = new Map();
     if (!window.gtdScrollStateRegistry || typeof window.gtdScrollStateRegistry !== "object") window.gtdScrollStateRegistry = {};
     if (!window.gtdScrollListenerRegistry || typeof window.gtdScrollListenerRegistry !== "object") window.gtdScrollListenerRegistry = {};
+    if (!window.gtdLifecycleListenerRegistry || typeof window.gtdLifecycleListenerRegistry !== "object") window.gtdLifecycleListenerRegistry = {};
+    if (!window.gtdViewContextRegistry || typeof window.gtdViewContextRegistry !== "object") window.gtdViewContextRegistry = {};
+    if (!window.gtdRenderRestoreState || typeof window.gtdRenderRestoreState !== "object") {
+        window.gtdRenderRestoreState = {
+            pendingContext: null,
+            expandedItemIds: [],
+            expandedProjectIds: [],
+            nextContextOverride: null,
+            isRestoring: false,
+            hasUserMovedSinceRestore: false
+        };
+    }
+    if (!window.gtdViewContextFileRegistry || typeof window.gtdViewContextFileRegistry !== "object") {
+        window.gtdViewContextFileRegistry = {
+            loaded: {},
+            loading: {},
+            payloads: {},
+            timers: {},
+            saveChains: {}
+        };
+    }
+    if (!window.gtdAutoPersistRegistry || typeof window.gtdAutoPersistRegistry !== "object") window.gtdAutoPersistRegistry = {};
+    if (!window.gtdViewDebugRegistry || typeof window.gtdViewDebugRegistry !== "object") window.gtdViewDebugRegistry = {};
+    if (!window.gtdViewTraceRegistry || typeof window.gtdViewTraceRegistry !== "object") window.gtdViewTraceRegistry = {};
 
     window.gtdCurrentDragId = null;
     window.gtdCurrentDragTagId = null;
@@ -243,14 +272,106 @@
         const scroll = normalizeScrollState(state?.scroll || state);
         const anchorItemId = String(state?.anchorItemId || "").trim() || null;
         const anchorSectionId = String(state?.anchorSectionId || "").trim() || null;
+        const anchorProjectId = String(state?.anchorProjectId || "").trim() || null;
+        const expandedItemPath = Array.isArray(state?.expandedItemPath)
+            ? state.expandedItemPath.map((id) => String(id || "").trim()).filter(Boolean)
+            : [];
+        const expandedProjectPath = Array.isArray(state?.expandedProjectPath)
+            ? state.expandedProjectPath.map((id) => String(id || "").trim()).filter(Boolean)
+            : [];
         const anchorOffset = Number.isFinite(Number(state?.anchorOffset)) ? Number(state.anchorOffset) : 0;
         return {
             scroll,
             anchorItemId,
             anchorSectionId,
+            anchorProjectId,
+            expandedItemPath: Array.from(new Set(expandedItemPath)),
+            expandedProjectPath: Array.from(new Set(expandedProjectPath)),
             anchorOffset: Math.max(-2000, Math.min(2000, anchorOffset))
         };
     };
+    const createDefaultViewStatePayload = () => ({
+        version: "1.0",
+        updatedAt: "",
+        views: {},
+        debug: {},
+        trace: {}
+    });
+    const normalizeDebugEntries = (entries) => {
+        const list = Array.isArray(entries) ? entries : [];
+        return list
+            .slice(-MAX_VIEW_DEBUG_ENTRIES)
+            .map((entry) => ({
+                ts: String(entry?.ts || ""),
+                event: String(entry?.event || "unknown"),
+                details: entry?.details && typeof entry.details === "object" ? entry.details : {}
+            }));
+    };
+    const normalizeViewStatePayload = (data) => {
+        const base = createDefaultViewStatePayload();
+        const rawViews = data?.views && typeof data.views === "object" ? data.views : {};
+        const rawDebug = data?.debug && typeof data.debug === "object" ? data.debug : {};
+        const rawTrace = data?.trace && typeof data.trace === "object" ? data.trace : {};
+        const views = {};
+        const debug = {};
+        const trace = {};
+        Object.keys(rawViews).forEach((path) => {
+            views[path] = normalizeViewContext(rawViews[path]);
+        });
+        Object.keys(rawDebug).forEach((path) => {
+            debug[path] = normalizeDebugEntries(rawDebug[path]);
+        });
+        Object.keys(rawTrace).forEach((path) => {
+            trace[path] = rawTrace[path] && typeof rawTrace[path] === "object" ? rawTrace[path] : {};
+        });
+        return {
+            version: String(data?.version || base.version),
+            updatedAt: String(data?.updatedAt || base.updatedAt),
+            views,
+            debug,
+            trace
+        };
+    };
+    const recordViewTrace = (key, details = {}) => {
+        const current = window.gtdViewTraceRegistry[currentNotePath] && typeof window.gtdViewTraceRegistry[currentNotePath] === "object"
+            ? window.gtdViewTraceRegistry[currentNotePath]
+            : {};
+        current[key] = {
+            ts: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+            details
+        };
+        window.gtdViewTraceRegistry[currentNotePath] = current;
+    };
+    const shouldPersistTraceEvent = (event) => [
+        "script_boot",
+        "bind_scroll_host",
+        "restore_start",
+        "restore_finish",
+        "restore_anchor_hit",
+        "restore_anchor_miss",
+        "restore_anchor_invalid_offset",
+        "restore_section_hit"
+    ].includes(String(event || ""));
+    const appendViewDebugLog = (event, details = {}) => {
+        const eventName = String(event || "unknown");
+        if (VIEW_STATE_DEBUG_ENABLED) {
+            const current = normalizeDebugEntries(window.gtdViewDebugRegistry[currentNotePath] || []);
+            current.push({
+                ts: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+                event: eventName,
+                details
+            });
+            window.gtdViewDebugRegistry[currentNotePath] = normalizeDebugEntries(current);
+        }
+        if (shouldPersistTraceEvent(eventName)) {
+            recordViewTrace(String(event || "unknown"), details);
+        }
+    };
+    appendViewDebugLog("script_boot", {
+        notePath: currentNotePath,
+        dbPath: DB_PATH,
+        viewStatePath: VIEW_STATE_PATH
+    });
     const escapeSelectorValue = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const loadPersistedScrollState = () => {
         try {
@@ -270,6 +391,8 @@
         return normalized;
     };
     const loadPersistedViewContext = () => {
+        const mem = window.gtdViewContextRegistry[currentNotePath];
+        if (mem) return normalizeViewContext(mem);
         try {
             const raw = localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY);
             if (!raw) return null;
@@ -278,13 +401,101 @@
             return null;
         }
     };
-    const savePersistedViewContext = (state) => {
+    const ensureViewContextFileLoaded = async () => {
+        const registry = window.gtdViewContextFileRegistry;
+        if (registry.loaded[VIEW_STATE_PATH]) return;
+        if (registry.loading[VIEW_STATE_PATH]) {
+            await registry.loading[VIEW_STATE_PATH];
+            return;
+        }
+        registry.loading[VIEW_STATE_PATH] = (async () => {
+            let payload = createDefaultViewStatePayload();
+            try {
+                if (await app.vault.adapter.exists(VIEW_STATE_PATH)) {
+                    const raw = await app.vault.adapter.read(VIEW_STATE_PATH);
+                    payload = normalizeViewStatePayload(JSON.parse(raw));
+                }
+            } catch (e) {
+                console.error("加载 GTD 视图状态文件失败:", e);
+            }
+            registry.payloads[VIEW_STATE_PATH] = payload;
+            if (payload.views[currentNotePath]) {
+                window.gtdViewContextRegistry[currentNotePath] = normalizeViewContext(payload.views[currentNotePath]);
+            }
+            if (payload.debug[currentNotePath]) {
+                window.gtdViewDebugRegistry[currentNotePath] = normalizeDebugEntries(payload.debug[currentNotePath]);
+            }
+            registry.loaded[VIEW_STATE_PATH] = true;
+        })();
+        try {
+            await registry.loading[VIEW_STATE_PATH];
+        } finally {
+            delete registry.loading[VIEW_STATE_PATH];
+        }
+    };
+    const flushPersistedViewContextToFile = async () => {
+        const registry = window.gtdViewContextFileRegistry;
+        await ensureViewContextFileLoaded();
+        const payload = normalizeViewStatePayload(registry.payloads[VIEW_STATE_PATH] || createDefaultViewStatePayload());
+        payload.views[currentNotePath] = normalizeViewContext(window.gtdViewContextRegistry[currentNotePath] || getSavedViewContext());
+        if (VIEW_STATE_DEBUG_ENABLED) {
+            payload.debug[currentNotePath] = normalizeDebugEntries(window.gtdViewDebugRegistry[currentNotePath] || []);
+        } else {
+            delete payload.debug[currentNotePath];
+        }
+        const tracePayload = window.gtdViewTraceRegistry[currentNotePath] && typeof window.gtdViewTraceRegistry[currentNotePath] === "object"
+            ? window.gtdViewTraceRegistry[currentNotePath]
+            : {};
+        if (Object.keys(tracePayload).length > 0) payload.trace[currentNotePath] = tracePayload;
+        else delete payload.trace[currentNotePath];
+        payload.updatedAt = moment().format("YYYY-MM-DD HH:mm:ss");
+        registry.payloads[VIEW_STATE_PATH] = payload;
+        const jsonString = JSON.stringify(payload, null, 2);
+        const file = app.vault.getAbstractFileByPath(VIEW_STATE_PATH);
+        if (file) await app.vault.modify(file, jsonString);
+        else await app.vault.create(VIEW_STATE_PATH, jsonString);
+    };
+    const schedulePersistedViewContextToFile = (immediate = false) => {
+        const registry = window.gtdViewContextFileRegistry;
+        const timerKey = VIEW_STATE_PATH;
+        const enqueue = () => {
+            registry.saveChains[timerKey] = (registry.saveChains[timerKey] || Promise.resolve())
+                .then(() => flushPersistedViewContextToFile())
+                .catch((error) => console.error("保存 GTD 视图状态文件失败:", error));
+            return registry.saveChains[timerKey];
+        };
+        if (registry.timers[timerKey]) {
+            window.clearTimeout(registry.timers[timerKey]);
+            delete registry.timers[timerKey];
+        }
+        if (immediate) return enqueue();
+        registry.timers[timerKey] = window.setTimeout(() => {
+            delete registry.timers[timerKey];
+            enqueue();
+        }, 900);
+        return registry.saveChains[timerKey] || Promise.resolve();
+    };
+    const savePersistedViewContext = (state, options = {}) => {
         const normalized = normalizeViewContext(state);
+        const host = findScrollHost();
+        window.gtdViewContextRegistry[currentNotePath] = normalized;
         window.gtdScrollStateRegistry[currentNotePath] = normalized.scroll;
+        appendViewDebugLog("persist_save", {
+            reason: options?.reason || "unknown",
+            scrollTop: normalized.scroll.top,
+            section: normalized.anchorSectionId,
+            anchorItemId: normalized.anchorItemId,
+            anchorProjectId: normalized.anchorProjectId,
+            anchorOffset: normalized.anchorOffset,
+            host: getScrollHostDebugLabel(host),
+            hostRange: getScrollRange(host),
+            restoring: window.gtdRenderRestoreState.isRestoring === true
+        });
         try {
             localStorage.setItem(VIEW_CONTEXT_STORAGE_KEY, JSON.stringify(normalized));
             localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized.scroll));
         } catch (e) {}
+        schedulePersistedViewContextToFile(options?.immediate === true);
         return normalized;
     };
     const getSavedScrollState = () => {
@@ -302,7 +513,22 @@
         if (persisted) return persisted;
         return normalizeViewContext({ scroll: getSavedScrollState() });
     };
+    const getScrollRange = (el) => {
+        if (!el) return 0;
+        return Math.max(0, Number(el.scrollHeight || 0) - Number(el.clientHeight || 0));
+    };
+    const getScrollHostDebugLabel = (el) => {
+        if (!el) return "null";
+        if (el === document.scrollingElement || el === document.documentElement) return "document.scrollingElement";
+        const tag = String(el.tagName || "node").toLowerCase();
+        const id = el.id ? `#${el.id}` : "";
+        const cls = typeof el.className === "string" && el.className.trim()
+            ? `.${el.className.trim().split(/\s+/).slice(0, 3).join(".")}`
+            : "";
+        return `${tag}${id}${cls}`;
+    };
     const findScrollHost = () => {
+        const candidates = [];
         let el = dv.container;
         while (el) {
             const style = window.getComputedStyle(el);
@@ -310,52 +536,101 @@
             const overflowX = style.overflowX || "";
             const canScrollY = /(auto|scroll|overlay)/.test(overflowY) && el.scrollHeight > el.clientHeight + 4;
             const canScrollX = /(auto|scroll|overlay)/.test(overflowX) && el.scrollWidth > el.clientWidth + 4;
-            if (canScrollY || canScrollX) return el;
+            if (canScrollY || canScrollX) {
+                let bonus = 0;
+                const className = typeof el.className === "string" ? el.className : "";
+                if (/\b(markdown-reading-view|markdown-preview-view|view-content|workspace-leaf-content)\b/.test(className)) {
+                    bonus += 100000;
+                }
+                candidates.push({ el, score: getScrollRange(el) + bonus });
+            }
             el = el.parentElement;
         }
-        return document.scrollingElement || document.documentElement;
+        const docEl = document.scrollingElement || document.documentElement;
+        candidates.push({ el: docEl, score: getScrollRange(docEl) + 50000 });
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0]?.el || docEl;
     };
     const getHostViewportMetrics = (host) => {
         const scrollingRoot = document.scrollingElement || document.documentElement;
         if (!host || host === scrollingRoot || host === document.documentElement || host === document.body) {
-            return { top: 0, bottom: window.innerHeight, height: window.innerHeight };
+            return { top: 0, bottom: window.innerHeight, height: window.innerHeight, left: 0, right: window.innerWidth, width: window.innerWidth };
         }
         const rect = host.getBoundingClientRect();
-        return { top: rect.top, bottom: rect.bottom, height: rect.height };
+        return { top: rect.top, bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, width: rect.width };
     };
     const findBestAnchorCandidate = (host) => {
+        const viewport = getHostViewportMetrics(host);
+        const sampleX = Math.max(8, Math.min(window.innerWidth - 8, viewport.left + Math.max(24, viewport.width * 0.5)));
+        const maxY = Math.min(viewport.bottom - 8, viewport.top + Math.min(180, viewport.height - 8));
+        for (let y = viewport.top + 12; y <= maxY; y += 28) {
+            const stack = document.elementsFromPoint(sampleX, y);
+            for (const node of stack) {
+                const anchorEl = node?.closest?.("[data-gtd-anchor-id]");
+                if (anchorEl && dv.container.contains(anchorEl)) {
+                    const rect = anchorEl.getBoundingClientRect();
+                    if (rect.bottom > viewport.top + 1 && rect.top < viewport.bottom - 1) {
+                        return { el: anchorEl, rect };
+                    }
+                }
+            }
+        }
         const anchors = Array.from(dv.container.querySelectorAll("[data-gtd-anchor-id]"));
         if (anchors.length === 0) return null;
-        const viewport = getHostViewportMetrics(host);
-        const visible = [];
-        const above = [];
-        anchors.forEach((el) => {
-            const rect = el.getBoundingClientRect();
-            const isVisible = rect.bottom > viewport.top + 8 && rect.top < viewport.bottom - 8;
-            if (isVisible) visible.push({ el, rect });
-            else if (rect.top < viewport.top + 8) above.push({ el, rect });
-        });
-        if (visible.length > 0) {
-            visible.sort((a, b) => Math.abs(a.rect.top - viewport.top - 24) - Math.abs(b.rect.top - viewport.top - 24));
-            return visible[0];
-        }
-        if (above.length > 0) {
-            above.sort((a, b) => b.rect.top - a.rect.top);
-            return above[0];
-        }
-        return null;
+        const visible = anchors
+            .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+            .filter(({ rect }) => rect.bottom > viewport.top + 1 && rect.top < viewport.bottom - 1)
+            .sort((a, b) => a.rect.top - b.rect.top);
+        return visible[0] || null;
     };
-    const buildCurrentViewContext = (host = findScrollHost()) => {
+    const buildExpandedItemPath = (list, anchorItemId) => {
+        const anchorId = String(anchorItemId || "").trim();
+        if (!anchorId || !Array.isArray(list) || list.length === 0) return [];
+        const byId = new Map(list.map((item) => [item.id, item]));
+        const path = [];
+        let cursor = byId.get(anchorId)?.parentId || null;
+        while (cursor) {
+            path.unshift(cursor);
+            cursor = byId.get(cursor)?.parentId || null;
+        }
+        return path;
+    };
+    const buildExpandedProjectPath = (list, anchorProjectId) => {
+        const anchorId = String(anchorProjectId || "").trim();
+        if (!anchorId || !Array.isArray(list) || list.length === 0) return [];
+        const byId = new Map(list.filter((item) => item?.type === "project").map((item) => [item.id, item]));
+        const path = [];
+        let cursor = anchorId;
+        while (cursor) {
+            path.unshift(cursor);
+            cursor = byId.get(cursor)?.parentId || null;
+        }
+        return path;
+    };
+    const buildCurrentViewContext = (host = findScrollHost(), list = gtdList) => {
         if (!host) return getSavedViewContext();
+        const previous = getSavedViewContext();
         const scroll = normalizeScrollState({ top: host.scrollTop, left: host.scrollLeft });
         const candidate = findBestAnchorCandidate(host);
+        if (!candidate) {
+            return normalizeViewContext({
+                ...previous,
+                scroll
+            });
+        }
         const viewport = getHostViewportMetrics(host);
         const anchorElement = candidate?.el || null;
         const sectionElement = anchorElement?.closest?.("[id^='gtd-section-']") || null;
+        const projectDetailsElement = anchorElement?.closest?.("details[data-gtd-anchor-id]") || null;
+        const anchorItemId = anchorElement?.dataset?.gtdAnchorId || null;
+        const anchorProjectId = projectDetailsElement?.dataset?.gtdAnchorId || null;
         return normalizeViewContext({
             scroll,
-            anchorItemId: anchorElement?.dataset?.gtdAnchorId || null,
+            anchorItemId,
             anchorSectionId: anchorElement?.dataset?.gtdSectionId || sectionElement?.id || null,
+            anchorProjectId,
+            expandedItemPath: buildExpandedItemPath(list, anchorItemId),
+            expandedProjectPath: buildExpandedProjectPath(list, anchorProjectId),
             anchorOffset: candidate ? candidate.rect.top - viewport.top : 0
         });
     };
@@ -367,6 +642,81 @@
     const captureViewContext = () => {
         const context = buildCurrentViewContext();
         return savePersistedViewContext(context);
+    };
+    const rememberAnchorTarget = (anchorItemId, anchorSectionId = null, anchorProjectId = null, options = {}) => {
+        const host = findScrollHost();
+        const context = buildCurrentViewContext(host);
+        window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
+        if (anchorItemId) context.anchorItemId = String(anchorItemId);
+        if (anchorSectionId) context.anchorSectionId = String(anchorSectionId);
+        if (anchorProjectId) context.anchorProjectId = String(anchorProjectId);
+        context.expandedItemPath = buildExpandedItemPath(gtdList, context.anchorItemId);
+        context.expandedProjectPath = buildExpandedProjectPath(gtdList, context.anchorProjectId || context.anchorItemId);
+        const targetEl = anchorItemId
+            ? dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorItemId)}"]`)
+            : null;
+        if (host && targetEl) {
+            const viewport = getHostViewportMetrics(host);
+            context.anchorOffset = targetEl.getBoundingClientRect().top - viewport.top;
+        }
+        return savePersistedViewContext(context, options);
+    };
+    const queueRestoreContext = (state) => {
+        window.gtdRenderRestoreState.nextContextOverride = normalizeViewContext(state);
+    };
+    const queueRestoreContextForAnchor = (list, anchorItemId, anchorSectionId = null, anchorProjectId = null) => {
+        const host = findScrollHost();
+        const context = buildCurrentViewContext(host, list);
+        if (anchorItemId) context.anchorItemId = String(anchorItemId);
+        if (anchorSectionId) context.anchorSectionId = String(anchorSectionId);
+        if (anchorProjectId) context.anchorProjectId = String(anchorProjectId);
+        context.expandedItemPath = buildExpandedItemPath(list, context.anchorItemId);
+        context.expandedProjectPath = buildExpandedProjectPath(list, context.anchorProjectId || context.anchorItemId);
+        queueRestoreContext(context);
+        return context;
+    };
+    const applyPendingRenderRestoreState = (state) => {
+        const normalized = normalizeViewContext(state || {});
+        window.gtdRenderRestoreState.pendingContext = normalized;
+        window.gtdRenderRestoreState.expandedItemIds = normalized.expandedItemPath.slice();
+        window.gtdRenderRestoreState.expandedProjectIds = normalized.expandedProjectPath.slice();
+    };
+    const clearPendingRenderRestoreState = () => {
+        window.gtdRenderRestoreState.pendingContext = null;
+        window.gtdRenderRestoreState.expandedItemIds = [];
+        window.gtdRenderRestoreState.expandedProjectIds = [];
+    };
+    const isRestoreExpandedItem = (itemId) => window.gtdRenderRestoreState.expandedItemIds.includes(String(itemId || ""));
+    const isRestoreExpandedProject = (itemId) => window.gtdRenderRestoreState.expandedProjectIds.includes(String(itemId || ""));
+    const persistCurrentViewContext = (options = {}) => {
+        const hasAnchors = !!dv.container.querySelector("[data-gtd-anchor-id]");
+        const host = findScrollHost();
+        if (!hasAnchors || !host || host.clientHeight <= 0) {
+            appendViewDebugLog("persist_skip", {
+                reason: options?.reason || "unknown",
+                why: "host_or_anchors_missing"
+            });
+            return null;
+        }
+        if (window.gtdRenderRestoreState.isRestoring && options?.allowDuringRestore !== true) {
+            appendViewDebugLog("persist_skip", {
+                reason: options?.reason || "unknown",
+                why: "during_restore"
+            });
+            return null;
+        }
+        if (
+            window.gtdRenderRestoreState.hasUserMovedSinceRestore !== true &&
+            options?.force !== true &&
+            (options?.reason === "auto" || options?.reason === "lifecycle")
+        ) {
+            appendViewDebugLog("persist_skip", {
+                reason: options?.reason || "unknown",
+                why: "waiting_for_user_move"
+            });
+            return null;
+        }
+        return savePersistedViewContext(buildCurrentViewContext(host), options);
     };
     const bindScrollPersistence = () => {
         const host = findScrollHost();
@@ -383,16 +733,47 @@
         let frameId = 0;
         const persistNow = () => {
             frameId = 0;
-            savePersistedViewContext(buildCurrentViewContext(host));
+            persistCurrentViewContext({ reason: "scroll" });
         };
         const schedulePersist = () => {
+            if (!window.gtdRenderRestoreState.isRestoring) {
+                window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
+            }
             if (frameId) return;
             frameId = window.requestAnimationFrame(persistNow);
             window.gtdScrollListenerRegistry[currentNotePath].frameId = frameId;
         };
         host.addEventListener("scroll", schedulePersist, { passive: true, signal: controller.signal });
         window.gtdScrollListenerRegistry[currentNotePath] = { host, controller, frameId: 0 };
-        persistNow();
+        appendViewDebugLog("bind_scroll_host", {
+            host: getScrollHostDebugLabel(host),
+            hostRange: getScrollRange(host),
+            scrollTop: Number(host.scrollTop || 0),
+            clientHeight: Number(host.clientHeight || 0),
+            scrollHeight: Number(host.scrollHeight || 0)
+        });
+    };
+    const bindLifecyclePersistence = () => {
+        const currentBinding = window.gtdLifecycleListenerRegistry[currentNotePath];
+        if (currentBinding?.controller) return;
+        const controller = new AbortController();
+        const persist = () => {
+            persistCurrentViewContext({ immediate: true, reason: "lifecycle" });
+        };
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "hidden") persist();
+        }, { signal: controller.signal });
+        window.addEventListener("pagehide", persist, { signal: controller.signal });
+        window.addEventListener("beforeunload", persist, { signal: controller.signal });
+        window.addEventListener("blur", persist, { signal: controller.signal });
+        window.gtdLifecycleListenerRegistry[currentNotePath] = { controller };
+    };
+    const bindAutoPersistence = () => {
+        if (window.gtdAutoPersistRegistry[currentNotePath]) return;
+        const intervalId = window.setInterval(() => {
+            persistCurrentViewContext({ reason: "auto" });
+        }, AUTO_PERSIST_INTERVAL_MS);
+        window.gtdAutoPersistRegistry[currentNotePath] = intervalId;
     };
     const applyScrollStateToHost = (host, state) => {
         if (!host) return;
@@ -402,28 +783,130 @@
         host.scrollTop = Math.min(normalized.top, maxTop);
         host.scrollLeft = Math.min(normalized.left, maxLeft);
     };
+    const setRestorePresentationState = (isRestoring) => {
+        if (isRestoring) {
+            dv.container.dataset.gtdRestoring = "1";
+            dv.container.style.opacity = "0";
+            dv.container.style.pointerEvents = "none";
+            dv.container.style.transition = "none";
+            return;
+        }
+        delete dv.container.dataset.gtdRestoring;
+        dv.container.style.pointerEvents = "";
+        dv.container.style.transition = "opacity 140ms ease";
+        window.requestAnimationFrame(() => {
+            dv.container.style.opacity = "1";
+            window.setTimeout(() => {
+                if (dv.container.dataset.gtdRestoring === "1") return;
+                dv.container.style.transition = "";
+            }, 180);
+        });
+    };
     const restoreAnchorContext = (host, state) => {
         const target = normalizeViewContext(state);
         const anchorId = String(target.anchorItemId || "").trim();
-        if (!anchorId) return false;
-        const anchorEl = dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
-        if (!anchorEl) return false;
+        const sectionId = String(target.anchorSectionId || "").trim();
+        const projectId = String(target.anchorProjectId || "").trim();
+        if (!anchorId && !projectId) {
+            appendViewDebugLog("restore_anchor_skip", {
+                why: "missing_anchor_ids",
+                sectionId
+            });
+            return false;
+        }
+        let anchorEl = null;
+        let matchMode = "none";
+        if (anchorId && sectionId) {
+            const sectionEl = document.getElementById(sectionId);
+            if (sectionEl) {
+                anchorEl = sectionEl.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+                if (anchorEl) matchMode = "section-anchor";
+            }
+        }
+        if (!anchorEl && anchorId) {
+            anchorEl = dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+            if (anchorEl) matchMode = "global-anchor";
+        }
+        if (!anchorEl && projectId) {
+            const projectDetails = document.getElementById(`proj-${projectId}`);
+            if (projectDetails && projectDetails.tagName === "DETAILS") {
+                projectDetails.open = true;
+            }
+            if (anchorId) {
+                if (sectionId) {
+                    const sectionEl = document.getElementById(sectionId);
+                    if (sectionEl) {
+                        anchorEl = sectionEl.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+                        if (anchorEl) matchMode = "expanded-section-anchor";
+                    }
+                }
+                if (!anchorEl) {
+                    anchorEl = dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+                    if (anchorEl) matchMode = "expanded-global-anchor";
+                }
+            }
+            if (!anchorEl && projectDetails) {
+                anchorEl = projectDetails.querySelector("summary") || projectDetails;
+                if (anchorEl) matchMode = "project-fallback";
+            }
+        }
+        if (!anchorEl) {
+            appendViewDebugLog("restore_anchor_miss", {
+                anchorId,
+                sectionId,
+                projectId
+            });
+            return false;
+        }
         const viewport = getHostViewportMetrics(host);
+        const rawOffset = Number(target.anchorOffset);
+        if (!Number.isFinite(rawOffset) || Math.abs(rawOffset) > Math.max(240, viewport.height + 120)) {
+            appendViewDebugLog("restore_anchor_invalid_offset", {
+                anchorId,
+                sectionId,
+                projectId,
+                matchMode,
+                rawOffset,
+                viewportHeight: viewport.height
+            });
+            return false;
+        }
         const rect = anchorEl.getBoundingClientRect();
-        const idealOffset = Math.max(20, Math.min(viewport.height * 0.45, Number(target.anchorOffset) || 0));
+        const idealOffset = Math.max(0, Math.min(viewport.height, rawOffset));
         const delta = rect.top - (viewport.top + idealOffset);
         host.scrollTop += delta;
+        appendViewDebugLog("restore_anchor_hit", {
+            anchorId,
+            sectionId,
+            projectId,
+            matchMode,
+            rawOffset,
+            rectTop: rect.top,
+            appliedDelta: delta,
+            finalScrollTop: host.scrollTop
+        });
         return true;
     };
     const restoreSectionContext = (host, state) => {
         const target = normalizeViewContext(state);
         const sectionId = String(target.anchorSectionId || "").trim();
-        if (!sectionId) return false;
+        if (!sectionId) {
+            appendViewDebugLog("restore_section_skip", { why: "missing_section_id" });
+            return false;
+        }
         const sectionEl = document.getElementById(sectionId);
-        if (!sectionEl) return false;
+        if (!sectionEl) {
+            appendViewDebugLog("restore_section_miss", { sectionId });
+            return false;
+        }
         const viewport = getHostViewportMetrics(host);
         const rect = sectionEl.getBoundingClientRect();
         host.scrollTop += rect.top - (viewport.top + 18);
+        appendViewDebugLog("restore_section_hit", {
+            sectionId,
+            rectTop: rect.top,
+            finalScrollTop: host.scrollTop
+        });
         return true;
     };
     const restoreScrollState = (state = getSavedScrollState()) => {
@@ -437,16 +920,50 @@
             }, delay);
         });
     };
-    const restoreViewContext = (state = getSavedViewContext()) => {
+    const restoreViewContext = (state = getSavedViewContext(), options = {}) => {
         const targetState = normalizeViewContext(state);
-        [0, 80, 220].forEach((delay) => {
+        const maskDuringRestore = options?.maskDuringRestore === true;
+        window.gtdRenderRestoreState.isRestoring = true;
+        window.gtdRenderRestoreState.hasUserMovedSinceRestore = false;
+        appendViewDebugLog("restore_start", {
+            scrollTop: targetState.scroll.top,
+            section: targetState.anchorSectionId,
+            anchorItemId: targetState.anchorItemId,
+            anchorProjectId: targetState.anchorProjectId,
+            anchorOffset: targetState.anchorOffset,
+            delays: Array.isArray(options?.delays) ? options.delays : null
+        });
+        if (maskDuringRestore) setRestorePresentationState(true);
+        const restoreDelays = Array.isArray(options?.delays) && options.delays.length > 0
+            ? options.delays
+            : [0, 120, 360, 900, 1800];
+        restoreDelays.forEach((delay, index) => {
             window.setTimeout(() => {
                 const host = findScrollHost();
                 if (!host) return;
                 applyScrollStateToHost(host, targetState.scroll);
                 const restoredByAnchor = restoreAnchorContext(host, targetState);
-                if (!restoredByAnchor) restoreSectionContext(host, targetState);
-                if (delay === 220) bindScrollPersistence();
+                if (!restoredByAnchor && Number(targetState.scroll?.top || 0) <= 0) {
+                    restoreSectionContext(host, targetState);
+                }
+                if (index === restoreDelays.length - 1) {
+                    window.gtdRenderRestoreState.isRestoring = false;
+                    const committedContext = savePersistedViewContext(buildCurrentViewContext(host), {
+                        reason: "restore_commit",
+                        immediate: true
+                    });
+                    bindScrollPersistence();
+                    bindLifecyclePersistence();
+                    bindAutoPersistence();
+                    appendViewDebugLog("restore_finish", {
+                        finalScrollTop: committedContext?.scroll?.top ?? host.scrollTop,
+                        targetScrollTop: targetState.scroll.top,
+                        restoredByAnchor,
+                        host: getScrollHostDebugLabel(host),
+                        hostRange: getScrollRange(host)
+                    });
+                    if (maskDuringRestore) setRestorePresentationState(false);
+                }
             }, delay);
         });
     };
@@ -650,16 +1167,27 @@
             return list;
         } catch (e) { return []; }
     };
+    await ensureViewContextFileLoaded();
+    schedulePersistedViewContextToFile(true);
     let gtdList = await loadData();
     let renderViewFn = null;
 
     const updateGTD = async (operationFn) => {
         let currentList = await loadData(); 
-        operationFn(currentList);
+        const operationResult = operationFn(currentList);
         const jsonString = JSON.stringify(currentList, null, 2);
         const file = app.vault.getAbstractFileByPath(DB_PATH);
         if (file) await app.vault.modify(file, jsonString); else await app.vault.create(DB_PATH, jsonString);
         gtdList = currentList; 
+        if (operationResult?.restoreContext) queueRestoreContext(operationResult.restoreContext);
+        else if (operationResult?.rememberAnchorItemId || operationResult?.rememberAnchorProjectId) {
+            queueRestoreContextForAnchor(
+                currentList,
+                operationResult?.rememberAnchorItemId || null,
+                operationResult?.rememberAnchorSectionId || null,
+                operationResult?.rememberAnchorProjectId || null
+            );
+        }
         if (renderViewFn) renderViewFn(); 
     };
 
@@ -1295,6 +1823,11 @@
                     if (child.type === "next_action" || child.type === "inbox") child.project = currentProject;
                 });
             }
+            return {
+                rememberAnchorItemId: item.id,
+                rememberAnchorSectionId: item.type === "inbox" ? "gtd-section-inbox" : "gtd-section-projects",
+                rememberAnchorProjectId: item.project ? (list.find((i) => i.type === "project" && i.project === item.project && i.status === "active")?.id || null) : null
+            };
         });
         new Notice("✅ 移动成功");
     };
@@ -1330,6 +1863,11 @@
             const idx = list.findIndex(i => i.id === draggedProjectId && i.type === "project");
             if (idx < 0) return;
             list[idx].parentId = nextParentId;
+            return {
+                rememberAnchorItemId: draggedProjectId,
+                rememberAnchorSectionId: "gtd-section-projects",
+                rememberAnchorProjectId: draggedProjectId
+            };
         });
         new Notice("✅ 项目层级已更新");
     };
@@ -1860,8 +2398,11 @@
         disposeCommentPreviewComponent();
         dv.container.innerHTML = "";
         if (!gtdList) { dv.paragraph(`⏳ 读取数据中...`); return; }
+        applyPendingRenderRestoreState(window.gtdRenderRestoreState.pendingContext);
 
         const getDisplayName = (item) => item.type === 'project' ? (item.project || "未命名") : (item.content || "未命名");
+        const isItemEffectivelyCollapsed = (item) => Boolean(item?.isCollapsed) && !isRestoreExpandedItem(item?.id);
+        const isProjectEffectivelyCollapsed = (item) => Boolean(item?.isCollapsed) && !isRestoreExpandedProject(item?.id);
         const nameSort = (a, b) => getDisplayName(a.item).localeCompare(getDisplayName(b.item), "zh"); 
         const scheduleSort = (a, b) => {
             const d1 = a.item.scheduled || "9999-99-99";
@@ -2347,6 +2888,10 @@
             if (item?.id) line.dataset.gtdAnchorId = String(item.id);
             const sectionHost = container?.closest?.("[id^='gtd-section-']");
             if (sectionHost?.id) line.dataset.gtdSectionId = sectionHost.id;
+            line.addEventListener("pointerdown", () => {
+                const projectDetails = line.closest("details[data-gtd-anchor-id]");
+                rememberAnchorTarget(item?.id, sectionHost?.id || null, projectDetails?.dataset?.gtdAnchorId || null, { immediate: true });
+            }, { passive: true });
             if (isFocusSession) line.setAttribute("data-focus-badge", "🎯 执行中");
 
             const canDrag = draggable && !isCompleted && !isGhost && (item.type === 'next_action' || item.type === 'inbox');
@@ -2396,9 +2941,10 @@
             }
             
             const hasActiveChildren = checkSubtasks(item.id);
+            const isCollapsed = isItemEffectivelyCollapsed(item);
             if (!isGhost && hasActiveChildren) {
                 const arrowBtn = actionContainer.createEl("span", { 
-                    text: item.isCollapsed ? "▶" : "▼", 
+                    text: isCollapsed ? "▶" : "▼", 
                     attr: { style: "cursor: pointer; font-size: 12px; width: 14px; color: var(--text-muted);" } 
                 });
                 arrowBtn.onclick = (e) => { e.stopPropagation(); toggleCollapse(originalIndex); };
@@ -2621,7 +3167,7 @@
 
                 if (shouldRender) {
                     renderItemLine(container, wrap.item, wrap.index, false, false, level, true, false, getProjectLevelBackground(level));
-                    if (!wrap.item.isCollapsed) {
+                    if (!isItemEffectivelyCollapsed(wrap.item)) {
                         // 传递标签继承状态给子节点
                         renderTaskTree(container, tasks, wrap.item.id, level + 1, tagInherited);
                     }
@@ -2966,10 +3512,14 @@
                 const details = projectDiv.createEl("details", { attr: { id: `proj-${projItem.id}`, style: "margin-bottom:8px;border-bottom:1px dashed var(--background-modifier-border);padding-bottom:8px;" } });
                 details.dataset.gtdAnchorId = String(projItem.id);
                 details.dataset.gtdSectionId = "gtd-section-projects";
-                details.open = !projItem.isCollapsed;
+                details.open = !isProjectEffectivelyCollapsed(projItem);
+                details.addEventListener("pointerdown", () => {
+                    rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
+                }, { passive: true });
                 details.addEventListener("toggle", async () => {
                     const nextCollapsed = !details.open;
                     if (nextCollapsed === !!projItem.isCollapsed) return;
+                    rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
                     await updateGTD((list) => {
                         if (!list[projIndex]) return;
                         list[projIndex].isCollapsed = nextCollapsed;
@@ -2978,6 +3528,9 @@
                 const summary = details.createEl("summary", { attr: { style: "cursor:pointer;margin-bottom:5px;font-weight:600;color:var(--text-normal);" } });
                 summary.dataset.gtdAnchorId = String(projItem.id);
                 summary.dataset.gtdSectionId = "gtd-section-projects";
+                summary.addEventListener("pointerdown", () => {
+                    rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
+                }, { passive: true });
                 if (projItem.isFocusSession) summary.classList.add("gtd-focus-project");
                 
                 summary.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!window.gtdCurrentDragId) return; summary.classList.add("drag-over-project"); });
@@ -3073,7 +3626,20 @@
 
     renderViewFn = () => {
         const hasExistingAnchors = !!dv.container.querySelector("[data-gtd-anchor-id]");
-        const savedViewContext = hasExistingAnchors ? captureViewContext() : getSavedViewContext();
+        const queuedContext = window.gtdRenderRestoreState.nextContextOverride
+            ? normalizeViewContext(window.gtdRenderRestoreState.nextContextOverride)
+            : null;
+        const savedViewContext = queuedContext || (hasExistingAnchors ? captureViewContext() : getSavedViewContext());
+        const hasMeaningfulSavedContext = Boolean(
+            savedViewContext?.anchorItemId ||
+            savedViewContext?.anchorProjectId ||
+            savedViewContext?.anchorSectionId ||
+            Number(savedViewContext?.scroll?.top || 0) > 24
+        );
+        const shouldMaskDuringRestore = !hasExistingAnchors && hasMeaningfulSavedContext;
+        const restoreDelays = queuedContext ? [0, 70, 180] : [0, 120, 360, 900, 1800];
+        window.gtdRenderRestoreState.pendingContext = savedViewContext;
+        window.gtdRenderRestoreState.nextContextOverride = null;
         disposeCommentPreviewComponent();
         if (window.gtdTagManagerMode) {
             renderTagManagerView(dv.container);
@@ -3082,7 +3648,8 @@
         } else {
             renderNormalView();
         }
-        restoreViewContext(savedViewContext);
+        clearPendingRenderRestoreState();
+        restoreViewContext(savedViewContext, { maskDuringRestore: shouldMaskDuringRestore, delays: restoreDelays });
     };
     if(renderViewFn) renderViewFn();
 })();
