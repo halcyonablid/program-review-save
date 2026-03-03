@@ -45,6 +45,7 @@
     #${WIDGET_ID} .mermaid-header { padding: 8px 12px; background: var(--background-secondary); border-bottom: 1px solid var(--background-modifier-border); cursor: move; display: flex; justify-content: space-between; align-items: center; user-select: none; flex-shrink: 0; }
     #${WIDGET_ID} .mermaid-close:hover { color: var(--text-error) !important; }
     #${WIDGET_ID} .mermaid-content { flex: 1; overflow: auto; padding: 12px 14px 18px; }
+    #${WIDGET_ID} .folded-node-hint { cursor: zoom-in; }
   `;
   widget.appendChild(styleTag);
 
@@ -177,7 +178,10 @@ const CONFIG = {
   showFullIds: true,          // 显示完整的节点ID
   enableZoom: true,           // 启用缩放功能
   initialZoom: 2.0,           // 初始缩放级别
-  zoomStep: 0.5               // 缩放步长
+  zoomStep: 0.5,              // 缩放步长
+  enableFoldHoverPreview: true,
+  foldPreviewHoverDelay: 140,
+  foldPreviewCloseDelay: 220
 };
 
 // ===== 工具函数 =====
@@ -185,6 +189,189 @@ const CONFIG = {
 function debugLog(...args) {
   // 功能已移除以提高性能
 }
+function findRenderedNodeElement(nodeObject, container) {
+    if (!nodeObject || !container) return null;
+    const simpleId = nodeObject.simpleId;
+    const longId = nodeObject.id;
+    const svgRoot = container.querySelector('svg');
+    if (!svgRoot) return null;
+
+    let nodeElement = svgRoot.querySelector(`g.node[id*="${simpleId}"]`);
+    if (!nodeElement) {
+        const candidates = svgRoot.querySelectorAll('g.node');
+        for (const candidate of candidates) {
+            if ((candidate.textContent || "").includes(longId)) {
+                nodeElement = candidate;
+                break;
+            }
+        }
+    }
+    return nodeElement;
+}
+
+function findRenderedSubgraphClusters(nodeObject, container) {
+    if (!nodeObject || !container) return [];
+    const svgRoot = container.querySelector('svg');
+    if (!svgRoot) return [];
+
+    const expectedPrefix = getPureId(nodeObject.id);
+    const clusters = svgRoot.querySelectorAll('g.cluster');
+    const matches = [];
+    for (const cluster of clusters) {
+        const labelText = [
+            cluster.getAttribute('id') || "",
+            cluster.textContent || "",
+            ...Array.from(cluster.querySelectorAll('text')).map(el => el.textContent || "")
+        ].join(" ");
+        if (labelText.includes(expectedPrefix)) {
+            matches.push(cluster);
+        }
+    }
+    return matches;
+}
+
+function collectExpandedAreaRects(expandedPrefix, graphNodes, container) {
+    if (!expandedPrefix || !container) return [];
+
+    const matchingNodes = (graphNodes || []).filter(node => {
+        const pureId = getPureId(node.id);
+        return pureId === expandedPrefix || pureId.startsWith(expandedPrefix + ".") || pureId.startsWith(expandedPrefix + "+");
+    });
+
+    const rawTargets = [
+        ...matchingNodes.map(node => findRenderedNodeElement(node, container)),
+        ...matchingNodes.flatMap(node => findRenderedSubgraphClusters(node, container))
+    ].filter(Boolean);
+
+    const uniqueTargets = Array.from(new Set(rawTargets));
+    const rects = uniqueTargets
+        .map(target => target.getBoundingClientRect())
+        .filter(rect => rect.width > 0 && rect.height > 0);
+
+    if (rects.length === 0) return [];
+
+    const paddingX = 36;
+    const paddingY = 28;
+    const unionRect = rects.reduce((acc, rect) => {
+        return {
+            left: Math.min(acc.left, rect.left),
+            top: Math.min(acc.top, rect.top),
+            right: Math.max(acc.right, rect.right),
+            bottom: Math.max(acc.bottom, rect.bottom)
+        };
+    }, {
+        left: rects[0].left,
+        top: rects[0].top,
+        right: rects[0].right,
+        bottom: rects[0].bottom
+    });
+
+    return [{
+        left: unionRect.left - paddingX,
+        top: unionRect.top - paddingY,
+        right: unionRect.right + paddingX,
+        bottom: unionRect.bottom + paddingY
+    }];
+}
+
+// 折叠 subgraph 的交互策略:
+// 1. 默认渲染时隐藏被标记为“图折叠”的后代节点，只保留根节点
+// 2. 悬停根节点时，重新渲染主图并临时移除该前缀的折叠状态，实现“原位展开”
+// 3. 收起判定不依赖单个节点命中，而是使用展开区域内所有节点/cluster 的联合外接矩形
+//    并附加缓冲边距，避免鼠标离开某个节点边缘就立即收起
+function setupFoldedNodeHoverPreview(diagramContainer, graphNodes, foldedPrefixes, activeExpandedPrefix, rerenderGraph) {
+    if (!CONFIG.enableFoldHoverPreview || !diagramContainer || typeof rerenderGraph !== "function") return null;
+
+    const listeners = [];
+    let openTimer = null;
+    let closeTimer = null;
+
+    function clearTimers() {
+        if (openTimer) {
+            clearTimeout(openTimer);
+            openTimer = null;
+        }
+        if (closeTimer) {
+            clearTimeout(closeTimer);
+            closeTimer = null;
+        }
+    }
+
+    function scheduleExpand(prefix) {
+        if (!prefix || prefix === activeExpandedPrefix) return;
+        clearTimers();
+        openTimer = setTimeout(() => {
+            rerenderGraph(prefix);
+        }, CONFIG.foldPreviewHoverDelay);
+    }
+
+    function scheduleCollapse() {
+        if (!activeExpandedPrefix) return;
+        clearTimers();
+        closeTimer = setTimeout(() => {
+            rerenderGraph(null);
+        }, CONFIG.foldPreviewCloseDelay);
+    }
+
+    const foldedRoots = (graphNodes || []).filter(node => foldedPrefixes.includes(getPureId(node.id)));
+    foldedRoots.forEach(nodeObject => {
+        const nodeElement = findRenderedNodeElement(nodeObject, diagramContainer);
+        if (!nodeElement) return;
+        nodeElement.classList.add("folded-node-hint");
+
+        const handleEnter = () => scheduleExpand(getPureId(nodeObject.id));
+        nodeElement.addEventListener("mouseenter", handleEnter);
+        listeners.push(() => nodeElement.removeEventListener("mouseenter", handleEnter));
+    });
+
+    if (activeExpandedPrefix) {
+        const isPointInsideExpandedArea = (clientX, clientY) => {
+            const activeRects = collectExpandedAreaRects(activeExpandedPrefix, graphNodes, diagramContainer);
+            return activeRects.some(rect => {
+                return (
+                    clientX >= rect.left &&
+                    clientX <= rect.right &&
+                    clientY >= rect.top &&
+                    clientY <= rect.bottom
+                );
+            });
+        };
+
+        const handleDiagramMouseMove = (event) => {
+            if (isPointInsideExpandedArea(event.clientX, event.clientY)) {
+                clearTimers();
+            } else {
+                scheduleCollapse();
+            }
+        };
+
+        const handleDiagramMouseLeave = () => {
+            scheduleCollapse();
+        };
+
+        const handleDocumentMouseMove = (event) => {
+            if (!isPointInsideExpandedArea(event.clientX, event.clientY)) {
+                scheduleCollapse();
+            }
+        };
+
+        diagramContainer.addEventListener("mousemove", handleDiagramMouseMove);
+        diagramContainer.addEventListener("mouseleave", handleDiagramMouseLeave);
+        document.addEventListener("mousemove", handleDocumentMouseMove);
+
+        listeners.push(() => {
+            diagramContainer.removeEventListener("mousemove", handleDiagramMouseMove);
+            diagramContainer.removeEventListener("mouseleave", handleDiagramMouseLeave);
+            document.removeEventListener("mousemove", handleDocumentMouseMove);
+        });
+    }
+
+    return () => {
+        clearTimers();
+        listeners.forEach(dispose => dispose());
+    };
+}
+
 /**
  * 精确判断一个节点是否为“头领节点”.
  * 头领节点的ID必须以“+XXX”段结尾.
@@ -1393,6 +1580,7 @@ function generateMermaidCode(graph, clickCallback, foldedPrefixes = []) {
         const node = nodeIndex.get(nodeId);
         if (!node) return nodeId;
         let text = `${node.id}<br>${node.name || ""}`;
+        const pureId = getPureId(node.id);
         if (text.length > 20) {
             text = text.replace(/(.{15,20})([\s,\.，。;；:：!！？?])/g, '$1$2<br>');
             if (!text.includes('<br>') && text.length > 20) {
@@ -1402,6 +1590,9 @@ function generateMermaidCode(graph, clickCallback, foldedPrefixes = []) {
                 }
                 text = chunks.join('<br>');
             }
+        }
+        if (foldedPrefixes.includes(pureId)) {
+            text += `<br><span style="font-size:11px;color:#6b7280;">折叠子图 · 悬停展开</span>`;
         }
         return text;
     }
@@ -1677,6 +1868,7 @@ function createUI(container) {
         <li><b>点击节点</b>: 点击图表中的任何节点，会自动滚动右侧边栏到对应的笔记位置</li>
         <li><b>高亮显示</b>: 找到的笔记行会暂时高亮显示，方便识别</li>
         <li><b>状态提示</b>: 点击后会显示操作结果的提示信息</li>
+        <li><b>折叠子图展开</b>: 给某个节点所在笔记加上 YAML <code>图折叠: true</code> 后，主图默认收起该 subgraph，鼠标悬停根节点时会在原位置展开，移出后自动收起</li>
       </ul>
       <p>本图表使用循环迭代方式绘制状态转移关系，绘制逻辑为：</p>
       <ol>
@@ -2619,8 +2811,13 @@ function setupGlobalKeyboardShortcuts() {
 
 
 // 渲染图表
-async function renderDiagram(container, statusDiv, diagramContainer, codeContainer, zoomControls) {
+async function renderDiagram(container, statusDiv, diagramContainer, codeContainer, zoomControls, interactionOverrides = {}) {
   statusDiv.textContent = "正在加载文件...";
+
+  if (typeof diagramContainer._foldPreviewCleanup === "function") {
+    diagramContainer._foldPreviewCleanup();
+    diagramContainer._foldPreviewCleanup = null;
+  }
 
   if (!CONFIG.targetNode || !String(CONFIG.targetNode).trim()) {
     statusDiv.textContent = "未检测到所属块，无法确定目标节点";
@@ -2690,6 +2887,8 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
     const foldedPrefixes = nodes
         .filter(n => n.isFolded)
         .map(n => getPureId(n.id)); // 假设 getPureId() 在此作用域可用
+    const activeExpandedPrefix = interactionOverrides.temporaryExpandedPrefix || null;
+    const effectiveFoldedPrefixes = foldedPrefixes.filter(prefix => prefix !== activeExpandedPrefix);
 
     // --- Click Handler (已修改为直接打开笔记) ---
     const handleNodeClick = function(nodeId) {
@@ -2719,7 +2918,7 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
     // --- Mermaid Code Generation and Rendering (已修改以传入 foldedPrefixes) ---
     statusDiv.textContent = "正在生成图表...";
     // 将 foldedPrefixes 传递给 generateMermaidCode
-    const mermaidCode = generateMermaidCode(graph, handleNodeClick, foldedPrefixes); 
+    const mermaidCode = generateMermaidCode(graph, handleNodeClick, effectiveFoldedPrefixes); 
     codeContainer.textContent = mermaidCode;
     diagramContainer.style.visibility = "hidden";
     diagramContainer.style.opacity = "0";
@@ -2742,7 +2941,10 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
       await window.mermaid.init(undefined, diagramContainer.querySelector(".mermaid"));
       
       // 渲染后更新状态文本
-      statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记）`;
+      const foldedRootCount = foldedPrefixes.length;
+      const hoverHint = foldedRootCount > 0 ? `，${foldedRootCount} 个折叠根节点可悬停展开` : "";
+      const expandedHint = activeExpandedPrefix ? `，当前已展开 ${activeExpandedPrefix}` : "";
+      statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记${hoverHint}）`;
 
       // **增强版: 恢复视图状态 + 无跳动呈现**
       const finalizeView = () => {
@@ -2784,8 +2986,29 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
               highlightNodeOnce(activeNode, diagramContainer, 5000);
           }
 
+          diagramContainer._foldPreviewCleanup = setupFoldedNodeHoverPreview(
+              diagramContainer,
+              graph.nodes,
+              foldedPrefixes,
+              activeExpandedPrefix,
+              (nextExpandedPrefix) => {
+                  renderDiagram(
+                      container,
+                      statusDiv,
+                      diagramContainer,
+                      codeContainer,
+                      zoomControls,
+                      { temporaryExpandedPrefix: nextExpandedPrefix }
+                  );
+              }
+          );
+
           diagramContainer.style.visibility = "visible";
           diagramContainer.style.opacity = "1";
+
+          if (expandedHint) {
+              statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记${hoverHint}${expandedHint}）`;
+          }
 
           console.log('[状态恢复] 已恢复视图状态:', savedState);
       };
@@ -2802,6 +3025,10 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
     if (CONFIG.debug) {
       diagramContainer.innerHTML += `<pre style="color:red;padding:10px;overflow:auto">${error.stack}</pre>`;
     }
+    if (typeof diagramContainer._foldPreviewCleanup === "function") {
+      diagramContainer._foldPreviewCleanup();
+      diagramContainer._foldPreviewCleanup = null;
+    }
     diagramContainer.style.visibility = "visible";
     diagramContainer.style.opacity = "1";
   }
@@ -2814,6 +3041,12 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
 // 创建UI并渲染初始图表
 const ui = createUI(content);
 renderDiagram(content, ui.statusDiv, ui.diagramContainer, ui.codeContainer, ui.zoomControls);
+cleanupFns.push(() => {
+    if (typeof ui.diagramContainer?._foldPreviewCleanup === "function") {
+        ui.diagramContainer._foldPreviewCleanup();
+        ui.diagramContainer._foldPreviewCleanup = null;
+    }
+});
 const keyboardCleanup = setupGlobalKeyboardShortcuts();
 if (keyboardCleanup) cleanupFns.push(keyboardCleanup);
 
