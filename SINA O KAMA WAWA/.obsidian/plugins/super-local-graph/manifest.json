@@ -1,0 +1,9 @@
+{
+	"id": "super-local-graph",
+	"name": "Super Local Graph",
+	"version": "1.0.2",
+	"minAppVersion": "0.15.0",
+	"description": "Local Graph View Enhance",
+	"author": "zhenyu",
+	"isDesktopOnly": true
+}

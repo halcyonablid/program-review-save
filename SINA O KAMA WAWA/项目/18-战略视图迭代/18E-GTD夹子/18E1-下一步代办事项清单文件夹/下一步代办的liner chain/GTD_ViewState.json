@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "updatedAt": "2026-03-06 23:08:29",
+  "views": {
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md": {
+      "scroll": {
+        "top": 420,
+        "left": 0
+      },
+      "anchorItemId": "1767925188487",
+      "anchorSectionId": "gtd-section-schedule",
+      "anchorProjectId": null,
+      "expandedItemPath": [
+        "1767756500157"
+      ],
+      "expandedProjectPath": [],
+      "anchorOffset": 15.71875
+    }
+  },
+  "debug": {},
+  "trace": {
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md": {
+      "script_boot": {
+        "ts": "2026-03-06 23:08:29.664",
+        "details": {
+          "notePath": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md",
+          "dbPath": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD_Database.json",
+          "viewStatePath": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD_ViewState.json"
+        }
+      },
+      "restore_start": {
+        "ts": "2026-03-06 23:08:29.672",
+        "details": {
+          "scrollTop": 420,
+          "section": "gtd-section-schedule",
+          "anchorItemId": "1767925188487",
+          "anchorProjectId": null,
+          "anchorOffset": 15.71875,
+          "delays": [
+            0,
+            120,
+            360,
+            900,
+            1800
+          ]
+        }
+      },
+      "restore_anchor_miss": {
+        "ts": "2026-03-06 23:08:29.682",
+        "details": {
+          "anchorId": "1767925188487",
+          "sectionId": "gtd-section-schedule",
+          "projectId": ""
+        }
+      },
+      "restore_cancelled": {
+        "ts": "2026-03-06 23:08:29.694",
+        "details": {
+          "reason": "scroll",
+          "host": "div.markdown-preview-view.markdown-rendered.node-insert-event",
+          "scrollTop": 420
+        }
+      },
+      "bind_scroll_host": {
+        "ts": "2026-03-06 22:40:26.691",
+        "details": {
+          "host": "div.markdown-preview-view.markdown-rendered.node-insert-event",
+          "hostRange": 421,
+          "scrollTop": 420,
+          "clientHeight": 904,
+          "scrollHeight": 1325
+        }
+      },
+      "restore_finish": {
+        "ts": "2026-03-06 23:08:29.696",
+        "details": {
+          "finalScrollTop": 420,
+          "targetScrollTop": 420,
+          "restoredByAnchor": false,
+          "host": "div.markdown-preview-view.markdown-rendered.node-insert-event",
+          "hostRange": 421
+        }
+      }
+    }
+  }
+}

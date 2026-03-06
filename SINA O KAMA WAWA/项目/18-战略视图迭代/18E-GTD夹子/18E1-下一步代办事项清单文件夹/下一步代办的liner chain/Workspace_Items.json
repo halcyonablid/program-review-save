@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "2.0",
+  "lastModified": "2026-03-06 22:57:38",
+  "activeTabId": "tab_default",
+  "tabsById": {
+    "tab_default": {
+      "id": "tab_default",
+      "name": "默认工作区",
+      "kind": "project",
+      "boundParadigmIds": [],
+      "boundParadigmId": null,
+      "createdAt": "2026-03-06 22:57:38",
+      "updatedAt": "2026-03-06 22:57:38"
+    }
+  },
+  "tabOrder": [
+    "tab_default"
+  ],
+  "itemsById": {},
+  "childrenByParentByTab": {
+    "tab_default::__root__": []
+  },
+  "paradigmsById": {},
+  "paradigmItemsById": {},
+  "paradigmChildrenByParent": {},
+  "paradigmToTabItemMapByTab": {},
+  "collapsedById": {},
+  "snapshotsById": {},
+  "snapshotOrderByTab": {
+    "tab_default": []
+  },
+  "childrenByParent": {
+    "__root__": []
+  }
+}

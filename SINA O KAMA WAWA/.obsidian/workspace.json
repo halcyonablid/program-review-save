@@ -1,0 +1,555 @@
+{
+  "main": {
+    "id": "80e98408120f7a1b",
+    "type": "split",
+    "children": [
+      {
+        "id": "dd96706e2841f2f6",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "56635da20e5806b7",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "pinned": true,
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/①整个库树状图，新版.md",
+                "mode": "preview",
+                "source": false
+              },
+              "pinned": true,
+              "icon": "lucide-file",
+              "title": "①整个库树状图，新版"
+            }
+          },
+          {
+            "id": "4651217a0600815f",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "pinned": true,
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/③关键词索引管理系统.md",
+                "mode": "preview",
+                "source": false
+              },
+              "pinned": true,
+              "icon": "lucide-file",
+              "title": "③关键词索引管理系统"
+            }
+          },
+          {
+            "id": "9f88599471c9a34e",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "pinned": true,
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md",
+                "mode": "preview",
+                "source": false
+              },
+              "pinned": true,
+              "icon": "lucide-file",
+              "title": "GTD待办事项管理系统"
+            }
+          },
+          {
+            "id": "41045f7bd5e8c470",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                },
+                {
+                  "title": "ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了",
+                  "icon": "lucide-file",
+                  "state": "{\"type\":\"markdown\",\"state\":{\"file\":\"项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了.md\",\"mode\":\"preview\",\"source\":false},\"icon\":\"lucide-file\",\"title\":\"ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了\"}",
+                  "eState": "{\"scroll\":0}"
+                },
+                {
+                  "title": "ATOM@121.001.007.002.225.006.002.002- 分类：这里是回形的发展，我会登记在这里",
+                  "icon": "lucide-file",
+                  "state": "{\"type\":\"markdown\",\"state\":{\"file\":\"项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002.002- 分类：这里是回形的发展，我会登记在这里.md\",\"mode\":\"source\",\"source\":false},\"icon\":\"lucide-file\",\"title\":\"ATOM@121.001.007.002.225.006.002.002- 分类：这里是回形的发展，我会登记在这里\"}",
+                  "eState": "{\"cursor\":{\"from\":{\"line\":14,\"ch\":0},\"to\":{\"line\":14,\"ch\":0}}}"
+                },
+                {
+                  "title": "ATOM@121.001.007.002.225.006.002.001.001+001+001+001+001- 最后一战",
+                  "icon": "lucide-file",
+                  "state": "{\"type\":\"markdown\",\"state\":{\"file\":\"项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002.001.001+001+001+001+001- 最后一战.md\",\"mode\":\"source\",\"source\":false},\"icon\":\"lucide-file\",\"title\":\"ATOM@121.001.007.002.225.006.002.001.001+001+001+001+001- 最后一战\"}",
+                  "eState": "{\"cursor\":{\"from\":{\"line\":10,\"ch\":0},\"to\":{\"line\":10,\"ch\":0}}}"
+                },
+                {
+                  "title": "ATOM@121.001.007.002.225.006.002.001.002- 游艇，背后的boss",
+                  "icon": "lucide-file",
+                  "state": "{\"type\":\"markdown\",\"state\":{\"file\":\"项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002.001.002- 游艇，背后的boss.md\",\"mode\":\"source\",\"source\":false},\"icon\":\"lucide-file\",\"title\":\"ATOM@121.001.007.002.225.006.002.001.002- 游艇，背后的boss\"}",
+                  "eState": "{\"cursor\":{\"from\":{\"line\":14,\"ch\":0},\"to\":{\"line\":14,\"ch\":0}}}"
+                },
+                {
+                  "title": "ATOM@121.001.007.002.225.006.002.002- 分类：这里是回形的发展，我会登记在这里",
+                  "icon": "lucide-file",
+                  "state": "{\"type\":\"markdown\",\"state\":{\"file\":\"项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002.002- 分类：这里是回形的发展，我会登记在这里.md\",\"mode\":\"source\",\"source\":false},\"icon\":\"lucide-file\",\"title\":\"ATOM@121.001.007.002.225.006.002.002- 分类：这里是回形的发展，我会登记在这里\"}",
+                  "eState": "{\"cursor\":{\"from\":{\"line\":14,\"ch\":0},\"to\":{\"line\":14,\"ch\":0}}}"
+                }
+              ]
+            },
+            "pinned": true,
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/④workspace挂载.md",
+                "mode": "preview",
+                "source": false
+              },
+              "pinned": true,
+              "icon": "lucide-file",
+              "title": "④workspace挂载"
+            }
+          },
+          {
+            "id": "8a02e390deaec8bc",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "pinned": true,
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md",
+                "mode": "source",
+                "source": false
+              },
+              "pinned": true,
+              "icon": "lucide-file",
+              "title": "ATOM@121.001.007.002.058- 说明书"
+            }
+          },
+          {
+            "id": "313b2a96e8df4315",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 1,
+              "stack": [
+                {
+                  "title": "ATOM@121.001.007.002.058- 说明书",
+                  "icon": "lucide-file",
+                  "state": "{\"type\":\"markdown\",\"state\":{\"file\":\"项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md\",\"mode\":\"source\",\"source\":false},\"icon\":\"lucide-file\",\"title\":\"ATOM@121.001.007.002.058- 说明书\"}",
+                  "eState": "{\"cursor\":{\"from\":{\"line\":11,\"ch\":0},\"to\":{\"line\":11,\"ch\":0}}}"
+                },
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "ATOM@121.001.007.002.058.001- 分类：首先我们来讲一下各个插件和视图都是啥作用，设计理念是怎么样的.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "ATOM@121.001.007.002.058.001- 分类：首先我们来讲一下各个插件和视图都是啥作用，设计理念是怎么样的"
+            }
+          },
+          {
+            "id": "edd124774f5ac17e",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作"
+            }
+          },
+          {
+            "id": "8a72302d9595ba4e",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了"
+            }
+          }
+        ],
+        "currentTab": 4
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "244b0add4fae54fb",
+    "type": "split",
+    "children": [
+      {
+        "id": "e95dc5dd7a3ce632",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "34516e60e6d8d1a9",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "21791b9cf68de35b",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "dd4b0fb6729624fd",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          },
+          {
+            "id": "f62363a888c8acc3",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "recent-files",
+              "state": {},
+              "icon": "clock",
+              "title": "Recent Files"
+            }
+          },
+          {
+            "id": "a5189aa8e43da0f1",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "file-tree-view",
+              "state": {},
+              "icon": "sheets-in-box",
+              "title": "File Tree"
+            }
+          }
+        ],
+        "currentTab": 4
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "right": {
+    "id": "7ccba66476bdac19",
+    "type": "split",
+    "children": [
+      {
+        "id": "9df5c32a42d4c13e",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4a035a4146a5ba09",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "反向链接"
+            }
+          },
+          {
+            "id": "21bd9e1566f529b1",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "出链"
+            }
+          },
+          {
+            "id": "4037845307170c28",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "cc24affc9619f830",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:创建新数据库": false,
+      "mermaid-tools:Open Mermaid Toolbar": false,
+      "outliner-md:New outliner file": false,
+      "cmdr:在系统资源管理器中显示": false,
+      "cmdr:笔记+1": false,
+      "cmdr:Templater: Insert templater/对索引的排序.md": false,
+      "cmdr:Templater: Insert templater/scroll当前笔记.md": false,
+      "cmdr:Templater: Insert templater/quick log.md": false,
+      "cmdr:Templater: Insert templater/更新本note上级条目.md": false,
+      "cmdr:Templater: Insert templater/添加文件链接到今天的note.md": false,
+      "cmdr:Templater: Insert templater/读取今日引用文件.md": false,
+      "cmdr:日记: 打开/创建今天的日记": false,
+      "cmdr:Templater: Insert templater/更新tab顺序.md": false,
+      "cmdr:转到标签 #7": false,
+      "cmdr:转到标签 #5": false,
+      "cmdr:Templater: Insert templater/螃蟹卡农标记.md": false,
+      "cmdr:Templater: Insert templater/新版编号列表.md": false,
+      "cmdr:Templater: Insert templater/关系图谱绘制.md": false,
+      "cmdr:Templater: Insert templater/召唤树状图.md": false,
+      "cmdr:Templater: Insert templater/召唤关键词索引.md": false,
+      "obsidian-excalidraw-plugin:新建绘图文件": false,
+      "file-tree-alternative:File Tree Alternative Plugin": false,
+      "templater-obsidian:Templater": false,
+      "periodic-notes:Open today": false
+    }
+  },
+  "active": "8a02e390deaec8bc",
+  "lastOpenFiles": [
+    "Pasted image 20260306232223.png",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/④workspace挂载.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/③关键词索引管理系统.md",
+    "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作.md",
+    "Pasted image 20260306231251.png",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md",
+    "ATOM@121.001.007.002.058.001- 分类：首先我们来讲一下各个插件和视图都是啥作用，设计理念是怎么样的.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/①整个库树状图，新版.md",
+    "Pasted image 20260306230028.png",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/Workspace_TaskComments.json",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/Workspace_TaskNoteBindings.json",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/Workspace_Items.json",
+    "ATOM@121.001.007.002.225.006- 分类：剧还有电影.md",
+    "Pasted image 20260306225415.png",
+    "Pasted image 20260306225333.png",
+    "templater/项目加一.md",
+    "templater/青蛙型事情.md",
+    "templater/长期计划分解，成型版.md",
+    "templater/长期计划.md",
+    "templater/长期目标，这个要求的更多.md",
+    "templater/长期目标分解.md",
+    "templater/错误记录加一.md",
+    "templater/针对资料集添加列表序号.md",
+    "templater/针对supermemoconcept进行的序列标号.md",
+    "templater/针对ATOM添加一下列表序号.md",
+    "templater/重启长期计划2024年10月6日03点.md",
+    "templater/这回是file类型的链接转换.md",
+    "templater/这一阶段的评估和描述，阶段的记录.md",
+    "templater/车间项目梳理的笛卡尔积加一.md",
+    "templater/资料当前哈希.md",
+    "templater/资料列表哈希.md",
+    "templater",
+    "scripts/sprintsdates.js",
+    "scripts/create_similar_note.js",
+    "scripts/create_similar_note - 副本.js",
+    "scripts/create_similar_note - 副本 (2).js",
+    "scripts",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD_ViewState.json"
+  ]
+}

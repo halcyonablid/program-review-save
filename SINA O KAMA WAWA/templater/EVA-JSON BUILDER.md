@@ -1,0 +1,576 @@
+<%*
+await (async () => {
+    const { Notice, TFile } = tp.obsidian;
+
+    const CONFIG = {
+        NOTES_JSON: "EVA_Notes.json",
+        LINKS_JSON: "EVA_Links.json",
+        CACHE_JSON: "EVA_Builder_Cache.json",
+        SCHEMA_VERSION: "1.1",
+        CACHE_SCHEMA_VERSION: "1.0",
+        ATOM_PATTERN: /^ATOM@/i,
+        DEBUG: false,
+        MAX_CONCURRENCY: 3,
+        YIELD_EVERY: 30,
+        PROGRESS_EVERY: 25
+    };
+
+    function debugLog(...args) {
+        if (CONFIG.DEBUG) console.log("[EVA Builder]", ...args);
+    }
+
+    function yieldToUI() {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    function safeISOString(value) {
+        if (value === null || value === undefined || value === "") return "";
+        if (typeof value?.toISO === "function") return value.toISO();
+        if (typeof value?.toISOString === "function") return value.toISOString();
+        if (typeof value === "number") return new Date(value).toISOString();
+        const asDate = new Date(value);
+        return Number.isNaN(asDate.getTime()) ? String(value) : asDate.toISOString();
+    }
+
+    function parseAtomId(text) {
+        const match = String(text || "").match(/ATOM@([\d\.A-Z\+]+)/i);
+        return match ? `ATOM@${match[1]}` : null;
+    }
+
+    function extractHierarchyCodeFromAtomId(atomId) {
+        const match = String(atomId || "").match(/^ATOM@([\d\.A-Z\+]+)$/i);
+        return match ? match[1] : null;
+    }
+
+    function isDescendantCode(code, ancestorCode) {
+        if (!code || !ancestorCode || code === ancestorCode) return false;
+        return code.startsWith(`${ancestorCode}.`);
+    }
+
+    function normalizeParentAtom(value) {
+        if (value === null || value === undefined) return null;
+        const base = Array.isArray(value) ? value[0] : value;
+        const asString = String(base || "").trim();
+        if (!asString) return null;
+        const parsed = parseAtomId(asString);
+        return parsed || (asString.startsWith("ATOM@") ? asString : null);
+    }
+
+    function parseTitle(fileName) {
+        const normalized = String(fileName || "").replace(/\.md$/i, "");
+        const match = normalized.match(/ATOM@[\d\.A-Z\+]+[\s\-]+(.+)$/i);
+        return match ? match[1].trim() : normalized;
+    }
+
+    function extractLinks(content, sourceId) {
+        if (!content) return [];
+
+        const body = content
+            .replace(/^---\n[\s\S]*?\n---\n?/, "")
+            .trim();
+
+        const links = [];
+        const wikiLinkTargets = new Set();
+
+        const wikiRegex = /\[\[([^\]]+)\]\]/g;
+        let match;
+        while ((match = wikiRegex.exec(body)) !== null) {
+            let target = match[1].trim();
+            const pipeIdx = target.indexOf("|");
+            if (pipeIdx > -1) target = target.slice(0, pipeIdx).trim();
+            const hashIdx = target.indexOf("#");
+            if (hashIdx > -1) target = target.slice(0, hashIdx).trim();
+
+            const targetId = parseAtomId(target);
+            if (!targetId || targetId === sourceId) continue;
+
+            wikiLinkTargets.add(targetId);
+            const start = Math.max(0, match.index - 50);
+            const end = Math.min(body.length, match.index + match[0].length + 50);
+            const context = body.slice(start, end).replace(/\n/g, " ").trim();
+
+            links.push({
+                source: sourceId,
+                target: targetId,
+                type: "wikilink",
+                context,
+                created: new Date().toISOString(),
+                _ext: {}
+            });
+        }
+
+        const atomRegex = /ATOM@[\d\.A-Z\+]+/gi;
+        while ((match = atomRegex.exec(body)) !== null) {
+            const targetId = match[0];
+            if (targetId === sourceId || wikiLinkTargets.has(targetId)) continue;
+
+            const start = Math.max(0, match.index - 50);
+            const end = Math.min(body.length, match.index + match[0].length + 50);
+            const context = body.slice(start, end).replace(/\n/g, " ").trim();
+
+            links.push({
+                source: sourceId,
+                target: targetId,
+                type: "atom_ref",
+                context,
+                created: new Date().toISOString(),
+                _ext: {}
+            });
+        }
+
+        return links;
+    }
+
+    function computeTreePosition(noteId, parentAtom, childrenByParent, noteIdSet) {
+        const depth = (noteId.match(/\./g) || []).length + 1;
+        const parentId = parentAtom || null;
+        const siblings = [];
+        const children = [];
+
+        if (parentId && noteIdSet.has(parentId)) {
+            const sameParentChildren = childrenByParent[parentId] || [];
+            for (const id of sameParentChildren) {
+                if (id !== noteId) siblings.push(id);
+            }
+            const thisChildren = childrenByParent[noteId] || [];
+            children.push(...thisChildren);
+        }
+
+        return { depth, parent_id: parentId, siblings, children };
+    }
+
+    async function loadBuilderCache(cachePath) {
+        const defaultCache = {
+            schema_version: CONFIG.CACHE_SCHEMA_VERSION,
+            updated: null,
+            files: {}
+        };
+        const existing = app.vault.getAbstractFileByPath(cachePath);
+        if (!(existing instanceof TFile)) return defaultCache;
+        try {
+            const raw = await app.vault.read(existing);
+            const parsed = JSON.parse(raw);
+            if (parsed?.schema_version !== CONFIG.CACHE_SCHEMA_VERSION || typeof parsed?.files !== "object") {
+                return defaultCache;
+            }
+            return parsed;
+        } catch (error) {
+            debugLog("缓存读取失败，已忽略并重建", error);
+            return defaultCache;
+        }
+    }
+
+    async function saveBuilderCache(cachePath, cacheData) {
+        const payload = {
+            schema_version: CONFIG.CACHE_SCHEMA_VERSION,
+            updated: new Date().toISOString(),
+            files: cacheData.files || {}
+        };
+        const existing = app.vault.getAbstractFileByPath(cachePath);
+        const jsonString = JSON.stringify(payload, null, 2);
+        if (existing && existing instanceof TFile) {
+            await app.vault.modify(existing, jsonString);
+            return "updated";
+        }
+        await app.vault.create(cachePath, jsonString);
+        return "created";
+    }
+
+    async function buildSingleNoteData(file, noteId, statMtime, statSize) {
+        const cache = app.metadataCache.getFileCache(file);
+        const frontmatter = cache?.frontmatter || {};
+
+        let content = "";
+        try {
+            content = await app.vault.read(file);
+        } catch (error) {
+            debugLog(`无法读取文件: ${file.path}`, error);
+        }
+
+        const fileLinks = extractLinks(content, noteId);
+        const note = {
+            id: noteId,
+            title: parseTitle(file.name),
+            file_path: file.path,
+            file_name: file.name,
+            created: safeISOString(file.stat?.ctime),
+            modified: safeISOString(file.stat?.mtime),
+            yaml: { ...frontmatter },
+            computed: {
+                index_keywords: [],
+                tree_position: {},
+                word_count: content.trim() ? content.trim().split(/\s+/).length : 0,
+                has_content: content.length > 100
+            },
+            _ext: {}
+        };
+
+        const rawKeywords = frontmatter["关键词管理"] || [];
+        if (Array.isArray(rawKeywords)) {
+            note.computed.index_keywords = rawKeywords.map(k => String(k).replace(/^[KL]/, ""));
+        } else if (typeof rawKeywords === "string") {
+            note.computed.index_keywords = [rawKeywords.replace(/^[KL]/, "")];
+        }
+
+        return {
+            noteId,
+            note,
+            links: fileLinks,
+            cacheEntry: {
+                mtime: statMtime,
+                size: statSize,
+                noteId,
+                note,
+                links: fileLinks
+            }
+        };
+    }
+
+    async function buildNotesJson(progressNotice, builderCache) {
+        const files = app.vault.getMarkdownFiles();
+        const atomFiles = files.filter(file => CONFIG.ATOM_PATTERN.test(file.name));
+
+        progressNotice.setMessage(`找到 ${atomFiles.length} 个ATOM笔记，正在检查缓存...`);
+
+        const notes = {};
+        const allLinks = [];
+        const nextCache = {
+            schema_version: CONFIG.CACHE_SCHEMA_VERSION,
+            files: {}
+        };
+        let cacheHits = 0;
+        let cacheMisses = 0;
+        const missTasks = [];
+
+        for (let i = 0; i < atomFiles.length; i++) {
+            const file = atomFiles[i];
+            if (i % CONFIG.PROGRESS_EVERY === 0) {
+                const percent = atomFiles.length === 0 ? 100 : Math.round((i / atomFiles.length) * 100);
+                progressNotice.setMessage(`检查缓存... ${percent}% (${i}/${atomFiles.length})`);
+            }
+            if (i > 0 && i % CONFIG.YIELD_EVERY === 0) {
+                await yieldToUI();
+            }
+
+            const noteId = parseAtomId(file.name);
+            if (!noteId) continue;
+
+            const statMtime = Number(file.stat?.mtime || 0);
+            const statSize = Number(file.stat?.size || 0);
+            const prevEntry = builderCache?.files?.[file.path];
+            const canUseCache = Boolean(
+                prevEntry &&
+                prevEntry.note &&
+                Array.isArray(prevEntry.links) &&
+                prevEntry.noteId === noteId &&
+                Number(prevEntry.mtime) === statMtime &&
+                Number(prevEntry.size) === statSize
+            );
+
+            if (canUseCache) {
+                cacheHits += 1;
+                notes[noteId] = prevEntry.note;
+                allLinks.push(...prevEntry.links);
+                nextCache.files[file.path] = prevEntry;
+                continue;
+            }
+
+            cacheMisses += 1;
+            missTasks.push({ file, noteId, statMtime, statSize });
+        }
+
+        if (missTasks.length > 0) {
+            progressNotice.setMessage(`并行重算 ${missTasks.length} 个变更文件...`);
+            const results = new Array(missTasks.length);
+            const totalMisses = missTasks.length;
+            const workerCount = Math.max(1, Math.min(CONFIG.MAX_CONCURRENCY, totalMisses));
+            let cursor = 0;
+            let completed = 0;
+
+            async function worker() {
+                while (true) {
+                    const idx = cursor;
+                    cursor += 1;
+                    if (idx >= totalMisses) return;
+
+                    const task = missTasks[idx];
+                    results[idx] = await buildSingleNoteData(task.file, task.noteId, task.statMtime, task.statSize);
+
+                    completed += 1;
+                    if (completed % CONFIG.PROGRESS_EVERY === 0 || completed === totalMisses) {
+                        progressNotice.setMessage(`并行重算... ${completed}/${totalMisses}`);
+                    }
+                    if (completed % CONFIG.YIELD_EVERY === 0) {
+                        await yieldToUI();
+                    }
+                }
+            }
+
+            const workers = [];
+            for (let i = 0; i < workerCount; i++) {
+                workers.push(worker());
+            }
+            await Promise.all(workers);
+
+            for (let i = 0; i < missTasks.length; i++) {
+                const task = missTasks[i];
+                const result = results[i];
+                if (!result) continue;
+                notes[result.noteId] = result.note;
+                allLinks.push(...result.links);
+                nextCache.files[task.file.path] = result.cacheEntry;
+            }
+        }
+
+        progressNotice.setMessage("计算树结构...");
+        const noteEntries = Object.entries(notes);
+        const noteIdSet = new Set(noteEntries.map(([id]) => id));
+        const childrenByParent = {};
+
+        for (const [id, note] of noteEntries) {
+            const parentAtom = normalizeParentAtom(note.yaml.parent_atom || note.yaml["上级条目"]);
+            if (!parentAtom) continue;
+            if (!childrenByParent[parentAtom]) childrenByParent[parentAtom] = [];
+            childrenByParent[parentAtom].push(id);
+        }
+
+        for (const [id, note] of Object.entries(notes)) {
+            const parentAtom = normalizeParentAtom(note.yaml.parent_atom || note.yaml["上级条目"]);
+            if (!note.computed || typeof note.computed !== "object") note.computed = {};
+            note.computed.tree_position = computeTreePosition(id, parentAtom, childrenByParent, noteIdSet);
+        }
+
+        progressNotice.setMessage("构建索引...");
+        const indexes = {
+            by_keyword: {},
+            by_tree_structure: [],
+            by_tree_visible: [],
+            by_mermaid_start: [],
+            by_parent: {},
+            by_antinet_type: {}
+        };
+
+        for (const [id, note] of Object.entries(notes)) {
+            const rawKeywords = note.yaml["关键词管理"] || [];
+            const keywordArray = Array.isArray(rawKeywords) ? rawKeywords : [rawKeywords];
+            keywordArray.forEach(kw => {
+                const kwStr = String(kw || "").trim();
+                if (!kwStr) return;
+                if (!indexes.by_keyword[kwStr]) indexes.by_keyword[kwStr] = [];
+                indexes.by_keyword[kwStr].push(id);
+            });
+
+            if (note.yaml["树的结构"]) {
+                indexes.by_tree_structure.push(id);
+            }
+            if (note.yaml["mermaid图之起始"] === true) {
+                indexes.by_mermaid_start.push(id);
+            }
+
+            const parent = normalizeParentAtom(note.yaml.parent_atom || note.yaml["上级条目"]);
+            if (parent) {
+                if (!indexes.by_parent[parent]) indexes.by_parent[parent] = [];
+                indexes.by_parent[parent].push(id);
+            }
+
+            const antinetType = note.yaml.antinet || "unknown";
+            if (!indexes.by_antinet_type[antinetType]) indexes.by_antinet_type[antinetType] = [];
+            indexes.by_antinet_type[antinetType].push(id);
+        }
+
+        const mermaidStartIdSet = new Set(indexes.by_mermaid_start);
+        const mermaidStartCodes = Array.from(
+            new Set(indexes.by_mermaid_start.map(extractHierarchyCodeFromAtomId).filter(Boolean))
+        );
+        let hiddenByMermaidCount = 0;
+
+        for (const [id, note] of Object.entries(notes)) {
+            if (!note.computed || typeof note.computed !== "object") note.computed = {};
+            const code = extractHierarchyCodeFromAtomId(id);
+            const isMermaidStart = mermaidStartIdSet.has(id);
+            const hiddenByMermaid = !isMermaidStart && mermaidStartCodes.some(startCode => isDescendantCode(code, startCode));
+
+            note.computed.mermaid = {
+                is_start: isMermaidStart,
+                hide_in_tree: hiddenByMermaid
+            };
+
+            if (hiddenByMermaid) hiddenByMermaidCount += 1;
+            if (note.yaml["树的结构"] && !hiddenByMermaid) {
+                indexes.by_tree_visible.push(id);
+            }
+        }
+
+        const nowIso = new Date().toISOString();
+        const notesJson = {
+            schema_version: CONFIG.SCHEMA_VERSION,
+            updated: nowIso,
+            vault_name: app.vault.getName(),
+            schema_extensions: {
+                custom_fields: [
+                    "computed.mermaid.is_start",
+                    "computed.mermaid.hide_in_tree",
+                    "indexes.by_mermaid_start",
+                    "indexes.by_tree_visible"
+                ],
+                added_at: nowIso
+            },
+            notes,
+            indexes,
+            stats: {
+                total_notes: Object.keys(notes).length,
+                atom_notes: Object.keys(notes).length,
+                indexed_keywords_count: Object.keys(indexes.by_keyword).length,
+                tree_structure_count: indexes.by_tree_structure.length,
+                tree_visible_count: indexes.by_tree_visible.length,
+                mermaid_start_count: indexes.by_mermaid_start.length,
+                mermaid_hidden_count: hiddenByMermaidCount,
+                last_full_scan: nowIso,
+                scan_duration_ms: 0
+            }
+        };
+
+        return {
+            notesJson,
+            allLinks,
+            nextCache,
+            cacheStats: {
+                hits: cacheHits,
+                misses: cacheMisses,
+                concurrency: Math.max(1, Math.min(CONFIG.MAX_CONCURRENCY, Math.max(cacheMisses, 1)))
+            }
+        };
+    }
+
+    function buildLinksJson(allLinks, notesJson) {
+        const uniqueLinks = [];
+        const seen = new Set();
+
+        allLinks.forEach(link => {
+            const key = `${link.source}|${link.target}|${link.type}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                uniqueLinks.push(link);
+            }
+        });
+
+        const adjacency = {};
+        const validNotes = new Set(Object.keys(notesJson.notes));
+
+        uniqueLinks.forEach(link => {
+            if (!validNotes.has(link.source)) return;
+
+            if (!adjacency[link.source]) {
+                adjacency[link.source] = {
+                    outgoing: [],
+                    incoming: [],
+                    outgoing_count: 0,
+                    incoming_count: 0
+                };
+            }
+
+            adjacency[link.source].outgoing.push(link.target);
+            adjacency[link.source].outgoing_count += 1;
+
+            if (validNotes.has(link.target)) {
+                if (!adjacency[link.target]) {
+                    adjacency[link.target] = {
+                        outgoing: [],
+                        incoming: [],
+                        outgoing_count: 0,
+                        incoming_count: 0
+                    };
+                }
+
+                adjacency[link.target].incoming.push(link.source);
+                adjacency[link.target].incoming_count += 1;
+            }
+        });
+
+        const orphanNotes = [];
+        for (const id of validNotes) {
+            if (!adjacency[id] || (adjacency[id].outgoing_count === 0 && adjacency[id].incoming_count === 0)) {
+                orphanNotes.push(id);
+            }
+        }
+
+        const hubNotes = Object.entries(adjacency)
+            .map(([id, adj]) => ({ id, degree: adj.outgoing_count + adj.incoming_count }))
+            .sort((a, b) => b.degree - a.degree)
+            .slice(0, 20);
+
+        const byType = {};
+        uniqueLinks.forEach(link => {
+            byType[link.type] = (byType[link.type] || 0) + 1;
+        });
+
+        return {
+            schema_version: CONFIG.SCHEMA_VERSION,
+            updated: new Date().toISOString(),
+            vault_name: app.vault.getName(),
+            link_types: ["wikilink", "mention", "atom_ref", "backlink"],
+            links: uniqueLinks.filter(link => validNotes.has(link.source)),
+            adjacency,
+            stats: {
+                total_links: uniqueLinks.length,
+                orphan_notes: orphanNotes,
+                hub_notes: hubNotes,
+                by_type: byType
+            }
+        };
+    }
+
+    async function saveJson(path, data) {
+        const jsonString = JSON.stringify(data, null, 2);
+        const existing = app.vault.getAbstractFileByPath(path);
+        if (existing && existing instanceof TFile) {
+            await app.vault.modify(existing, jsonString);
+            return "updated";
+        }
+        await app.vault.create(path, jsonString);
+        return "created";
+    }
+
+    const activeFile = app.workspace.getActiveFile();
+    const currentFolder = activeFile?.parent?.path || "";
+    const notesPath = currentFolder ? `${currentFolder}/${CONFIG.NOTES_JSON}` : CONFIG.NOTES_JSON;
+    const linksPath = currentFolder ? `${currentFolder}/${CONFIG.LINKS_JSON}` : CONFIG.LINKS_JSON;
+    const cachePath = currentFolder ? `${currentFolder}/${CONFIG.CACHE_JSON}` : CONFIG.CACHE_JSON;
+
+    const progressNotice = new Notice("EVA JSON Builder 开始执行...", 0);
+    const startedAt = Date.now();
+
+    try {
+        const builderCache = await loadBuilderCache(cachePath);
+        const { notesJson, allLinks, nextCache, cacheStats } = await buildNotesJson(progressNotice, builderCache);
+        progressNotice.setMessage("构建链接数据...");
+        const linksJson = buildLinksJson(allLinks, notesJson);
+
+        const duration = Date.now() - startedAt;
+        notesJson.stats.scan_duration_ms = duration;
+
+        progressNotice.setMessage("写入 JSON 文件...");
+        const notesAction = await saveJson(notesPath, notesJson);
+        const linksAction = await saveJson(linksPath, linksJson);
+        const cacheAction = await saveBuilderCache(cachePath, nextCache);
+
+        progressNotice.hide();
+        new Notice(
+            `✅ EVA JSON 构建完成\n` +
+            `笔记: ${notesJson.stats.total_notes} | 链接: ${linksJson.stats.total_links}\n` +
+            `Notes: ${notesAction === "updated" ? "已更新" : "新建"} | Links: ${linksAction === "updated" ? "已更新" : "新建"}\n` +
+            `缓存命中: ${cacheStats.hits} | 重算: ${cacheStats.misses} | 并发: ${cacheStats.concurrency} | Cache: ${cacheAction === "updated" ? "已更新" : "新建"}\n` +
+            `关键词: ${notesJson.stats.indexed_keywords_count} | 孤立: ${linksJson.stats.orphan_notes.length}\n` +
+            `耗时: ${(duration / 1000).toFixed(2)}s`,
+            9000
+        );
+    } catch (error) {
+        progressNotice.hide();
+        const message = error?.message ? String(error.message) : String(error);
+        new Notice(`❌ EVA JSON 构建失败: ${message}`, 10000);
+        console.error("[EVA Builder]", error);
+    }
+})();
+
+tR = "";
+%>

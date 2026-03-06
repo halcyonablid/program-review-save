@@ -1,0 +1,192 @@
+{
+  "confirmDeletion": true,
+  "showAddCommand": true,
+  "debug": false,
+  "editorMenu": [
+    {
+      "id": "templater-obsidian:templater/万派学宗学习条目加一.md",
+      "icon": "templater-icon",
+      "name": "Templater: Insert templater/万派学宗学习条目加一.md",
+      "mode": "any"
+    }
+  ],
+  "fileMenu": [],
+  "leftRibbon": [
+    {
+      "id": "open-with-default-app:show",
+      "icon": "lucide-files",
+      "name": "在系统资源管理器中显示",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/create_similar_note.md",
+      "icon": "sun",
+      "name": "笔记+1",
+      "mode": "any",
+      "color": "#ff4405"
+    },
+    {
+      "id": "templater-obsidian:templater/对索引的排序.md",
+      "icon": "sort-asc",
+      "name": "Templater: Insert templater/对索引的排序.md",
+      "mode": "any",
+      "color": "#000000"
+    },
+    {
+      "id": "templater-obsidian:templater/scroll当前笔记.md",
+      "icon": "lucide-archive",
+      "name": "Templater: Insert templater/scroll当前笔记.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/quick log.md",
+      "icon": "plus",
+      "name": "Templater: Insert templater/quick log.md",
+      "mode": "any",
+      "color": "#dd4646"
+    },
+    {
+      "id": "templater-obsidian:templater/更新本note上级条目.md",
+      "icon": "lucide-archive-restore",
+      "name": "Templater: Insert templater/更新本note上级条目.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/添加文件链接到今天的note.md",
+      "icon": "links-going-out",
+      "name": "Templater: Insert templater/添加文件链接到今天的note.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/读取今日引用文件.md",
+      "icon": "broken-link",
+      "name": "Templater: Insert templater/读取今日引用文件.md",
+      "mode": "any"
+    },
+    {
+      "id": "daily-notes",
+      "icon": "lucide-calendar-days",
+      "name": "日记: 打开/创建今天的日记",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/更新tab顺序.md",
+      "icon": "sortAsc",
+      "name": "Templater: Insert templater/更新tab顺序.md",
+      "mode": "any",
+      "color": "#ff0000"
+    },
+    {
+      "id": "workspace:goto-tab-7",
+      "icon": "lucide-feather",
+      "name": "转到标签 #7",
+      "mode": "any"
+    },
+    {
+      "id": "workspace:goto-tab-5",
+      "icon": "lucide-move-3d",
+      "name": "转到标签 #5",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/螃蟹卡农标记.md",
+      "icon": "lucide-grape",
+      "name": "Templater: Insert templater/螃蟹卡农标记.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/新版编号列表.md",
+      "icon": "lucide-baggage-claim",
+      "name": "Templater: Insert templater/新版编号列表.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/关系图谱绘制.md",
+      "icon": "lucide-ice-cream-bowl",
+      "name": "Templater: Insert templater/关系图谱绘制.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/召唤树状图.md",
+      "icon": "lucide-trees",
+      "name": "Templater: Insert templater/召唤树状图.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/召唤关键词索引.md",
+      "icon": "lucide-key-round",
+      "name": "Templater: Insert templater/召唤关键词索引.md",
+      "mode": "any"
+    }
+  ],
+  "rightRibbon": [],
+  "titleBar": [],
+  "statusBar": [],
+  "pageHeader": [
+    {
+      "id": "templater-obsidian:templater/打开世界的结构.md",
+      "icon": "lucide-earth",
+      "name": "Templater: Insert templater/打开世界的结构.md",
+      "mode": "any",
+      "color": "#000000"
+    },
+    {
+      "id": "workspace:toggle-pin",
+      "icon": "lucide-pin",
+      "name": "解锁/锁定",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/打开世界的结构.md",
+      "icon": "globe-2",
+      "name": "Templater: Insert templater/打开世界的结构.md",
+      "mode": "any"
+    },
+    {
+      "id": "templater-obsidian:templater/新的格局.md",
+      "icon": "list-ordered",
+      "name": "Templater: Insert templater/新的格局.md",
+      "mode": "any"
+    }
+  ],
+  "macros": [],
+  "explorer": [],
+  "hide": {
+    "statusbar": [],
+    "leftRibbon": [
+      "Breadcrumbs Visualisation",
+      "New outliner file",
+      "打开 Markdown 格式转换器",
+      "创建时间戳笔记",
+      "File Tree Alternative Plugin",
+      "查看关系图谱",
+      "打开/创建今天的日记",
+      "打开命令面板",
+      "BRAT",
+      "Advanced Tables Toolbar",
+      "管理工作区布局",
+      "Templater",
+      "新建白板",
+      "Open graph view",
+      "Create new canvas",
+      "Open today's daily note",
+      "Insert template",
+      "Open format converter",
+      "Open command palette",
+      "Create new unique note",
+      "Manage workspace layouts",
+      "Create new drawing"
+    ]
+  },
+  "spacing": "8",
+  "advancedToolbar": {
+    "rowHeight": 48,
+    "rowCount": 1,
+    "spacing": 0,
+    "buttonWidth": 48,
+    "columnLayout": false,
+    "mappedIcons": [],
+    "tooltips": false,
+    "heightOffset": 0
+  }
+}

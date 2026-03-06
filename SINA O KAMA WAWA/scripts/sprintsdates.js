@@ -1,0 +1,179 @@
+async function scheduleSprints() {
+    // Step 1: Read all long-term goal notes
+    const goals = await readLongTermGoals();
+
+    // Step 2: Process the extracted data
+    const processedGoals = processGoalData(goals);
+
+    // Step 3: Schedule sprints
+    const scheduledGoals = scheduleSprintsForGoals(processedGoals);
+
+    // Step 4: Update YAML frontmatter
+    await updateYAMLFrontmatter(scheduledGoals);
+
+    return "Sprints scheduled successfully!";
+}
+
+async function readLongTermGoals() {
+    const files = app.vault.getMarkdownFiles();
+    const goals = [];
+
+    for (const file of files) {
+        const content = await app.vault.read(file);
+        const frontmatter = app.metadataCache.getFileCache(file)?.frontmatter;
+
+        if (frontmatter && frontmatter.qishiriqidate && frontmatter.duedate) {
+            const goalSteps = extractGoalSteps(content);
+            goals.push({
+                file: file,
+                startDate: new Date(frontmatter.qishiriqidate),
+                dueDate: new Date(frontmatter.duedate),
+                steps: goalSteps,
+                existingSprints: frontmatter.sprints || []
+            });
+        }
+    }
+
+    return goals;
+}
+
+function extractGoalSteps(content) {
+    const lines = content.split('\n');
+    const steps = [];
+    let currentStep = null;
+    let isInGoalSection = false;
+
+    for (const line of lines) {
+        if (line.trim() === '# 接下来的分解步骤，以及抵达的路点') {
+            isInGoalSection = true;
+            continue;
+        }
+
+        if (isInGoalSection) {
+            if (line.startsWith('- goal:')) {
+                if (currentStep) steps.push(currentStep);
+                currentStep = { goal: line.substring(7).trim(), duration: 0, weight: 1 };
+            } else if (line.includes('预计使用时间:') && currentStep) {
+                currentStep.duration = parseInt(line.split(':')[1].trim()) || 0;
+                // Calculate weight based on duration
+                currentStep.weight = Math.log(currentStep.duration + 1) + 1;
+                steps.push(currentStep);
+                currentStep = null;
+            } else if (line.trim().startsWith('#')) {
+                // We've reached the end of the goal section
+                break;
+            }
+        }
+    }
+
+    if (currentStep) steps.push(currentStep);
+    return steps;
+}
+
+function processGoalData(goals) {
+    return goals.map(goal => ({
+        ...goal,
+        totalDuration: goal.steps.reduce((sum, step) => sum + step.duration, 0),
+        totalWeight: goal.steps.reduce((sum, step) => sum + step.weight, 0),
+        availableDays: Math.floor((goal.dueDate - goal.startDate) / (1000 * 60 * 60 * 24))
+    }));
+}
+
+function scheduleSprintsForGoals(goals) {
+    const scheduledGoals = [];
+    const timeline = createTimeline(goals);
+
+    for (const goal of goals) {
+        const sprints = [];
+        for (const step of goal.steps) {
+            const sprintDuration = Math.min(step.duration, 14); // Max sprint duration of 14 days
+            const bestStart = findBestStartDate(goal, step, timeline, sprintDuration);
+
+            sprints.push({
+                start: bestStart.toISOString().split('T')[0],
+                end: new Date(bestStart.getTime() + sprintDuration * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                goal: step.goal,
+                weight: step.weight
+            });
+
+            updateTimeline(timeline, bestStart, sprintDuration, step.weight);
+        }
+
+        scheduledGoals.push({ ...goal, sprints });
+    }
+
+    return scheduledGoals;
+}
+
+function createTimeline(goals) {
+    const startDate = new Date(Math.min(...goals.map(g => g.startDate)));
+    const endDate = new Date(Math.max(...goals.map(g => g.dueDate)));
+    const timeline = [];
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        timeline.push({ date: new Date(d), load: 0 });
+    }
+    return timeline;
+}
+
+function findBestStartDate(goal, step, timeline, duration) {
+    let bestStart = new Date(goal.startDate);
+    let minLoad = Infinity;
+
+    for (let start = new Date(goal.startDate); start <= goal.dueDate; start.setDate(start.getDate() + 1)) {
+        if (start.getTime() + duration * 24 * 60 * 60 * 1000 > goal.dueDate.getTime()) break;
+
+        const load = calculateLoad(timeline, start, duration);
+        if (load < minLoad) {
+            minLoad = load;
+            bestStart = new Date(start);
+        }
+    }
+
+    return bestStart;
+}
+
+function calculateLoad(timeline, start, duration) {
+    let load = 0;
+    for (let i = 0; i < duration; i++) {
+        const date = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
+        const day = timeline.find(d => d.date.getTime() === date.getTime());
+        if (day) {
+            load += day.load;
+        }
+    }
+    return load;
+}
+
+function updateTimeline(timeline, start, duration, weight) {
+    for (let i = 0; i < duration; i++) {
+        const date = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
+        const day = timeline.find(d => d.date.getTime() === date.getTime());
+        if (day) {
+            day.load += weight;
+        }
+    }
+}
+
+async function updateYAMLFrontmatter(scheduledGoals) {
+    for (const goal of scheduledGoals) {
+        const content = await app.vault.read(goal.file);
+        const frontmatter = app.metadataCache.getFileCache(goal.file)?.frontmatter;
+
+        if (frontmatter) {
+            const updatedFrontmatter = { ...frontmatter, sprints: goal.sprints };
+            const updatedContent = updateYAMLContent(content, updatedFrontmatter);
+            await app.vault.modify(goal.file, updatedContent);
+        }
+    }
+}
+
+function updateYAMLContent(content, frontmatter) {
+    const yamlSeparator = '---\n';
+    const [, oldFrontmatter, afterFrontmatter] = content.split(yamlSeparator);
+    const newFrontmatter = Object.entries(frontmatter)
+        .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+        .join('\n');
+    return `${yamlSeparator}${newFrontmatter}\n${yamlSeparator}${afterFrontmatter}`;
+}
+
+module.exports = scheduleSprints;

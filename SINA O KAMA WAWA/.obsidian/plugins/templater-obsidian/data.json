@@ -1,0 +1,74 @@
+{
+  "command_timeout": 5,
+  "templates_folder": "templater",
+  "templates_pairs": [
+    [
+      "",
+      ""
+    ],
+    [
+      "",
+      ""
+    ]
+  ],
+  "trigger_on_file_creation": false,
+  "auto_jump_to_cursor": false,
+  "enable_system_commands": true,
+  "shell_path": "",
+  "user_scripts_folder": "scripts",
+  "enable_folder_templates": true,
+  "folder_templates": [
+    {
+      "folder": "",
+      "template": ""
+    }
+  ],
+  "syntax_highlighting": true,
+  "syntax_highlighting_mobile": false,
+  "enabled_templates_hotkeys": [
+    "templater/create_similar_note.md",
+    "templater/supermemolink.md",
+    "templater/1.md",
+    "templater/找ob当中的文本.md",
+    "templater/element值之提取.md",
+    "templater/scroll_to_hash atom.md",
+    "templater/资料当前哈希.md",
+    "templater/当前ATOM哈希.md",
+    "templater/scroll当前笔记.md",
+    "templater/↓.md",
+    "templater/左右边栏.md",
+    "templater/2024年10月6日04的长期目标程序.md",
+    "templater/长期目标，这个要求的更多.md",
+    "templater/再次迭代.md",
+    "templater/长期计划分解，成型版.md",
+    "templater/可能是分解目标的满意设计了.md",
+    "templater/分解目标 1.md",
+    "templater/更新评价.md",
+    "templater/7878.md",
+    "templater/下一个next.md",
+    "templater/项目加一.md",
+    "templater/open_next_atom.md",
+    "templater/打开世界的结构.md",
+    "templater/open_prev_atom.md",
+    "templater/新的格局.md",
+    "templater/quick log.md",
+    "templater/背后的连线.md",
+    "templater/更新本note上级条目.md",
+    "templater/螃蟹卡农标记.md",
+    "templater/添加文件链接到今天的note.md",
+    "templater/读取今日引用文件.md",
+    "templater/更新tab顺序.md",
+    "templater/开关mononote.md",
+    "templater/打开mononote.md",
+    "templater/新版编号列表.md",
+    "templater/关系图谱绘制.md",
+    "templater/召唤树状图.md",
+    "templater/召唤关键词索引.md",
+    "templater/做mermaid图的悬浮窗.md",
+    "templater/EVA-JSON BUILDER.md"
+  ],
+  "startup_templates": [
+    ""
+  ],
+  "enable_ribbon_icon": true
+}

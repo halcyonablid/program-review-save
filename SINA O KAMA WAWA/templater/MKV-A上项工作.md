@@ -1,0 +1,40 @@
+<%*
+async function openFile() {
+    const filePath = '项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.040- MKV-A上项项目.md';
+    
+    const targetFile = app.vault.getAbstractFileByPath(filePath);
+    
+    if (!targetFile) {
+        new Notice('未找到目标文件');
+        return;
+    }
+
+    try {
+        // 检查文件是否已经在某个标签页打开
+        const existingLeaf = app.workspace.getLeavesOfType('markdown').find(leaf => 
+            leaf.view.file && leaf.view.file.path === targetFile.path
+        );
+
+        if (existingLeaf) {
+            // 如果文件已经打开，跳转到该标签页
+            app.workspace.setActiveLeaf(existingLeaf);
+            new Notice('已跳转到已打开的文件标签页');
+        } else {
+            // 如果文件未打开，创建新标签页并打开
+            const newLeaf = app.workspace.getLeaf('tab');
+            await newLeaf.openFile(targetFile);
+            await newLeaf.setViewState({
+                type: 'markdown',
+                state: { mode: 'source' }
+            });
+            new Notice('已在新标签页成功打开文件');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        new Notice(`操作文件时发生错误：${error.message}`);
+    }
+}
+
+// 执行主函数
+await openFile();
+%>

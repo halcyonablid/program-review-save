@@ -1,0 +1,3196 @@
+```dataviewjs
+(async () => {
+    try {
+        const JSON_FILENAME = "Workspace_Items.json";
+        const TASK_NOTE_BINDINGS_FILENAME = "Workspace_TaskNoteBindings.json";
+        const TASK_NOTE_BINDINGS_SCHEMA_VERSION = "1.0";
+        const TASK_COMMENTS_FILENAME = "Workspace_TaskComments.json";
+        const TASK_COMMENTS_SCHEMA_VERSION = "1.0";
+        const ATTACHMENTS_FOLDER = "attachments";
+        const WORKSPACE_SCHEMA_VERSION = "2.0";
+        const ROOT_KEY = "__root__";
+        const DEFAULT_TAB_ID = "tab_default";
+        const EVA_NOTES_CANDIDATE_PATHS = [
+            "EVA_Notes.json",
+            "data/EVA_Notes.json"
+        ];
+
+        const currentDvFile = (typeof dv.current === "function" ? dv.current()?.file : null) || null;
+        const activeFile = app.workspace?.getActiveFile?.() || null;
+        const currentFilePath = currentDvFile?.path || activeFile?.path || "";
+        const currentFolder = currentDvFile?.folder || activeFile?.parent?.path || "";
+        const resolveLocalPath = (filename) => currentFolder ? `${currentFolder}/${filename}` : filename;
+        const DATA_PATH = resolveLocalPath(JSON_FILENAME);
+        const TASK_NOTE_BINDINGS_PATH = resolveLocalPath(TASK_NOTE_BINDINGS_FILENAME);
+        const TASK_COMMENTS_PATH = resolveLocalPath(TASK_COMMENTS_FILENAME);
+
+        const nowString = () => moment().format("YYYY-MM-DD HH:mm:ss");
+        const generateId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        const clone = (obj) => JSON.parse(JSON.stringify(obj || {}));
+        const parentKey = (parentId) => (parentId === null || parentId === undefined || String(parentId).trim() === "") ? ROOT_KEY : String(parentId).trim();
+        const tabParentKey = (tabId, parentId) => `${String(tabId || "").trim()}::${parentKey(parentId)}`;
+        const paradigmParentKey = (paradigmId, parentId) => `${String(paradigmId || "").trim()}::${parentKey(parentId)}`;
+        const splitScopedKey = (scoped, fallbackId = "") => {
+            const text = String(scoped || "").trim();
+            if (!text) return { ownerId: fallbackId, parent: ROOT_KEY };
+            const idx = text.indexOf("::");
+            if (idx < 0) return { ownerId: fallbackId, parent: text || ROOT_KEY };
+            const ownerId = text.slice(0, idx).trim() || fallbackId;
+            const parent = text.slice(idx + 2).trim() || ROOT_KEY;
+            return { ownerId, parent };
+        };
+        const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+        const isExternalImageRef = (value) => /^(https?:\/\/|data:image\/|file:\/\/|app:\/\/)/i.test(String(value || "").trim());
+        const sanitizeImageInput = (raw) => {
+            let text = String(raw || "").trim();
+            if (!text) return "";
+            const markdownEmbedMatch = text.match(/^!\[[^\]]*]\((.*?)\)$/);
+            if (markdownEmbedMatch && markdownEmbedMatch[1]) text = markdownEmbedMatch[1].trim();
+            if (/^!?\[\[.*\]\]$/.test(text)) text = text.replace(/^!?\[\[/, "").replace(/\]\]$/, "").trim();
+            if (text.startsWith("<") && text.endsWith(">")) text = text.slice(1, -1).trim();
+            if (isExternalImageRef(text)) return text;
+            return text.split("|")[0].split("#")[0].trim().replace(/^\/+/, "");
+        };
+        const normalizeBindingValue = (raw) => {
+            if (typeof raw === "string") {
+                const path = raw.trim();
+                return path ? { path, ctime: null } : null;
+            }
+            if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+                const path = typeof raw.path === "string" ? raw.path.trim() : "";
+                if (!path) return null;
+                const ctime = Number.isFinite(raw.ctime) ? Number(raw.ctime) : null;
+                return { path, ctime };
+            }
+            return null;
+        };
+
+        if (window.workspaceTreeCurrentDragId === undefined) window.workspaceTreeCurrentDragId = null;
+        if (window.workspaceTreePromptBusy === undefined) window.workspaceTreePromptBusy = false;
+        if (window.workspaceShowParadigmPanel === undefined) window.workspaceShowParadigmPanel = false;
+        if (window.workspaceEditingParadigmId === undefined) window.workspaceEditingParadigmId = null;
+        if (window.workspaceShowSnapshotPanel === undefined) window.workspaceShowSnapshotPanel = false;
+        if (window.workspaceSelectedSnapshotId === undefined) window.workspaceSelectedSnapshotId = null;
+        if (window.workspaceParadigmCurrentDragId === undefined) window.workspaceParadigmCurrentDragId = null;
+        if (window.workspaceParadigmDragParadigmId === undefined) window.workspaceParadigmDragParadigmId = null;
+        if (window.workspaceTabCurrentDragId === undefined) window.workspaceTabCurrentDragId = null;
+
+        const defaultWorkspaceData = () => ({
+            schemaVersion: WORKSPACE_SCHEMA_VERSION,
+            lastModified: nowString(),
+            activeTabId: DEFAULT_TAB_ID,
+            tabsById: {
+                [DEFAULT_TAB_ID]: {
+                    id: DEFAULT_TAB_ID,
+                    name: "默认工作区",
+                    kind: "project",
+                    boundParadigmIds: [],
+                    boundParadigmId: null,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                }
+            },
+            tabOrder: [DEFAULT_TAB_ID],
+            itemsById: {},
+            childrenByParentByTab: { [tabParentKey(DEFAULT_TAB_ID, null)]: [] },
+            paradigmsById: {},
+            paradigmItemsById: {},
+            paradigmChildrenByParent: {},
+            paradigmToTabItemMapByTab: {},
+            collapsedById: {},
+            snapshotsById: {},
+            snapshotOrderByTab: {},
+            // 兼容旧结构，不作为主写入源
+            childrenByParent: { [ROOT_KEY]: [] }
+        });
+
+        const ensureUniqueIds = (arr) => {
+            const out = [];
+            const seen = new Set();
+            for (const raw of Array.isArray(arr) ? arr : []) {
+                const id = String(raw || "").trim();
+                if (!id || seen.has(id)) continue;
+                out.push(id);
+                seen.add(id);
+            }
+            return out;
+        };
+
+        const normalizeBoundParadigmIds = (tabLike) => {
+            const fromArray = Array.isArray(tabLike?.boundParadigmIds) ? tabLike.boundParadigmIds : [];
+            const legacy = (tabLike?.boundParadigmId === null || tabLike?.boundParadigmId === undefined || String(tabLike?.boundParadigmId).trim() === "")
+                ? []
+                : [String(tabLike.boundParadigmId).trim()];
+            return ensureUniqueIds([].concat(fromArray, legacy).map((x) => String(x || "").trim()).filter(Boolean));
+        };
+
+        const setTabBoundParadigmIds = (tabObj, idsLike) => {
+            const ids = ensureUniqueIds((Array.isArray(idsLike) ? idsLike : [])
+                .map((x) => String(x || "").trim())
+                .filter(Boolean));
+            tabObj.boundParadigmIds = ids;
+            // 兼容旧读取方：保留首个绑定
+            tabObj.boundParadigmId = ids[0] || null;
+            return ids;
+        };
+
+        const sanitizeWorkspaceData = (raw) => {
+            const base = defaultWorkspaceData();
+            const src = (raw && typeof raw === "object" && !Array.isArray(raw)) ? clone(raw) : {};
+            const incomingTabs = src.tabsById && typeof src.tabsById === "object" ? src.tabsById : {};
+            const incomingTabOrder = Array.isArray(src.tabOrder) ? src.tabOrder : [];
+            const incomingItems = src.itemsById && typeof src.itemsById === "object" ? src.itemsById : {};
+            const incomingChildrenByTab = src.childrenByParentByTab && typeof src.childrenByParentByTab === "object"
+                ? src.childrenByParentByTab
+                : {};
+            const incomingChildrenLegacy = src.childrenByParent && typeof src.childrenByParent === "object"
+                ? src.childrenByParent
+                : {};
+            const incomingCollapsed = src.collapsedById && typeof src.collapsedById === "object" ? src.collapsedById : {};
+
+            const tabsById = {};
+            Object.keys(incomingTabs).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const tab = incomingTabs[rawId] || {};
+                const name = normalizeText(tab.name || tab.title || `Tab-${id.slice(-4)}`);
+                const boundParadigmIds = normalizeBoundParadigmIds(tab);
+                tabsById[id] = {
+                    id,
+                    name: name || `Tab-${id.slice(-4)}`,
+                    kind: ["project", "task", "object"].includes(tab.kind) ? tab.kind : "project",
+                    boundParadigmIds,
+                    boundParadigmId: boundParadigmIds[0] || null,
+                    createdAt: tab.createdAt || nowString(),
+                    updatedAt: tab.updatedAt || nowString()
+                };
+            });
+
+            const itemsById = {};
+            Object.keys(incomingItems).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const item = incomingItems[rawId] || {};
+                const title = normalizeText(item.title || item.content || item.name || "");
+                if (!title) return;
+                let parentId = null;
+                if (item.parentId !== undefined && item.parentId !== null && String(item.parentId).trim() !== "") {
+                    parentId = String(item.parentId).trim();
+                }
+                const legacyTabId = src.activeTabId || DEFAULT_TAB_ID;
+                const tabId = String(item.tabId || legacyTabId || DEFAULT_TAB_ID).trim() || DEFAULT_TAB_ID;
+                const hasItemCollapsed = Object.prototype.hasOwnProperty.call(item, "isCollapsed");
+                const collapsedFromMap = Object.prototype.hasOwnProperty.call(incomingCollapsed, id)
+                    ? !!incomingCollapsed[id]
+                    : false;
+                const sourceType = item.sourceType === "paradigm" ? "paradigm" : "tab";
+                const sourceParadigmId = sourceType === "paradigm" && item.sourceParadigmId
+                    ? String(item.sourceParadigmId).trim()
+                    : null;
+                const sourceParadigmItemId = sourceType === "paradigm" && item.sourceParadigmItemId
+                    ? String(item.sourceParadigmItemId).trim()
+                    : null;
+                itemsById[id] = {
+                    id,
+                    title,
+                    parentId,
+                    tabId,
+                    sourceType: sourceType === "paradigm" && sourceParadigmId && sourceParadigmItemId ? "paradigm" : "tab",
+                    sourceParadigmId: sourceType === "paradigm" ? sourceParadigmId : null,
+                    sourceParadigmItemId: sourceType === "paradigm" ? sourceParadigmItemId : null,
+                    isCollapsed: hasItemCollapsed ? !!item.isCollapsed : collapsedFromMap,
+                    imageRef: sanitizeImageInput(item.imageRef || item.image || ""),
+                    comment: typeof item.comment === "string" ? item.comment : "",
+                    noteBinding: normalizeBindingValue(item.noteBinding),
+                    orphaned: !!item.orphaned,
+                    createdAt: item.createdAt || item.created || nowString(),
+                    updatedAt: item.updatedAt || nowString()
+                };
+                if (!tabsById[tabId]) {
+                    tabsById[tabId] = {
+                        id: tabId,
+                        name: `Tab-${tabId.slice(-4) || "new"}`,
+                        kind: "project",
+                        boundParadigmIds: [],
+                        boundParadigmId: null,
+                        createdAt: nowString(),
+                        updatedAt: nowString()
+                    };
+                }
+            });
+
+            if (Object.keys(tabsById).length === 0) {
+                tabsById[DEFAULT_TAB_ID] = clone(base.tabsById[DEFAULT_TAB_ID]);
+            }
+            let tabOrder = ensureUniqueIds(incomingTabOrder).filter((id) => !!tabsById[id]);
+            if (tabOrder.length === 0) tabOrder = Object.keys(tabsById);
+            Object.keys(tabsById).forEach((id) => {
+                if (!tabOrder.includes(id)) tabOrder.push(id);
+            });
+            const activeTabId = tabsById[src.activeTabId] ? src.activeTabId : tabOrder[0];
+
+            const childrenByParentByTab = {};
+            const assigned = new Set();
+            tabOrder.forEach((tabId) => {
+                childrenByParentByTab[tabParentKey(tabId, null)] = [];
+            });
+
+            const incomingChildrenKeys = Object.keys(incomingChildrenByTab || {});
+            if (incomingChildrenKeys.length > 0) {
+                incomingChildrenKeys.forEach((rawKey) => {
+                    const { ownerId: tabIdRaw, parent } = splitScopedKey(rawKey, activeTabId);
+                    const tabId = String(tabIdRaw || "").trim();
+                    if (!tabId || !tabsById[tabId]) return;
+                    const scopedKey = tabParentKey(tabId, parent === ROOT_KEY ? null : parent);
+                    const list = ensureUniqueIds(incomingChildrenByTab[rawKey]).filter((id) => !!itemsById[id] && itemsById[id].tabId === tabId);
+                    if (!childrenByParentByTab[scopedKey]) childrenByParentByTab[scopedKey] = [];
+                    childrenByParentByTab[scopedKey] = list.slice();
+                    list.forEach((id) => {
+                        assigned.add(id);
+                        itemsById[id].parentId = parent === ROOT_KEY ? null : parent;
+                    });
+                });
+            } else {
+                Object.keys(incomingChildrenLegacy || {}).forEach((legacyParent) => {
+                    const p = legacyParent === ROOT_KEY ? null : legacyParent;
+                    const scopedKey = tabParentKey(activeTabId, p);
+                    const list = ensureUniqueIds(incomingChildrenLegacy[legacyParent])
+                        .filter((id) => !!itemsById[id] && itemsById[id].tabId === activeTabId);
+                    if (!childrenByParentByTab[scopedKey]) childrenByParentByTab[scopedKey] = [];
+                    childrenByParentByTab[scopedKey] = list.slice();
+                    list.forEach((id) => {
+                        assigned.add(id);
+                        itemsById[id].parentId = p;
+                    });
+                });
+            }
+
+            Object.values(itemsById).forEach((item) => {
+                if (!tabsById[item.tabId]) item.tabId = activeTabId;
+                if (item.parentId && (!itemsById[item.parentId] || itemsById[item.parentId].tabId !== item.tabId)) item.parentId = null;
+                const key = tabParentKey(item.tabId, item.parentId);
+                if (!childrenByParentByTab[key]) childrenByParentByTab[key] = [];
+                if (!assigned.has(item.id)) childrenByParentByTab[key].push(item.id);
+            });
+
+            Object.keys(childrenByParentByTab).forEach((key) => {
+                const { ownerId: tabId, parent } = splitScopedKey(key);
+                childrenByParentByTab[key] = ensureUniqueIds(childrenByParentByTab[key])
+                    .filter((id) => {
+                        const item = itemsById[id];
+                        if (!item || item.tabId !== tabId) return false;
+                        if (parent === ROOT_KEY) return item.parentId === null;
+                        return item.parentId === parent;
+                    });
+            });
+            tabOrder.forEach((tabId) => {
+                const rootK = tabParentKey(tabId, null);
+                if (!childrenByParentByTab[rootK]) childrenByParentByTab[rootK] = [];
+            });
+
+            const paradigmsById = {};
+            const incomingParadigms = src.paradigmsById && typeof src.paradigmsById === "object" ? src.paradigmsById : {};
+            Object.keys(incomingParadigms).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const pg = incomingParadigms[rawId] || {};
+                const name = normalizeText(pg.name || pg.title || `范式-${id.slice(-4)}`);
+                paradigmsById[id] = {
+                    id,
+                    name: name || `范式-${id.slice(-4)}`,
+                    createdAt: pg.createdAt || nowString(),
+                    updatedAt: pg.updatedAt || nowString()
+                };
+            });
+
+            const paradigmItemsById = {};
+            const incomingParadigmItems = src.paradigmItemsById && typeof src.paradigmItemsById === "object" ? src.paradigmItemsById : {};
+            Object.keys(incomingParadigmItems).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const item = incomingParadigmItems[rawId] || {};
+                const paradigmId = String(item.paradigmId || "").trim();
+                if (!paradigmId) return;
+                if (!paradigmsById[paradigmId]) {
+                    paradigmsById[paradigmId] = {
+                        id: paradigmId,
+                        name: `范式-${paradigmId.slice(-4)}`,
+                        createdAt: nowString(),
+                        updatedAt: nowString()
+                    };
+                }
+                const title = normalizeText(item.title || item.content || item.name || "");
+                if (!title) return;
+                paradigmItemsById[id] = {
+                    id,
+                    paradigmId,
+                    title,
+                    parentId: (item.parentId === null || item.parentId === undefined || String(item.parentId).trim() === "")
+                        ? null
+                        : String(item.parentId).trim(),
+                    order: Number.isFinite(item.order) ? Number(item.order) : 0,
+                    imageRef: sanitizeImageInput(item.imageRef || item.image || ""),
+                    comment: typeof item.comment === "string" ? item.comment : "",
+                    noteBinding: normalizeBindingValue(item.noteBinding),
+                    createdAt: item.createdAt || nowString(),
+                    updatedAt: item.updatedAt || nowString()
+                };
+            });
+
+            const paradigmChildrenByParent = {};
+            const incomingParadigmChildren = src.paradigmChildrenByParent && typeof src.paradigmChildrenByParent === "object"
+                ? src.paradigmChildrenByParent
+                : {};
+            const assignedParadigmItems = new Set();
+            Object.keys(incomingParadigmChildren).forEach((rawKey) => {
+                const { ownerId: paradigmId, parent } = splitScopedKey(rawKey);
+                if (!paradigmId || !paradigmsById[paradigmId]) return;
+                const scopedKey = paradigmParentKey(paradigmId, parent === ROOT_KEY ? null : parent);
+                const list = ensureUniqueIds(incomingParadigmChildren[rawKey]).filter((id) => {
+                    const it = paradigmItemsById[id];
+                    return !!it && it.paradigmId === paradigmId;
+                });
+                paradigmChildrenByParent[scopedKey] = list.slice();
+                list.forEach((id) => {
+                    assignedParadigmItems.add(id);
+                    paradigmItemsById[id].parentId = parent === ROOT_KEY ? null : parent;
+                });
+            });
+            Object.values(paradigmItemsById).forEach((item) => {
+                if (item.parentId && (!paradigmItemsById[item.parentId] || paradigmItemsById[item.parentId].paradigmId !== item.paradigmId)) item.parentId = null;
+                const key = paradigmParentKey(item.paradigmId, item.parentId);
+                if (!paradigmChildrenByParent[key]) paradigmChildrenByParent[key] = [];
+                if (!assignedParadigmItems.has(item.id)) paradigmChildrenByParent[key].push(item.id);
+            });
+            Object.keys(paradigmChildrenByParent).forEach((key) => {
+                const { ownerId: paradigmId, parent } = splitScopedKey(key);
+                paradigmChildrenByParent[key] = ensureUniqueIds(paradigmChildrenByParent[key]).filter((id) => {
+                    const item = paradigmItemsById[id];
+                    if (!item || item.paradigmId !== paradigmId) return false;
+                    if (parent === ROOT_KEY) return item.parentId === null;
+                    return item.parentId === parent;
+                });
+            });
+
+            const paradigmToTabItemMapByTab = {};
+            const incomingMap = src.paradigmToTabItemMapByTab && typeof src.paradigmToTabItemMapByTab === "object"
+                ? src.paradigmToTabItemMapByTab
+                : {};
+            Object.keys(incomingMap).forEach((rawKey) => {
+                const tabPg = splitScopedKey(rawKey);
+                const tabId = String(tabPg.ownerId || "").trim();
+                const paradigmItemId = String(tabPg.parent || "").trim();
+                const itemId = String(incomingMap[rawKey] || "").trim();
+                if (!tabId || !paradigmItemId || !itemId) return;
+                if (!tabsById[tabId] || !paradigmItemsById[paradigmItemId] || !itemsById[itemId]) return;
+                paradigmToTabItemMapByTab[`${tabId}::${paradigmItemId}`] = itemId;
+            });
+            Object.values(itemsById).forEach((item) => {
+                if (item.sourceType !== "paradigm" || !item.sourceParadigmItemId || !tabsById[item.tabId]) return;
+                const mapKey = `${item.tabId}::${item.sourceParadigmItemId}`;
+                if (!paradigmToTabItemMapByTab[mapKey]) paradigmToTabItemMapByTab[mapKey] = item.id;
+            });
+
+            const snapshotsById = src.snapshotsById && typeof src.snapshotsById === "object" ? src.snapshotsById : {};
+            const snapshotOrderByTab = src.snapshotOrderByTab && typeof src.snapshotOrderByTab === "object" ? src.snapshotOrderByTab : {};
+            tabOrder.forEach((tabId) => {
+                if (!Array.isArray(snapshotOrderByTab[tabId])) snapshotOrderByTab[tabId] = [];
+            });
+
+            const collapsedById = {};
+            Object.keys(itemsById).forEach((id) => {
+                collapsedById[id] = !!itemsById[id].isCollapsed;
+            });
+
+            const legacyChildrenByParent = { [ROOT_KEY]: (childrenByParentByTab[tabParentKey(activeTabId, null)] || []).slice() };
+            Object.keys(childrenByParentByTab).forEach((key) => {
+                const parts = splitScopedKey(key);
+                if (parts.ownerId !== activeTabId || parts.parent === ROOT_KEY) return;
+                legacyChildrenByParent[parts.parent] = (childrenByParentByTab[key] || []).slice();
+            });
+
+            Object.keys(tabsById).forEach((tabId) => {
+                const validBoundIds = normalizeBoundParadigmIds(tabsById[tabId]).filter((pgId) => !!paradigmsById[pgId]);
+                setTabBoundParadigmIds(tabsById[tabId], validBoundIds);
+            });
+
+            return {
+                ...src,
+                schemaVersion: WORKSPACE_SCHEMA_VERSION,
+                lastModified: nowString(),
+                activeTabId,
+                tabsById,
+                tabOrder,
+                itemsById,
+                childrenByParentByTab,
+                paradigmsById,
+                paradigmItemsById,
+                paradigmChildrenByParent,
+                paradigmToTabItemMapByTab,
+                collapsedById,
+                snapshotsById,
+                snapshotOrderByTab,
+                // 兼容旧读取
+                childrenByParent: legacyChildrenByParent
+            };
+        };
+
+        const loadWorkspaceData = async () => {
+            try {
+                if (await app.vault.adapter.exists(DATA_PATH)) {
+                    const content = await app.vault.adapter.read(DATA_PATH);
+                    return sanitizeWorkspaceData(JSON.parse(content));
+                }
+            } catch (e) {
+                console.error("加载 Workspace 数据失败:", e);
+            }
+            return sanitizeWorkspaceData(defaultWorkspaceData());
+        };
+
+        const saveWorkspaceData = async (data) => {
+            const safe = sanitizeWorkspaceData(data);
+            const jsonString = JSON.stringify(safe, null, 2);
+            const file = app.vault.getAbstractFileByPath(DATA_PATH);
+            if (file) {
+                await app.vault.modify(file, jsonString);
+            } else {
+                await app.vault.create(DATA_PATH, jsonString);
+            }
+            return safe;
+        };
+
+        const loadTaskNoteBindings = async () => {
+            try {
+                if (await app.vault.adapter.exists(TASK_NOTE_BINDINGS_PATH)) {
+                    const content = await app.vault.adapter.read(TASK_NOTE_BINDINGS_PATH);
+                    const data = JSON.parse(content);
+                    if (data && typeof data.bindings === "object" && !Array.isArray(data.bindings)) return data.bindings;
+                }
+            } catch (e) {
+                console.error("加载任务笔记绑定失败:", e);
+            }
+            return {};
+        };
+
+        const saveTaskNoteBindings = async (bindings) => {
+            const data = {
+                schemaVersion: TASK_NOTE_BINDINGS_SCHEMA_VERSION,
+                lastModified: nowString(),
+                bindings: bindings || {}
+            };
+            const jsonString = JSON.stringify(data, null, 2);
+            const file = app.vault.getAbstractFileByPath(TASK_NOTE_BINDINGS_PATH);
+            if (file) {
+                await app.vault.modify(file, jsonString);
+            } else {
+                await app.vault.create(TASK_NOTE_BINDINGS_PATH, jsonString);
+            }
+        };
+
+        const loadTaskComments = async () => {
+            try {
+                if (await app.vault.adapter.exists(TASK_COMMENTS_PATH)) {
+                    const content = await app.vault.adapter.read(TASK_COMMENTS_PATH);
+                    const data = JSON.parse(content);
+                    if (data && typeof data.comments === "object" && !Array.isArray(data.comments)) return data.comments;
+                }
+            } catch (e) {
+                console.error("加载任务评论失败:", e);
+            }
+            return {};
+        };
+
+        const saveTaskComments = async (comments) => {
+            const data = {
+                schemaVersion: TASK_COMMENTS_SCHEMA_VERSION,
+                lastModified: nowString(),
+                comments: comments || {}
+            };
+            const jsonString = JSON.stringify(data, null, 2);
+            const file = app.vault.getAbstractFileByPath(TASK_COMMENTS_PATH);
+            if (file) {
+                await app.vault.modify(file, jsonString);
+            } else {
+                await app.vault.create(TASK_COMMENTS_PATH, jsonString);
+            }
+        };
+
+        let WORKSPACE_DATA = await loadWorkspaceData();
+        let TASK_NOTE_BINDINGS = await loadTaskNoteBindings();
+        let TASK_COMMENTS = await loadTaskComments();
+        let renderViewFn = null;
+
+        try {
+            if (!await app.vault.adapter.exists(DATA_PATH)) WORKSPACE_DATA = await saveWorkspaceData(WORKSPACE_DATA);
+            if (!await app.vault.adapter.exists(TASK_NOTE_BINDINGS_PATH)) await saveTaskNoteBindings(TASK_NOTE_BINDINGS);
+            if (!await app.vault.adapter.exists(TASK_COMMENTS_PATH)) await saveTaskComments(TASK_COMMENTS);
+        } catch (e) {
+            console.error("初始化 Workspace 数据文件失败:", e);
+            new Notice(`⚠️ 初始化数据文件失败: ${e.message}`);
+        }
+
+        class QuickPrompt extends obsidian.Modal {
+            constructor(app, title, placeholder, onSubmit, defaultValue = "") {
+                super(app);
+                this.titleStr = title;
+                this.placeholder = placeholder;
+                this.defaultValue = defaultValue;
+                this.onSubmit = onSubmit;
+                this.resolved = false;
+            }
+            resolve(value) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onSubmit(value);
+            }
+            onOpen() {
+                const { contentEl } = this;
+                contentEl.createEl("h3", { text: this.titleStr });
+                const input = contentEl.createEl("input", { type: "text", value: this.defaultValue });
+                input.placeholder = this.placeholder;
+                input.style.width = "100%";
+                input.focus();
+                input.selectionStart = input.value.length;
+                input.selectionEnd = input.value.length;
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:15px;" } });
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(null);
+                    this.close();
+                };
+                const okBtn = actions.createEl("button", { text: "确定", cls: "mod-cta" });
+                const submit = () => {
+                    const val = normalizeText(input.value);
+                    if (!val) return;
+                    this.resolve(val);
+                    this.close();
+                };
+                okBtn.onclick = submit;
+                input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.contentEl.empty();
+            }
+        }
+
+        class ConfirmModal extends obsidian.Modal {
+            constructor(app, title, message, onResolve) {
+                super(app);
+                this.titleStr = title;
+                this.message = message;
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            onOpen() {
+                const { contentEl } = this;
+                contentEl.createEl("h3", { text: this.titleStr });
+                const msg = contentEl.createEl("div");
+                msg.innerHTML = this.message;
+                msg.style.marginBottom = "18px";
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;" } });
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(false);
+                    this.close();
+                };
+                const okBtn = actions.createEl("button", { text: "确认", cls: "mod-cta" });
+                okBtn.onclick = () => {
+                    this.resolve(true);
+                    this.close();
+                };
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(false);
+                this.contentEl.empty();
+            }
+        }
+
+        class VaultNotePickerModal extends obsidian.Modal {
+            constructor(app, noteIndex, currentNotePath, onChoose) {
+                super(app);
+                this.noteIndex = noteIndex || [];
+                this.currentNotePath = currentNotePath || null;
+                this.onChoose = onChoose;
+                this.resolved = false;
+                this.filtered = [];
+                this.activeIndex = 0;
+                this.maxRows = 240;
+                const normalizePath = (p) => String(p || "").trim().replace(/^\/+/, "").replace(/\.md$/i, "").toLowerCase();
+                this.currentNoteItem = this.currentNotePath
+                    ? this.noteIndex.find(i => normalizePath(i.path) === normalizePath(this.currentNotePath)) || null
+                    : null;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onChoose(result);
+            }
+            normalizeQuery(query) {
+                return String(query || "").trim().toLowerCase();
+            }
+            filterIndex(query) {
+                const q = this.normalizeQuery(query);
+                if (!q) return this.noteIndex.slice(0, this.maxRows);
+                const terms = q.split(/\s+/).filter(Boolean);
+                const matched = [];
+                for (const item of this.noteIndex) {
+                    const hay = `${item.search || ""} ${item.basenameLower || ""} ${item.pathLower || ""}`.toLowerCase();
+                    let ok = true;
+                    for (const term of terms) {
+                        if (!hay.includes(term)) { ok = false; break; }
+                    }
+                    if (ok) matched.push(item);
+                    if (matched.length >= this.maxRows * 2) break;
+                }
+                matched.sort((a, b) => {
+                    const aStrong = a.basenameLower.startsWith(terms[0]) || a.pathLower.startsWith(terms[0]);
+                    const bStrong = b.basenameLower.startsWith(terms[0]) || b.pathLower.startsWith(terms[0]);
+                    if (aStrong !== bStrong) return aStrong ? -1 : 1;
+                    return a.basename.localeCompare(b.basename, "zh");
+                });
+                return matched.slice(0, this.maxRows);
+            }
+            renderList(listEl, statEl, query) {
+                listEl.empty();
+                this.filtered = this.filterIndex(query);
+                if (this.activeIndex >= this.filtered.length) this.activeIndex = Math.max(0, this.filtered.length - 1);
+                statEl.textContent = `共 ${this.filtered.length} 条结果`;
+                if (this.filtered.length === 0) {
+                    listEl.createEl("div", { text: "无匹配笔记", attr: { style: "padding:12px;color:var(--text-muted);text-align:center;" } });
+                    return;
+                }
+                this.filtered.forEach((item, idx) => {
+                    const active = idx === this.activeIndex;
+                    const row = listEl.createEl("div", {
+                        attr: {
+                            style: `display:flex;flex-direction:column;gap:2px;padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;border:1px solid ${active ? 'var(--interactive-accent)' : 'var(--background-modifier-border)'};background:${active ? 'var(--background-modifier-hover)' : 'var(--background-secondary)'};`
+                        }
+                    });
+                    row.createEl("div", { text: `📝 ${item.basename}`, attr: { style: "font-weight:600;" } });
+                    row.createEl("small", { text: item.path, attr: { style: "color:var(--text-muted);" } });
+                    row.onclick = () => {
+                        this.resolve(item);
+                        this.close();
+                    };
+                    row.onmouseenter = () => { this.activeIndex = idx; };
+                });
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "1100px";
+                this.modalEl.style.width = "92vw";
+                this.modalEl.style.height = "80vh";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.style.display = "flex";
+                contentEl.style.flexDirection = "column";
+                contentEl.style.height = "100%";
+                contentEl.style.gap = "8px";
+
+                contentEl.createEl("h3", { text: "🔗 绑定已有笔记（EVA 索引优先）" });
+
+                if (this.currentNotePath) {
+                    const cur = contentEl.createEl("div", { attr: { style: "padding:8px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);" } });
+                    cur.createEl("div", { text: `当前绑定: ${this.currentNoteItem?.basename || this.currentNotePath}`, attr: { style: "font-weight:600;" } });
+                    cur.createEl("small", { text: this.currentNotePath, attr: { style: "color:var(--text-muted);" } });
+                    const btns = cur.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:8px;" } });
+                    const openCurBtn = btns.createEl("button", { text: "打开当前绑定" });
+                    openCurBtn.onclick = () => { this.resolve({ kind: "current", path: this.currentNotePath }); this.close(); };
+                    const clearBtn = btns.createEl("button", { text: "清除绑定" });
+                    clearBtn.onclick = () => { this.resolve({ kind: "clear", path: this.currentNotePath }); this.close(); };
+                }
+
+                const input = contentEl.createEl("input", {
+                    type: "text",
+                    attr: {
+                        placeholder: "输入关键词筛选，或直接输入文件名（不带 .md）后手动绑定",
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;"
+                    }
+                });
+                if (this.currentNoteItem) input.value = this.currentNoteItem.basename;
+                const manualHint = contentEl.createEl("div", {
+                    text: "可手动绑定：输入完整文件名（可含路径，不带 .md）后，点“绑定输入内容”或按 Enter（无选中项时）。",
+                    attr: { style: "color:var(--text-muted);font-size:12px;" }
+                });
+                const stat = contentEl.createEl("div", { text: "", attr: { style: "color:var(--text-muted);font-size:12px;" } });
+                const listEl = contentEl.createEl("div", { attr: { style: "flex:1;overflow:auto;border:1px solid var(--background-modifier-border);border-radius:8px;padding:8px;background:var(--background-primary);" } });
+                const render = () => this.renderList(listEl, stat, input.value || "");
+                input.addEventListener("input", () => { this.activeIndex = 0; render(); });
+                const submitManual = () => {
+                    const raw = String(input.value || "").trim();
+                    if (!raw) return;
+                    this.resolve({ kind: "manual", raw });
+                    this.close();
+                };
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        if (this.activeIndex < this.filtered.length - 1) this.activeIndex++;
+                        render();
+                    } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        if (this.activeIndex > 0) this.activeIndex--;
+                        render();
+                    } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        const selected = this.filtered[this.activeIndex];
+                        if (selected) {
+                            this.resolve(selected);
+                            this.close();
+                        } else {
+                            submitManual();
+                        }
+                    }
+                });
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;" } });
+                const manualBtn = actions.createEl("button", { text: "绑定输入内容" });
+                manualBtn.onclick = () => submitManual();
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => { this.resolve(null); this.close(); };
+                render();
+                input.focus();
+                input.selectionStart = input.value.length;
+                input.selectionEnd = input.value.length;
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.modalEl.style.height = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.height = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
+        class TaskCommentModal extends obsidian.Modal {
+            constructor(app, title, defaultValue, onResolve) {
+                super(app);
+                this.titleStr = title;
+                this.defaultValue = defaultValue || "";
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "1100px";
+                this.modalEl.style.width = "92vw";
+                this.modalEl.style.height = "78vh";
+                this.contentEl.style.display = "flex";
+                this.contentEl.style.flexDirection = "column";
+                this.contentEl.style.height = "100%";
+                this.contentEl.style.gap = "10px";
+
+                this.contentEl.createEl("h3", { text: this.titleStr });
+                this.contentEl.createEl("div", { text: "可写长评论，列表中展示前 100 字摘要。", attr: { style: "color:var(--text-muted);font-size:12px;" } });
+                const textarea = this.contentEl.createEl("textarea", {
+                    text: this.defaultValue,
+                    attr: { style: "width:100%;flex:1;min-height:420px;resize:none;padding:12px;line-height:1.6;border-radius:8px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);" }
+                });
+                textarea.placeholder = "记录思路、补充信息、执行细节...";
+                textarea.focus();
+                textarea.selectionStart = textarea.value.length;
+                textarea.selectionEnd = textarea.value.length;
+
+                const counter = this.contentEl.createEl("div", { attr: { style: "text-align:right;color:var(--text-muted);font-size:12px;" } });
+                const updateCounter = () => { counter.textContent = `${textarea.value.length} 字`; };
+                textarea.addEventListener("input", updateCounter);
+                updateCounter();
+
+                const actions = this.contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;" } });
+                const clearBtn = actions.createEl("button", { text: "清空评论" });
+                clearBtn.onclick = () => { this.resolve({ action: "clear" }); this.close(); };
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => { this.resolve(null); this.close(); };
+                const saveBtn = actions.createEl("button", { text: "保存评论", cls: "mod-cta" });
+                saveBtn.onclick = () => { this.resolve({ action: "save", value: textarea.value }); this.close(); };
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.modalEl.style.height = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.height = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
+        class ImageManagerModal extends obsidian.Modal {
+            constructor(app, title, defaultValue, onResolve) {
+                super(app);
+                this.titleStr = title;
+                this.defaultValue = defaultValue || "";
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            getExtByMime(type) {
+                const mime = String(type || "").toLowerCase();
+                if (mime.includes("png")) return "png";
+                if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+                if (mime.includes("webp")) return "webp";
+                if (mime.includes("gif")) return "gif";
+                if (mime.includes("bmp")) return "bmp";
+                if (mime.includes("svg")) return "svg";
+                if (mime.includes("tiff")) return "tiff";
+                if (mime.includes("avif")) return "avif";
+                return "png";
+            }
+            async savePastedImage(file) {
+                const ext = this.getExtByMime(file?.type);
+                const stamp = moment().format("YYYYMMDDHHmmss");
+                const baseName = `Pasted image ${stamp}`;
+                if (!await app.vault.adapter.exists(ATTACHMENTS_FOLDER)) {
+                    await app.vault.createFolder(ATTACHMENTS_FOLDER);
+                }
+                let finalName = `${baseName}.${ext}`;
+                let finalPath = `${ATTACHMENTS_FOLDER}/${finalName}`;
+                let idx = 1;
+                while (await app.vault.adapter.exists(finalPath)) {
+                    finalName = `${baseName}-${idx}.${ext}`;
+                    finalPath = `${ATTACHMENTS_FOLDER}/${finalName}`;
+                    idx += 1;
+                }
+                const buffer = await file.arrayBuffer();
+                await app.vault.createBinary(finalPath, buffer);
+                const embedLink = `![[${finalName}]]`;
+                return { fileName: finalName, filePath: finalPath, embedLink };
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "760px";
+                this.modalEl.style.width = "86vw";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.createEl("h3", { text: this.titleStr });
+                contentEl.createEl("div", {
+                    text: "你可以手动填图片引用，或直接在下方区域 Ctrl/Cmd+V 粘贴剪贴板图片。",
+                    attr: { style: "color:var(--text-muted);font-size:12px;margin-bottom:8px;" }
+                });
+
+                const input = contentEl.createEl("input", {
+                    type: "text",
+                    value: this.defaultValue,
+                    attr: {
+                        placeholder: "支持 ![[附件]] / [[附件]] / 图片URL",
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:8px;"
+                    }
+                });
+                contentEl.createEl("div", {
+                    text: "粘贴区（自动保存到 /attachments 并生成 ![[Pasted image ...]]）",
+                    attr: { style: "color:var(--text-muted);font-size:12px;margin-bottom:8px;" }
+                });
+                const status = contentEl.createEl("div", {
+                    text: "等待粘贴，或直接修改上面的图片引用后点保存。",
+                    attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:8px;" }
+                });
+                const pasteZone = contentEl.createEl("div", {
+                    attr: {
+                        style: "min-height:180px;border:1px dashed var(--background-modifier-border);border-radius:10px;padding:14px;background:var(--background-secondary);outline:none;display:flex;align-items:center;justify-content:center;color:var(--text-muted);"
+                    }
+                });
+                pasteZone.setAttr("contenteditable", "true");
+                pasteZone.textContent = "在这里粘贴图片";
+
+                pasteZone.addEventListener("paste", async (e) => {
+                    e.preventDefault();
+                    const items = Array.from(e.clipboardData?.items || []);
+                    const imageItem = items.find((it) => typeof it?.type === "string" && it.type.startsWith("image/"));
+                    if (!imageItem) {
+                        status.textContent = "未检测到图片，请复制图片后再粘贴。";
+                        return;
+                    }
+                    const file = imageItem.getAsFile();
+                    if (!file) {
+                        status.textContent = "读取剪贴板图片失败，请重试。";
+                        return;
+                    }
+                    status.textContent = "正在保存图片...";
+                    try {
+                        const saved = await this.savePastedImage(file);
+                        input.value = saved.embedLink;
+                        status.textContent = `已生成并填入: ${saved.embedLink}`;
+                    } catch (err) {
+                        console.error("粘贴图片保存失败:", err);
+                        status.textContent = `保存失败: ${err.message}`;
+                    }
+                });
+
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:10px;" } });
+                const clearBtn = actions.createEl("button", { text: "清除图片" });
+                clearBtn.onclick = () => { this.resolve({ action: "clear" }); this.close(); };
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => { this.resolve(null); this.close(); };
+                const saveBtn = actions.createEl("button", { text: "保存", cls: "mod-cta" });
+                const submitSave = () => { this.resolve({ action: "save", value: input.value }); this.close(); };
+                saveBtn.onclick = submitSave;
+                input.addEventListener("keydown", (e) => { if (e.key === "Enter") submitSave(); });
+                input.focus();
+                input.selectionStart = input.value.length;
+                input.selectionEnd = input.value.length;
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.contentEl.empty();
+            }
+        }
+
+        const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
+        const confirm = (title, message) => new Promise((resolve) => new ConfirmModal(app, title, message, resolve).open());
+        const noteSelector = (noteIndex, currentNotePath = null) => new Promise(r => new VaultNotePickerModal(app, noteIndex, currentNotePath, r).open());
+        const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
+        const imageManagerEditor = (title, defaultValue = "") => new Promise(r => new ImageManagerModal(app, title, defaultValue, r).open());
+        const runWithPromptLock = async (workFn) => {
+            if (window.workspaceTreePromptBusy) return null;
+            window.workspaceTreePromptBusy = true;
+            try {
+                return await workFn();
+            } finally {
+                window.workspaceTreePromptBusy = false;
+            }
+        };
+
+        const buildVaultIndexFromFiles = (files) => {
+            return files.map((f) => ({
+                path: f.path,
+                basename: f.basename,
+                basenameLower: f.basename.toLowerCase(),
+                pathLower: f.path.toLowerCase(),
+                search: `${f.basename.toLowerCase()} ${f.path.toLowerCase()}`
+            })).sort((a, b) => a.basename.localeCompare(b.basename, "zh"));
+        };
+
+        const buildVaultIndexFromEvaNotes = (evaNotes) => {
+            const items = [];
+            Object.values(evaNotes || {}).forEach((note) => {
+                const path = typeof note?.file_path === "string" ? note.file_path : null;
+                if (!path) return;
+                const fileName = typeof note?.file_name === "string" ? note.file_name : path.split("/").pop();
+                const basename = (fileName || path).replace(/\.md$/i, "");
+                const title = typeof note?.title === "string" ? note.title : "";
+                const pathLower = path.toLowerCase();
+                const basenameLower = basename.toLowerCase();
+                items.push({
+                    path,
+                    basename,
+                    basenameLower,
+                    pathLower,
+                    search: `${basenameLower} ${pathLower} ${title.toLowerCase()}`.trim()
+                });
+            });
+            return items.sort((a, b) => a.basename.localeCompare(b.basename, "zh"));
+        };
+
+        const loadEvaNoteIndex = async () => {
+            const candidates = [resolveLocalPath("EVA_Notes.json")].concat(EVA_NOTES_CANDIDATE_PATHS);
+            const seen = new Set();
+            for (const path of candidates) {
+                const normalized = String(path || "").trim();
+                if (!normalized || seen.has(normalized)) continue;
+                seen.add(normalized);
+                try {
+                    if (!await app.vault.adapter.exists(normalized)) continue;
+                    const content = await app.vault.adapter.read(normalized);
+                    const parsed = JSON.parse(content);
+                    if (parsed && parsed.notes && typeof parsed.notes === "object") {
+                        const items = buildVaultIndexFromEvaNotes(parsed.notes);
+                        if (items.length > 0) {
+                            const aliasMap = new Map();
+                            for (const item of items) {
+                                const full = String(item.path || "").trim().replace(/^\/+/, "");
+                                const noExt = full.replace(/\.md$/i, "");
+                                const base = noExt.split("/").pop() || noExt;
+                                if (!full) continue;
+                                aliasMap.set(full.toLowerCase(), full);
+                                aliasMap.set(noExt.toLowerCase(), full);
+                                aliasMap.set(base.toLowerCase(), full);
+                            }
+                            window.workspaceEvaNoteAliasCache = {
+                                builtAt: Date.now(),
+                                sourcePath: normalized,
+                                aliasMap
+                            };
+                            return { path: normalized, items };
+                        }
+                    }
+                } catch (e) {
+                    console.error("读取 EVA_Notes.json 失败:", normalized, e);
+                }
+            }
+            return null;
+        };
+
+        const getVaultNoteIndex = async () => {
+            if (!window.workspaceVaultNoteIndexCache) {
+                window.workspaceVaultNoteIndexCache = { items: [], builtAt: 0, source: "none", sourcePath: null };
+            }
+            const cache = window.workspaceVaultNoteIndexCache;
+            const now = Date.now();
+            if (cache.items.length > 0 && (now - cache.builtAt) <= 30000) return cache.items;
+
+            const eva = await loadEvaNoteIndex();
+            if (eva && eva.items.length > 0) {
+                cache.items = eva.items;
+                cache.builtAt = now;
+                cache.source = "eva";
+                cache.sourcePath = eva.path;
+                return cache.items;
+            }
+
+            const markdownFiles = app.vault.getMarkdownFiles();
+            cache.items = buildVaultIndexFromFiles(markdownFiles);
+            cache.builtAt = now;
+            cache.source = "vault";
+            cache.sourcePath = null;
+            return cache.items;
+        };
+
+        const sanitizeNoteInput = (raw) => {
+            const text = String(raw || "").trim();
+            if (!text) return "";
+            return text
+                .replace(/^\[\[/, "")
+                .replace(/\]\]$/, "")
+                .split("|")[0]
+                .split("#")[0]
+                .trim();
+        };
+
+        const resolveExistingNoteFile = (rawPath) => {
+            const clean = sanitizeNoteInput(rawPath);
+            if (!clean) return null;
+            const sourcePath = currentFilePath;
+            const normalizedClean = clean.replace(/^\/+/, "");
+            const noExt = normalizedClean.replace(/\.md$/i, "");
+            const withExt = normalizedClean.endsWith(".md") ? normalizedClean : `${normalizedClean}.md`;
+            const lowerClean = normalizedClean.toLowerCase();
+            const lowerNoExt = noExt.toLowerCase();
+            const lowerWithExt = withExt.toLowerCase();
+
+            if (!window.workspaceResolvedNoteFileCache || (Date.now() - window.workspaceResolvedNoteFileCache.builtAt) > 30000) {
+                window.workspaceResolvedNoteFileCache = { builtAt: Date.now(), map: new Map() };
+            }
+            const resolvedCache = window.workspaceResolvedNoteFileCache.map;
+            const cacheKey = lowerWithExt || lowerClean;
+            if (resolvedCache.has(cacheKey)) return resolvedCache.get(cacheKey);
+
+            const aliasMap = window.workspaceEvaNoteAliasCache?.aliasMap || new Map();
+            const aliasedPath = aliasMap.get(lowerClean)
+                || aliasMap.get(lowerWithExt)
+                || aliasMap.get(lowerNoExt)
+                || aliasMap.get(lowerNoExt.split("/").pop())
+                || normalizedClean;
+            const aliasedNoExt = aliasedPath.replace(/\.md$/i, "");
+
+            const hit = app.vault.getAbstractFileByPath(normalizedClean)
+                || app.vault.getAbstractFileByPath(withExt)
+                || app.vault.getAbstractFileByPath(aliasedPath)
+                || app.metadataCache.getFirstLinkpathDest(normalizedClean, sourcePath)
+                || app.metadataCache.getFirstLinkpathDest(noExt, sourcePath)
+                || app.metadataCache.getFirstLinkpathDest(noExt.split("/").pop() || noExt, sourcePath)
+                || app.metadataCache.getFirstLinkpathDest(aliasedNoExt, sourcePath)
+                || null;
+            resolvedCache.set(cacheKey, hit || null);
+            return hit;
+        };
+
+        const resolveExistingNotePath = (rawPath) => {
+            const file = resolveExistingNoteFile(rawPath);
+            return file ? file.path : null;
+        };
+        const resolveImageSrc = (rawRef) => {
+            const clean = sanitizeImageInput(rawRef);
+            if (!clean) return null;
+            if (isExternalImageRef(clean)) return clean;
+            const noExt = clean.replace(/\.[^./\\]+$/, "");
+            const file = app.vault.getAbstractFileByPath(clean)
+                || app.metadataCache.getFirstLinkpathDest(clean, currentFilePath)
+                || app.metadataCache.getFirstLinkpathDest(noExt, currentFilePath)
+                || null;
+            if (!file || !file.path || /\.md$/i.test(file.path)) return null;
+            return app.vault.getResourcePath(file);
+        };
+
+        const getActiveTabId = () => {
+            const id = String(WORKSPACE_DATA?.activeTabId || "").trim();
+            if (id && WORKSPACE_DATA?.tabsById?.[id]) return id;
+            const first = Array.isArray(WORKSPACE_DATA?.tabOrder) ? WORKSPACE_DATA.tabOrder.find((x) => WORKSPACE_DATA?.tabsById?.[x]) : null;
+            return first || DEFAULT_TAB_ID;
+        };
+        const getActiveTab = () => WORKSPACE_DATA.tabsById?.[getActiveTabId()] || null;
+        const getTabById = (id) => WORKSPACE_DATA.tabsById?.[String(id || "").trim()] || null;
+        const getItemById = (id) => WORKSPACE_DATA.itemsById[String(id || "").trim()] || null;
+        const getChildrenIds = (parentId, tabId = getActiveTabId()) => {
+            const key = tabParentKey(tabId, parentId);
+            return (WORKSPACE_DATA.childrenByParentByTab?.[key] || []).slice();
+        };
+        const hasChildren = (id, tabId = getActiveTabId()) => getChildrenIds(id, tabId).length > 0;
+        const getParadigmById = (id) => WORKSPACE_DATA.paradigmsById?.[String(id || "").trim()] || null;
+        const getParadigmItemById = (id) => WORKSPACE_DATA.paradigmItemsById?.[String(id || "").trim()] || null;
+        const getParadigmChildrenIds = (paradigmId, parentId = null) => {
+            const key = paradigmParentKey(paradigmId, parentId);
+            return (WORKSPACE_DATA.paradigmChildrenByParent?.[key] || []).slice();
+        };
+        const isParadigmMountedItem = (item) => !!item && item.sourceType === "paradigm" && !!item.sourceParadigmId && !!item.sourceParadigmItemId;
+        const normalizeTaskBinding = (raw) => normalizeBindingValue(raw);
+        const getTaskBindingById = (id) => {
+            const key = String(id || "").trim();
+            const fromBindings = normalizeTaskBinding(TASK_NOTE_BINDINGS?.[key]);
+            if (fromBindings) return fromBindings;
+            return normalizeTaskBinding(getItemById(id)?.noteBinding);
+        };
+        const getBoundNotePathById = (id) => {
+            const binding = getTaskBindingById(id);
+            return binding?.path || null;
+        };
+        const getTaskCommentById = (id) => {
+            const key = String(id || "").trim();
+            const text = TASK_COMMENTS?.[key];
+            if (typeof text === "string") return text;
+            const local = getItemById(id)?.comment;
+            return typeof local === "string" ? local : "";
+        };
+        const summarizeComment = (text, maxLen = 100) => {
+            const clean = String(text || "").replace(/\s+/g, " ").trim();
+            if (!clean) return "";
+            return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen)}...`;
+        };
+        const getItemImageRefById = (id) => {
+            const ref = getItemById(id)?.imageRef;
+            return typeof ref === "string" ? ref : "";
+        };
+
+        const updateWorkspaceData = async (operationFn) => {
+            const next = sanitizeWorkspaceData(clone(WORKSPACE_DATA));
+            operationFn(next);
+            const saved = await saveWorkspaceData(next);
+            WORKSPACE_DATA = saved;
+            if (renderViewFn) renderViewFn();
+        };
+
+        const updateTaskNoteBindings = async (operationFn) => {
+            const next = { ...(TASK_NOTE_BINDINGS || {}) };
+            operationFn(next);
+            try {
+                await saveTaskNoteBindings(next);
+                TASK_NOTE_BINDINGS = next;
+                if (renderViewFn) renderViewFn();
+            } catch (e) {
+                console.error("保存任务笔记绑定失败:", e);
+                new Notice(`❌ 保存绑定失败: ${e.message}`);
+            }
+        };
+
+        const updateTaskComments = async (operationFn) => {
+            const next = { ...(TASK_COMMENTS || {}) };
+            operationFn(next);
+            try {
+                await saveTaskComments(next);
+                TASK_COMMENTS = next;
+                if (renderViewFn) renderViewFn();
+            } catch (e) {
+                console.error("保存任务评论失败:", e);
+                new Notice(`❌ 保存评论失败: ${e.message}`);
+            }
+        };
+
+        const removeIdFromChildrenMap = (childrenByParentByTab, id, onlyTabId = null) => {
+            Object.keys(childrenByParentByTab || {}).forEach((scopedKey) => {
+                if (onlyTabId) {
+                    const parsed = splitScopedKey(scopedKey);
+                    if (parsed.ownerId !== onlyTabId) return;
+                }
+                const list = Array.isArray(childrenByParentByTab[scopedKey]) ? childrenByParentByTab[scopedKey] : [];
+                childrenByParentByTab[scopedKey] = list.filter((x) => x !== id);
+            });
+        };
+
+        const collectSubtreeIds = (data, startId, tabId) => {
+            const ids = [];
+            const seen = new Set();
+            const stack = [String(startId || "").trim()];
+            while (stack.length > 0) {
+                const id = stack.pop();
+                if (!id || seen.has(id) || !data.itemsById[id]) continue;
+                if (data.itemsById[id].tabId !== tabId) continue;
+                seen.add(id);
+                ids.push(id);
+                const children = data.childrenByParentByTab?.[tabParentKey(tabId, id)] || [];
+                children.forEach((childId) => stack.push(childId));
+            }
+            return ids;
+        };
+
+        const wouldCreateCycle = (data, draggedId, nextParentId, tabId) => {
+            let cursor = nextParentId;
+            while (cursor) {
+                if (cursor === draggedId) return true;
+                const node = data.itemsById[cursor];
+                if (!node || node.tabId !== tabId) break;
+                const parent = node.parentId || null;
+                cursor = parent;
+            }
+            return false;
+        };
+
+        const ensureTabExists = (data, tabId, name = null) => {
+            if (data.tabsById?.[tabId]) return;
+            if (!data.tabsById || typeof data.tabsById !== "object") data.tabsById = {};
+            if (!Array.isArray(data.tabOrder)) data.tabOrder = [];
+            data.tabsById[tabId] = {
+                id: tabId,
+                name: name || `Tab-${tabId.slice(-4)}`,
+                kind: "project",
+                boundParadigmIds: [],
+                boundParadigmId: null,
+                createdAt: nowString(),
+                updatedAt: nowString()
+            };
+            if (!data.tabOrder.includes(tabId)) data.tabOrder.push(tabId);
+            const rootK = tabParentKey(tabId, null);
+            if (!data.childrenByParentByTab || typeof data.childrenByParentByTab !== "object") data.childrenByParentByTab = {};
+            if (!data.childrenByParentByTab[rootK]) data.childrenByParentByTab[rootK] = [];
+            if (!data.snapshotOrderByTab || typeof data.snapshotOrderByTab !== "object") data.snapshotOrderByTab = {};
+            if (!Array.isArray(data.snapshotOrderByTab[tabId])) data.snapshotOrderByTab[tabId] = [];
+        };
+
+        const convertBoundParadigmItemsToLocal = (data, tabId, paradigmId) => {
+            Object.values(data.itemsById || {}).forEach((item) => {
+                if (!item || item.tabId !== tabId) return;
+                if (item.sourceType === "paradigm" && item.sourceParadigmId === paradigmId) {
+                    item.sourceType = "tab";
+                    item.sourceParadigmId = null;
+                    item.sourceParadigmItemId = null;
+                    // 解绑后保留显式标注，避免与普通条目混淆
+                    item.orphaned = true;
+                    item.updatedAt = nowString();
+                }
+            });
+            Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
+                const parsed = splitScopedKey(scoped);
+                if (parsed.ownerId !== tabId) return;
+                const pgItem = data.paradigmItemsById?.[parsed.parent];
+                if (pgItem && pgItem.paradigmId !== paradigmId) return;
+                delete data.paradigmToTabItemMapByTab[scoped];
+            });
+        };
+
+        const syncParadigmToTabInData = (data, tabId, paradigmId) => {
+            if (!data.tabsById?.[tabId] || !data.paradigmsById?.[paradigmId]) return;
+            if (!data.paradigmToTabItemMapByTab || typeof data.paradigmToTabItemMapByTab !== "object") data.paradigmToTabItemMapByTab = {};
+            if (!data.childrenByParentByTab || typeof data.childrenByParentByTab !== "object") data.childrenByParentByTab = {};
+            const map = data.paradigmToTabItemMapByTab;
+            const now = nowString();
+
+            const paradigmItems = Object.values(data.paradigmItemsById || {}).filter((it) => it.paradigmId === paradigmId);
+            const paradigmItemIdSet = new Set(paradigmItems.map((it) => it.id));
+
+            Object.values(data.itemsById || {}).forEach((item) => {
+                if (!item || item.tabId !== tabId) return;
+                if (item.sourceType !== "paradigm" || item.sourceParadigmId !== paradigmId) return;
+                if (!item.sourceParadigmItemId || !paradigmItemIdSet.has(item.sourceParadigmItemId)) {
+                    item.sourceType = "tab";
+                    item.sourceParadigmId = null;
+                    item.sourceParadigmItemId = null;
+                    item.orphaned = true;
+                    item.updatedAt = now;
+                }
+            });
+
+            Object.keys(map).forEach((scoped) => {
+                const parsed = splitScopedKey(scoped);
+                if (parsed.ownerId !== tabId) return;
+                const pgItem = data.paradigmItemsById?.[parsed.parent];
+                if (!pgItem || pgItem.paradigmId !== paradigmId) delete map[scoped];
+            });
+
+            paradigmItems.forEach((pgItem) => {
+                const scoped = `${tabId}::${pgItem.id}`;
+                let itemId = map[scoped];
+                let mounted = itemId ? data.itemsById[itemId] : null;
+                if (!mounted || mounted.tabId !== tabId) {
+                    itemId = generateId();
+                    while (data.itemsById[itemId]) itemId = generateId();
+                    mounted = {
+                        id: itemId,
+                        title: pgItem.title,
+                        parentId: null,
+                        tabId,
+                        sourceType: "paradigm",
+                        sourceParadigmId: paradigmId,
+                        sourceParadigmItemId: pgItem.id,
+                        isCollapsed: false,
+                        imageRef: sanitizeImageInput(pgItem.imageRef || ""),
+                        comment: typeof pgItem.comment === "string" ? pgItem.comment : "",
+                        noteBinding: normalizeBindingValue(pgItem.noteBinding),
+                        orphaned: false,
+                        createdAt: now,
+                        updatedAt: now
+                    };
+                    data.itemsById[itemId] = mounted;
+                    map[scoped] = itemId;
+                }
+                mounted.title = pgItem.title;
+                mounted.tabId = tabId;
+                mounted.sourceType = "paradigm";
+                mounted.sourceParadigmId = paradigmId;
+                mounted.sourceParadigmItemId = pgItem.id;
+                mounted.imageRef = sanitizeImageInput(pgItem.imageRef || "");
+                mounted.comment = typeof pgItem.comment === "string" ? pgItem.comment : "";
+                mounted.noteBinding = normalizeBindingValue(pgItem.noteBinding);
+                mounted.orphaned = false;
+                mounted.updatedAt = now;
+            });
+
+            const validInstanceIds = new Set();
+            paradigmItems.forEach((pgItem) => {
+                const itemId = map[`${tabId}::${pgItem.id}`];
+                if (itemId && data.itemsById[itemId]) validInstanceIds.add(itemId);
+            });
+
+            validInstanceIds.forEach((id) => removeIdFromChildrenMap(data.childrenByParentByTab, id, tabId));
+
+            const desiredByParent = new Map();
+            const walk = (parentPgId = null) => {
+                const pgChildren = (data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, parentPgId)] || []).slice();
+                const parentTabItemId = parentPgId ? map[`${tabId}::${parentPgId}`] || null : null;
+                const desired = [];
+                pgChildren.forEach((pgChildId) => {
+                    const tabItemId = map[`${tabId}::${pgChildId}`];
+                    if (!tabItemId || !data.itemsById[tabItemId]) return;
+                    data.itemsById[tabItemId].parentId = parentTabItemId;
+                    desired.push(tabItemId);
+                    walk(pgChildId);
+                });
+                desiredByParent.set(parentTabItemId || null, desired);
+            };
+            walk(null);
+
+            desiredByParent.forEach((desiredIds, parentTabItemId) => {
+                const scoped = tabParentKey(tabId, parentTabItemId);
+                const existing = Array.isArray(data.childrenByParentByTab[scoped]) ? data.childrenByParentByTab[scoped] : [];
+                const withoutParadigm = existing.filter((id) => !validInstanceIds.has(id));
+                data.childrenByParentByTab[scoped] = ensureUniqueIds([].concat(desiredIds, withoutParadigm));
+            });
+
+            const rootKey = tabParentKey(tabId, null);
+            if (!data.childrenByParentByTab[rootKey]) data.childrenByParentByTab[rootKey] = [];
+            if (!Array.isArray(data.snapshotOrderByTab?.[tabId])) {
+                if (!data.snapshotOrderByTab || typeof data.snapshotOrderByTab !== "object") data.snapshotOrderByTab = {};
+                data.snapshotOrderByTab[tabId] = [];
+            }
+        };
+
+        const syncParadigmAcrossTabsInData = (data, paradigmId) => {
+            Object.values(data.tabsById || {}).forEach((tab) => {
+                if (normalizeBoundParadigmIds(tab).includes(paradigmId)) {
+                    syncParadigmToTabInData(data, tab.id, paradigmId);
+                }
+            });
+        };
+
+        const createTab = async () => {
+            const name = await runWithPromptLock(() => prompt("新建 Tab", "输入 Tab 名称（项目/任务/对象）"));
+            if (!name) return;
+            const tabId = `tab_${generateId()}`;
+            await updateWorkspaceData((data) => {
+                ensureTabExists(data, tabId, name);
+                data.tabsById[tabId].name = name;
+                data.activeTabId = tabId;
+            });
+        };
+
+        const renameCurrentTab = async () => {
+            const tab = getActiveTab();
+            if (!tab) return;
+            const name = await runWithPromptLock(() => prompt("重命名 Tab", "输入 Tab 新名称", tab.name || ""));
+            if (!name) return;
+            await updateWorkspaceData((data) => {
+                const target = data.tabsById?.[tab.id];
+                if (!target) return;
+                target.name = name;
+                target.updatedAt = nowString();
+            });
+            new Notice("✅ Tab 已重命名");
+        };
+
+        const switchTab = async (tabId) => {
+            const id = String(tabId || "").trim();
+            if (!id || !getTabById(id)) return;
+            await updateWorkspaceData((data) => {
+                if (!data.tabsById?.[id]) return;
+                data.activeTabId = id;
+            });
+        };
+
+        const moveTabOrder = async (draggedIdRaw, targetIdRaw, position = "after") => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            if (!getTabById(draggedId) || !getTabById(targetId)) return;
+            await updateWorkspaceData((data) => {
+                const order = Array.isArray(data.tabOrder) ? data.tabOrder.slice() : [];
+                const cleanOrder = order.filter((id) => !!data.tabsById?.[id]);
+                const from = cleanOrder.indexOf(draggedId);
+                const to = cleanOrder.indexOf(targetId);
+                if (from < 0 || to < 0) return;
+                cleanOrder.splice(from, 1);
+                const targetIndex = cleanOrder.indexOf(targetId);
+                const insertAt = position === "before" ? targetIndex : targetIndex + 1;
+                cleanOrder.splice(Math.max(0, insertAt), 0, draggedId);
+                data.tabOrder = cleanOrder;
+            });
+        };
+
+        const closeCurrentTab = async () => {
+            const tab = getActiveTab();
+            if (!tab) return;
+            const tabs = WORKSPACE_DATA.tabOrder || [];
+            if (tabs.length <= 1) {
+                new Notice("⚠️ 至少保留一个 Tab");
+                return;
+            }
+            const ok = await confirm("关闭 Tab", `确定关闭 <b>${tab.name}</b> 吗？该 Tab 条目与其快照会被移除。`);
+            if (!ok) return;
+            const idsToDelete = Object.values(WORKSPACE_DATA.itemsById || {})
+                .filter((item) => item.tabId === tab.id)
+                .map((item) => item.id);
+            await updateWorkspaceData((data) => {
+                const tabId = tab.id;
+                idsToDelete.forEach((id) => {
+                    removeIdFromChildrenMap(data.childrenByParentByTab, id, tabId);
+                    delete data.itemsById[id];
+                });
+                Object.keys(data.childrenByParentByTab || {}).forEach((scoped) => {
+                    const parsed = splitScopedKey(scoped);
+                    if (parsed.ownerId === tabId) delete data.childrenByParentByTab[scoped];
+                });
+                Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
+                    const parsed = splitScopedKey(scoped);
+                    if (parsed.ownerId === tabId) delete data.paradigmToTabItemMapByTab[scoped];
+                });
+                delete data.tabsById[tabId];
+                data.tabOrder = (data.tabOrder || []).filter((id) => id !== tabId);
+                const removedSnapIds = (data.snapshotOrderByTab?.[tabId] || []).slice();
+                removedSnapIds.forEach((sid) => { delete data.snapshotsById?.[sid]; });
+                if (data.snapshotOrderByTab && typeof data.snapshotOrderByTab === "object") delete data.snapshotOrderByTab[tabId];
+                if (data.activeTabId === tabId) data.activeTabId = data.tabOrder[0] || DEFAULT_TAB_ID;
+            });
+            await updateTaskNoteBindings((bindings) => {
+                idsToDelete.forEach((id) => delete bindings[id]);
+            });
+            await updateTaskComments((comments) => {
+                idsToDelete.forEach((id) => delete comments[id]);
+            });
+            new Notice("🗑️ Tab 已关闭");
+        };
+
+        const createParadigm = async () => {
+            const name = await runWithPromptLock(() => prompt("新建范式", "输入范式名称"));
+            if (!name) return;
+            const paradigmId = `pg_${generateId()}`;
+            await updateWorkspaceData((data) => {
+                if (!data.paradigmsById || typeof data.paradigmsById !== "object") data.paradigmsById = {};
+                data.paradigmsById[paradigmId] = {
+                    id: paradigmId,
+                    name,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                if (!data.paradigmChildrenByParent || typeof data.paradigmChildrenByParent !== "object") data.paradigmChildrenByParent = {};
+                if (!data.paradigmChildrenByParent[paradigmParentKey(paradigmId, null)]) data.paradigmChildrenByParent[paradigmParentKey(paradigmId, null)] = [];
+            });
+            new Notice("✅ 范式已创建");
+        };
+
+        const renameParadigm = async (paradigmId) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            const name = await runWithPromptLock(() => prompt("重命名范式", "输入新名称", paradigm.name || ""));
+            if (!name) return;
+            await updateWorkspaceData((data) => {
+                const pg = data.paradigmsById?.[paradigmId];
+                if (!pg) return;
+                pg.name = name;
+                pg.updatedAt = nowString();
+            });
+        };
+
+        const deleteParadigm = async (paradigmId) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            const ok = await confirm("删除范式", `确定删除范式 <b>${paradigm.name}</b> 吗？已挂载实例会转为普通条目。`);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                Object.values(data.tabsById || {}).forEach((tab) => {
+                    const boundIds = normalizeBoundParadigmIds(tab);
+                    if (!boundIds.includes(paradigmId)) return;
+                    convertBoundParadigmItemsToLocal(data, tab.id, paradigmId);
+                    setTabBoundParadigmIds(tab, boundIds.filter((id) => id !== paradigmId));
+                    tab.updatedAt = nowString();
+                });
+                Object.keys(data.paradigmItemsById || {}).forEach((id) => {
+                    if (data.paradigmItemsById[id]?.paradigmId === paradigmId) delete data.paradigmItemsById[id];
+                });
+                Object.keys(data.paradigmChildrenByParent || {}).forEach((scoped) => {
+                    const parsed = splitScopedKey(scoped);
+                    if (parsed.ownerId === paradigmId) delete data.paradigmChildrenByParent[scoped];
+                });
+                delete data.paradigmsById[paradigmId];
+            });
+        };
+
+        const bindParadigmToCurrentTab = async (paradigmId) => {
+            const tab = getActiveTab();
+            const paradigm = getParadigmById(paradigmId);
+            if (!tab || !paradigm) return;
+            const beforeIds = normalizeBoundParadigmIds(tab);
+            const alreadyBound = beforeIds.includes(paradigmId);
+            await updateWorkspaceData((data) => {
+                const t = data.tabsById?.[tab.id];
+                if (!t) return;
+                const nextIds = normalizeBoundParadigmIds(t);
+                if (!nextIds.includes(paradigmId)) nextIds.push(paradigmId);
+                setTabBoundParadigmIds(t, nextIds);
+                t.updatedAt = nowString();
+                syncParadigmToTabInData(data, tab.id, paradigmId);
+            });
+            new Notice(alreadyBound ? `ℹ️ 已绑定范式：${paradigm.name}` : `📐 已绑定范式：${paradigm.name}`);
+        };
+
+        const unbindParadigmFromCurrentTab = async (paradigmId = null) => {
+            const tab = getActiveTab();
+            if (!tab) return;
+            const currentIds = normalizeBoundParadigmIds(tab);
+            if (currentIds.length === 0) return;
+            const targetId = paradigmId ? String(paradigmId).trim() : null;
+            const idsToRemove = targetId ? currentIds.filter((id) => id === targetId) : currentIds.slice();
+            if (idsToRemove.length === 0) return;
+            await updateWorkspaceData((data) => {
+                const t = data.tabsById?.[tab.id];
+                if (!t) return;
+                const boundIds = normalizeBoundParadigmIds(t);
+                idsToRemove.forEach((id) => {
+                    if (!boundIds.includes(id)) return;
+                    convertBoundParadigmItemsToLocal(data, tab.id, id);
+                });
+                setTabBoundParadigmIds(t, boundIds.filter((id) => !idsToRemove.includes(id)));
+                t.updatedAt = nowString();
+            });
+            new Notice(targetId
+                ? "🔓 已解绑该范式，相关实例已转为普通条目"
+                : "🔓 已解绑当前 Tab 全部范式，相关实例已转为普通条目");
+        };
+
+        const addParadigmItem = async (paradigmId, parentParadigmItemId = null) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            const title = await runWithPromptLock(() => prompt(parentParadigmItemId ? "添加范式子条目" : "添加范式根条目", "输入条目名称"));
+            if (!title) return;
+            const itemId = `pgItem_${generateId()}`;
+            await updateWorkspaceData((data) => {
+                const pg = data.paradigmsById?.[paradigmId];
+                if (!pg) return;
+                if (!data.paradigmItemsById || typeof data.paradigmItemsById !== "object") data.paradigmItemsById = {};
+                if (!data.paradigmChildrenByParent || typeof data.paradigmChildrenByParent !== "object") data.paradigmChildrenByParent = {};
+                data.paradigmItemsById[itemId] = {
+                    id: itemId,
+                    paradigmId,
+                    title,
+                    parentId: parentParadigmItemId,
+                    order: Date.now(),
+                    imageRef: "",
+                    comment: "",
+                    noteBinding: null,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                const scoped = paradigmParentKey(paradigmId, parentParadigmItemId);
+                if (!data.paradigmChildrenByParent[scoped]) data.paradigmChildrenByParent[scoped] = [];
+                data.paradigmChildrenByParent[scoped].unshift(itemId);
+                pg.updatedAt = nowString();
+                syncParadigmAcrossTabsInData(data, paradigmId);
+            });
+        };
+
+        const renameParadigmItem = async (paradigmItemId) => {
+            const item = getParadigmItemById(paradigmItemId);
+            if (!item) return;
+            const title = await runWithPromptLock(() => prompt("重命名范式条目", "输入新名称", item.title || ""));
+            if (!title) return;
+            await updateWorkspaceData((data) => {
+                const target = data.paradigmItemsById?.[paradigmItemId];
+                if (!target) return;
+                target.title = title;
+                target.updatedAt = nowString();
+                const pg = data.paradigmsById?.[target.paradigmId];
+                if (pg) pg.updatedAt = nowString();
+                syncParadigmAcrossTabsInData(data, target.paradigmId);
+            });
+        };
+
+        const openParadigmBoundNote = async (paradigmItemId) => {
+            const paradigmItem = getParadigmItemById(paradigmItemId);
+            if (!paradigmItem) return;
+            const binding = normalizeTaskBinding(paradigmItem.noteBinding);
+            if (!binding?.path) {
+                new Notice("ℹ️ 该范式条目尚未绑定笔记");
+                return;
+            }
+            const file = resolveExistingNoteFile(binding.path);
+            if (!file) {
+                new Notice("⚠️ 绑定的笔记不存在，请重新绑定");
+                return;
+            }
+            await app.workspace.getLeaf(true).openFile(file);
+        };
+
+        const bindParadigmItemNote = async (paradigmItemId) => {
+            const paradigmItem = getParadigmItemById(paradigmItemId);
+            if (!paradigmItem) return;
+            const currentNotePath = normalizeTaskBinding(paradigmItem.noteBinding)?.path || null;
+            const noteIndex = await getVaultNoteIndex();
+            let selected = null;
+            try {
+                selected = await noteSelector(noteIndex, currentNotePath);
+            } catch (e) {
+                console.error("打开范式绑定面板失败:", e);
+                new Notice(`❌ 打开绑定面板失败: ${e.message}`);
+                return;
+            }
+            if (!selected) {
+                new Notice("ℹ️ 已取消绑定");
+                return;
+            }
+            if (selected && typeof selected === "object" && selected.item) selected = selected.item;
+
+            if (selected.kind === "current") {
+                const currentFile = resolveExistingNoteFile(selected.path);
+                if (currentFile) await app.workspace.getLeaf(true).openFile(currentFile);
+                else new Notice("⚠️ 当前绑定文件不存在，请重新绑定");
+                return;
+            }
+
+            if (selected.kind === "clear") {
+                await updateWorkspaceData((data) => {
+                    const target = data.paradigmItemsById?.[paradigmItemId];
+                    if (!target) return;
+                    target.noteBinding = null;
+                    target.updatedAt = nowString();
+                    syncParadigmAcrossTabsInData(data, target.paradigmId);
+                });
+                new Notice("🗑️ 已清除范式笔记绑定");
+                return;
+            }
+
+            let targetPath = selected.path || selected.file_path || selected.filePath || selected.notePath || null;
+            if (!targetPath && selected.kind === "manual") targetPath = selected.raw || null;
+            if (!targetPath && typeof selected === "string") targetPath = selected;
+            targetPath = resolveExistingNotePath(targetPath);
+            if (!targetPath) {
+                new Notice("⚠️ 未匹配到现有笔记。请检查文件名/路径是否正确（不带 .md）");
+                return;
+            }
+            const file = app.vault.getAbstractFileByPath(targetPath);
+            await updateWorkspaceData((data) => {
+                const target = data.paradigmItemsById?.[paradigmItemId];
+                if (!target) return;
+                target.noteBinding = { path: targetPath, ctime: Number(file?.stat?.ctime) || null };
+                target.updatedAt = nowString();
+                syncParadigmAcrossTabsInData(data, target.paradigmId);
+            });
+            new Notice(`🔗 范式条目已绑定: ${file ? file.basename : targetPath}`);
+        };
+
+        const editParadigmItemComment = async (paradigmItemId) => {
+            const paradigmItem = getParadigmItemById(paradigmItemId);
+            if (!paradigmItem) return;
+            const currentComment = typeof paradigmItem.comment === "string" ? paradigmItem.comment : "";
+            const result = await taskCommentEditor(`🗒️ 范式评论：${paradigmItem.title}`, currentComment);
+            if (!result) return;
+            await updateWorkspaceData((data) => {
+                const target = data.paradigmItemsById?.[paradigmItemId];
+                if (!target) return;
+                if (result.action === "clear") target.comment = "";
+                if (result.action === "save") target.comment = String(result.value || "");
+                target.updatedAt = nowString();
+                syncParadigmAcrossTabsInData(data, target.paradigmId);
+            });
+            new Notice("💾 范式评论已更新");
+        };
+
+        const editParadigmItemImage = async (paradigmItemId) => {
+            const paradigmItem = getParadigmItemById(paradigmItemId);
+            if (!paradigmItem) return;
+            const currentImageRef = sanitizeImageInput(paradigmItem.imageRef || "");
+            const result = await runWithPromptLock(() => imageManagerEditor(`🖼️ 范式图片：${paradigmItem.title}`, currentImageRef));
+            if (!result) return;
+            await updateWorkspaceData((data) => {
+                const target = data.paradigmItemsById?.[paradigmItemId];
+                if (!target) return;
+                if (result.action === "clear") target.imageRef = "";
+                if (result.action === "save") target.imageRef = sanitizeImageInput(result.value || "");
+                target.updatedAt = nowString();
+                syncParadigmAcrossTabsInData(data, target.paradigmId);
+            });
+            new Notice("🖼️ 范式图片已更新");
+        };
+
+        const collectParadigmSubtreeIds = (data, paradigmId, startId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = [String(startId || "").trim()];
+            while (stack.length > 0) {
+                const id = stack.pop();
+                if (!id || seen.has(id)) continue;
+                const item = data.paradigmItemsById?.[id];
+                if (!item || item.paradigmId !== paradigmId) continue;
+                seen.add(id);
+                out.push(id);
+                const kids = data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, id)] || [];
+                kids.forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+
+        const wouldCreateParadigmCycle = (data, paradigmId, movedItemId, nextParentId) => {
+            let cursor = nextParentId;
+            while (cursor) {
+                if (cursor === movedItemId) return true;
+                const item = data.paradigmItemsById?.[cursor];
+                if (!item || item.paradigmId !== paradigmId) break;
+                cursor = item.parentId || null;
+            }
+            return false;
+        };
+
+        const moveParadigmItem = async (draggedIdRaw, targetIdRaw, position) => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            const dragged = getParadigmItemById(draggedId);
+            const target = getParadigmItemById(targetId);
+            if (!dragged || !target) return;
+            if (dragged.paradigmId !== target.paradigmId) {
+                new Notice("⚠️ 只能在同一范式内拖拽");
+                return;
+            }
+            const paradigmId = dragged.paradigmId;
+            let nextParentId = null;
+            if (position === "child") nextParentId = target.id;
+            else nextParentId = target.parentId || null;
+
+            if (wouldCreateParadigmCycle(WORKSPACE_DATA, paradigmId, dragged.id, nextParentId)) {
+                new Notice("⚠️ 无效操作：不能移到自己的子级下");
+                return;
+            }
+
+            await updateWorkspaceData((data) => {
+                const draggedItem = data.paradigmItemsById?.[dragged.id];
+                const targetItem = data.paradigmItemsById?.[target.id];
+                if (!draggedItem || !targetItem) return;
+                removeIdFromChildrenMap(data.paradigmChildrenByParent, dragged.id, paradigmId);
+                draggedItem.parentId = nextParentId;
+                draggedItem.updatedAt = nowString();
+
+                const scoped = paradigmParentKey(paradigmId, nextParentId);
+                if (!data.paradigmChildrenByParent[scoped]) data.paradigmChildrenByParent[scoped] = [];
+                const siblings = data.paradigmChildrenByParent[scoped];
+
+                if (position === "child") {
+                    siblings.unshift(dragged.id);
+                } else {
+                    const targetIdx = siblings.indexOf(target.id);
+                    if (targetIdx < 0) siblings.push(dragged.id);
+                    else siblings.splice(position === "before" ? targetIdx : targetIdx + 1, 0, dragged.id);
+                }
+                syncParadigmAcrossTabsInData(data, paradigmId);
+            });
+            new Notice("✅ 范式条目已调整层级");
+        };
+
+        const moveParadigmItemToRoot = async (draggedIdRaw, paradigmIdRaw = null) => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            if (!draggedId) return;
+            const dragged = getParadigmItemById(draggedId);
+            if (!dragged) return;
+            const paradigmId = String(paradigmIdRaw || dragged.paradigmId || "").trim();
+            if (!paradigmId || dragged.paradigmId !== paradigmId) return;
+            if (dragged.parentId === null) return;
+            await updateWorkspaceData((data) => {
+                const target = data.paradigmItemsById?.[draggedId];
+                if (!target) return;
+                removeIdFromChildrenMap(data.paradigmChildrenByParent, draggedId, paradigmId);
+                target.parentId = null;
+                target.updatedAt = nowString();
+                const rootKey = paradigmParentKey(paradigmId, null);
+                if (!data.paradigmChildrenByParent[rootKey]) data.paradigmChildrenByParent[rootKey] = [];
+                data.paradigmChildrenByParent[rootKey].push(draggedId);
+                syncParadigmAcrossTabsInData(data, paradigmId);
+            });
+            new Notice("✅ 范式条目已移动到根层");
+        };
+
+        const deleteParadigmItem = async (paradigmItemId) => {
+            const item = getParadigmItemById(paradigmItemId);
+            if (!item) return;
+            const ids = collectParadigmSubtreeIds(WORKSPACE_DATA, item.paradigmId, paradigmItemId);
+            if (ids.length === 0) return;
+            const ok = await confirm("删除范式条目", `确定删除 <b>${item.title}</b> 及其 <b>${ids.length - 1}</b> 个子条目吗？`);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                ids.forEach((id) => {
+                    removeIdFromChildrenMap(data.paradigmChildrenByParent, id, item.paradigmId);
+                    delete data.paradigmItemsById[id];
+                });
+                Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
+                    const parsed = splitScopedKey(scoped);
+                    if (ids.includes(parsed.parent)) delete data.paradigmToTabItemMapByTab[scoped];
+                });
+                syncParadigmAcrossTabsInData(data, item.paradigmId);
+            });
+        };
+
+        const createSnapshot = async () => {
+            const tab = getActiveTab();
+            if (!tab) return;
+            const name = await runWithPromptLock(() => prompt("保存快照", "输入快照名称"));
+            if (!name) return;
+            await updateWorkspaceData((data) => {
+                const tabId = tab.id;
+                const snapshotId = `snap_${generateId()}`;
+                const itemIds = Object.values(data.itemsById || {}).filter((it) => it.tabId === tabId).map((it) => it.id);
+                const itemSet = new Set(itemIds);
+                const snapItems = {};
+                itemIds.forEach((id) => {
+                    snapItems[id] = clone(data.itemsById[id]);
+                });
+                const snapChildrenByTab = {};
+                Object.keys(data.childrenByParentByTab || {}).forEach((scoped) => {
+                    const parsed = splitScopedKey(scoped);
+                    if (parsed.ownerId !== tabId) return;
+                    const clean = ensureUniqueIds(data.childrenByParentByTab[scoped]).filter((id) => itemSet.has(id));
+                    snapChildrenByTab[scoped] = clean;
+                });
+                const snapCollapsed = {};
+                itemIds.forEach((id) => { snapCollapsed[id] = !!data.collapsedById?.[id]; });
+                if (!data.snapshotsById || typeof data.snapshotsById !== "object") data.snapshotsById = {};
+                if (!data.snapshotOrderByTab || typeof data.snapshotOrderByTab !== "object") data.snapshotOrderByTab = {};
+                if (!Array.isArray(data.snapshotOrderByTab[tabId])) data.snapshotOrderByTab[tabId] = [];
+                const tabBoundParadigmIds = normalizeBoundParadigmIds(tab);
+                data.snapshotsById[snapshotId] = {
+                    id: snapshotId,
+                    tabId,
+                    name,
+                    createdAt: nowString(),
+                    boundParadigmIds: tabBoundParadigmIds,
+                    // 兼容旧读取方
+                    boundParadigmId: tabBoundParadigmIds[0] || null,
+                    itemsById: snapItems,
+                    childrenByParentByTab: snapChildrenByTab,
+                    collapsedById: snapCollapsed
+                };
+                data.snapshotOrderByTab[tabId].unshift(snapshotId);
+            });
+            new Notice("💾 快照已保存");
+        };
+
+        const restoreSnapshotAsNewTab = async (snapshotId) => {
+            const snap = WORKSPACE_DATA.snapshotsById?.[snapshotId];
+            if (!snap) return;
+            const ok = await confirm("恢复快照", `将快照 <b>${snap.name}</b> 恢复为新 Tab，是否继续？`);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                const sourceTabId = String(snap.tabId || "").trim();
+                const newTabId = `tab_${generateId()}`;
+                ensureTabExists(data, newTabId, `${snap.name}（恢复）`);
+                data.activeTabId = newTabId;
+                const idMap = {};
+                const snapItems = snap.itemsById && typeof snap.itemsById === "object" ? snap.itemsById : {};
+                Object.keys(snapItems).forEach((oldId) => {
+                    let newId = generateId();
+                    while (data.itemsById[newId]) newId = generateId();
+                    idMap[oldId] = newId;
+                });
+                Object.keys(snapItems).forEach((oldId) => {
+                    const oldItem = snapItems[oldId] || {};
+                    const newId = idMap[oldId];
+                    data.itemsById[newId] = {
+                        ...clone(oldItem),
+                        id: newId,
+                        tabId: newTabId,
+                        parentId: null,
+                        sourceType: "tab",
+                        sourceParadigmId: null,
+                        sourceParadigmItemId: null,
+                        orphaned: false,
+                        createdAt: nowString(),
+                        updatedAt: nowString()
+                    };
+                });
+
+                const sourceChildren = snap.childrenByParentByTab && typeof snap.childrenByParentByTab === "object"
+                    ? snap.childrenByParentByTab
+                    : {};
+                Object.keys(sourceChildren).forEach((scoped) => {
+                    const parsed = splitScopedKey(scoped, sourceTabId);
+                    if (parsed.ownerId !== sourceTabId) return;
+                    const oldParent = parsed.parent === ROOT_KEY ? null : parsed.parent;
+                    const newParent = oldParent ? idMap[oldParent] || null : null;
+                    const newScoped = tabParentKey(newTabId, newParent);
+                    const mappedChildren = ensureUniqueIds(sourceChildren[scoped] || [])
+                        .map((id) => idMap[id] || null)
+                        .filter(Boolean);
+                    const existing = Array.isArray(data.childrenByParentByTab[newScoped]) ? data.childrenByParentByTab[newScoped] : [];
+                    data.childrenByParentByTab[newScoped] = ensureUniqueIds(existing.concat(mappedChildren));
+                    mappedChildren.forEach((id) => {
+                        if (!data.itemsById[id]) return;
+                        data.itemsById[id].parentId = newParent;
+                    });
+                });
+                const rootK = tabParentKey(newTabId, null);
+                if (!data.childrenByParentByTab[rootK]) data.childrenByParentByTab[rootK] = [];
+            });
+            new Notice("✅ 快照已恢复为新 Tab");
+        };
+
+        const deleteSnapshot = async (snapshotId) => {
+            const snap = WORKSPACE_DATA.snapshotsById?.[snapshotId];
+            if (!snap) return;
+            const ok = await confirm("删除快照", `确定删除快照 <b>${snap.name}</b> 吗？`);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                delete data.snapshotsById[snapshotId];
+                Object.keys(data.snapshotOrderByTab || {}).forEach((tabId) => {
+                    data.snapshotOrderByTab[tabId] = (data.snapshotOrderByTab[tabId] || []).filter((id) => id !== snapshotId);
+                });
+            });
+        };
+
+        const addItem = async (parentId = null) => {
+            const activeTabId = getActiveTabId();
+            const title = await runWithPromptLock(() => prompt(parentId ? "添加子条目" : "添加根条目", "输入条目名称"));
+            if (!title) return;
+            const id = generateId();
+            await updateWorkspaceData((data) => {
+                ensureTabExists(data, activeTabId);
+                data.itemsById[id] = {
+                    id,
+                    title,
+                    parentId,
+                    tabId: activeTabId,
+                    sourceType: "tab",
+                    sourceParadigmId: null,
+                    sourceParadigmItemId: null,
+                    isCollapsed: false,
+                    imageRef: "",
+                    comment: "",
+                    noteBinding: null,
+                    orphaned: false,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                const pKey = tabParentKey(activeTabId, parentId);
+                if (!data.childrenByParentByTab[pKey]) data.childrenByParentByTab[pKey] = [];
+                data.childrenByParentByTab[pKey].unshift(id);
+            });
+        };
+
+        const renameItem = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            if (item.tabId !== getActiveTabId()) return;
+            if (isParadigmMountedItem(item)) {
+                new Notice("📐 该条目来自范式，请到范式面板中重命名");
+                return;
+            }
+            const newTitle = await runWithPromptLock(() => prompt("重命名条目", "输入新名称", item.title || ""));
+            if (!newTitle) return;
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[id];
+                if (!target) return;
+                target.title = newTitle;
+                target.updatedAt = nowString();
+            });
+            new Notice("✅ 已重命名");
+        };
+
+        const deleteItem = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            if (item.tabId !== getActiveTabId()) return;
+            if (isParadigmMountedItem(item)) {
+                new Notice("📐 该条目来自范式，请到范式面板中删除");
+                return;
+            }
+            const idsToDelete = collectSubtreeIds(WORKSPACE_DATA, id, getActiveTabId());
+            if (idsToDelete.length === 0) return;
+            const msg = idsToDelete.length > 1
+                ? `确定删除 <b>${item.title}</b> 及其 <b>${idsToDelete.length - 1}</b> 个子条目吗？`
+                : `确定删除 <b>${item.title}</b> 吗？`;
+            const ok = await confirm("确认删除", msg);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                idsToDelete.forEach((targetId) => {
+                    removeIdFromChildrenMap(data.childrenByParentByTab, targetId, item.tabId);
+                    delete data.childrenByParentByTab[tabParentKey(item.tabId, targetId)];
+                    delete data.itemsById[targetId];
+                    Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
+                        if (data.paradigmToTabItemMapByTab[scoped] === targetId) delete data.paradigmToTabItemMapByTab[scoped];
+                    });
+                });
+            });
+            await updateTaskNoteBindings((bindings) => {
+                idsToDelete.forEach((targetId) => delete bindings[targetId]);
+            });
+            await updateTaskComments((comments) => {
+                idsToDelete.forEach((targetId) => delete comments[targetId]);
+            });
+            new Notice(`🗑️ 已删除 ${idsToDelete.length} 个条目`);
+        };
+
+        const toggleCollapse = async (id) => {
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[id];
+                if (!target) return;
+                if (target.tabId !== getActiveTabId()) return;
+                target.isCollapsed = !target.isCollapsed;
+                if (!data.collapsedById || typeof data.collapsedById !== "object") data.collapsedById = {};
+                data.collapsedById[id] = !!target.isCollapsed;
+                target.updatedAt = nowString();
+            });
+        };
+
+        const openBoundNote = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            const binding = getTaskBindingById(id);
+            if (!binding?.path) {
+                new Notice("ℹ️ 该条目尚未绑定笔记，请先点击 📝/🔗");
+                return;
+            }
+            let file = resolveExistingNoteFile(binding.path);
+            if (!file && Number.isFinite(binding.ctime)) {
+                const matches = app.vault.getMarkdownFiles().filter((f) => Number(f?.stat?.ctime) === Number(binding.ctime));
+                if (matches.length === 1) {
+                    file = matches[0];
+                    await updateTaskNoteBindings((bindings) => {
+                        bindings[id] = { path: file.path, ctime: Number(file?.stat?.ctime) || binding.ctime };
+                    });
+                    new Notice("🔁 已自动修复绑定路径");
+                }
+            }
+            if (!file) {
+                new Notice("⚠️ 绑定的笔记不存在，请重新绑定");
+                return;
+            }
+            await app.workspace.getLeaf(true).openFile(file);
+        };
+
+        const bindItemNote = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            if (isParadigmMountedItem(item)) {
+                window.workspaceShowParadigmPanel = true;
+                window.workspaceEditingParadigmId = item.sourceParadigmId || null;
+                renderViewFn?.();
+                new Notice("📐 该条目来自范式，请在范式面板中编辑绑定");
+                return;
+            }
+            const currentNotePath = getBoundNotePathById(id);
+            const noteIndex = await getVaultNoteIndex();
+            let selected = null;
+            try {
+                selected = await noteSelector(noteIndex, currentNotePath);
+            } catch (e) {
+                console.error("打开绑定面板失败:", e);
+                new Notice(`❌ 打开绑定面板失败: ${e.message}`);
+                return;
+            }
+
+            if (!selected) {
+                new Notice("ℹ️ 已取消绑定");
+                return;
+            }
+            if (selected && typeof selected === "object" && selected.item) selected = selected.item;
+
+            if (selected.kind === "current") {
+                const currentFile = resolveExistingNoteFile(selected.path);
+                if (currentFile) await app.workspace.getLeaf(true).openFile(currentFile);
+                else new Notice("⚠️ 当前绑定文件不存在，请重新绑定");
+                return;
+            }
+
+            if (selected.kind === "clear") {
+                await updateTaskNoteBindings((bindings) => { delete bindings[id]; });
+                await updateWorkspaceData((data) => {
+                    const target = data.itemsById?.[id];
+                    if (!target) return;
+                    target.noteBinding = null;
+                    target.updatedAt = nowString();
+                });
+                new Notice("🗑️ 已清除笔记绑定");
+                return;
+            }
+
+            let targetPath = selected.path || selected.file_path || selected.filePath || selected.notePath || null;
+            if (!targetPath && selected.kind === "manual") targetPath = selected.raw || null;
+            if (!targetPath && typeof selected === "string") targetPath = selected;
+            targetPath = resolveExistingNotePath(targetPath);
+            if (!targetPath) {
+                new Notice("⚠️ 未匹配到现有笔记。请检查文件名/路径是否正确（不带 .md）");
+                return;
+            }
+            const file = app.vault.getAbstractFileByPath(targetPath);
+            await updateTaskNoteBindings((bindings) => {
+                bindings[id] = { path: targetPath, ctime: Number(file?.stat?.ctime) || null };
+            });
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById?.[id];
+                if (!target) return;
+                target.noteBinding = { path: targetPath, ctime: Number(file?.stat?.ctime) || null };
+                target.updatedAt = nowString();
+            });
+            new Notice(`🔗 已绑定笔记: ${file ? file.basename : targetPath}`);
+        };
+
+        const editTaskComment = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            if (isParadigmMountedItem(item)) {
+                window.workspaceShowParadigmPanel = true;
+                window.workspaceEditingParadigmId = item.sourceParadigmId || null;
+                renderViewFn?.();
+                new Notice("📐 该条目来自范式，请在范式面板中编辑评论");
+                return;
+            }
+            const currentComment = getTaskCommentById(id);
+            const result = await taskCommentEditor(`🗒️ 评论：${item.title}`, currentComment);
+            if (!result) return;
+            if (result.action === "clear") {
+                await updateTaskComments((comments) => { delete comments[id]; });
+                await updateWorkspaceData((data) => {
+                    const target = data.itemsById?.[id];
+                    if (!target) return;
+                    target.comment = "";
+                    target.updatedAt = nowString();
+                });
+                new Notice("🧹 已清空评论");
+                return;
+            }
+            if (result.action === "save") {
+                const finalText = String(result.value || "");
+                if (!finalText.trim()) {
+                    await updateTaskComments((comments) => { delete comments[id]; });
+                    await updateWorkspaceData((data) => {
+                        const target = data.itemsById?.[id];
+                        if (!target) return;
+                        target.comment = "";
+                        target.updatedAt = nowString();
+                    });
+                    new Notice("🧹 评论为空，已清空");
+                } else {
+                    await updateTaskComments((comments) => { comments[id] = finalText; });
+                    await updateWorkspaceData((data) => {
+                        const target = data.itemsById?.[id];
+                        if (!target) return;
+                        target.comment = finalText;
+                        target.updatedAt = nowString();
+                    });
+                    new Notice("💾 评论已保存");
+                }
+            }
+        };
+        const editItemImage = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            if (item.tabId !== getActiveTabId()) return;
+            if (isParadigmMountedItem(item)) {
+                window.workspaceShowParadigmPanel = true;
+                window.workspaceEditingParadigmId = item.sourceParadigmId || null;
+                renderViewFn?.();
+                new Notice("📐 该条目来自范式，请在范式面板中编辑图片");
+                return;
+            }
+            const currentImageRef = getItemImageRefById(id);
+            const result = await runWithPromptLock(() => imageManagerEditor(`🖼️ 图片设置：${item.title}`, currentImageRef));
+            if (!result) return;
+            if (result.action === "clear") {
+                await updateWorkspaceData((data) => {
+                    const target = data.itemsById[id];
+                    if (!target) return;
+                    target.imageRef = "";
+                    target.updatedAt = nowString();
+                });
+                new Notice("🧹 已清除条目图片");
+                return;
+            }
+            const imageRef = sanitizeImageInput(result.value || "");
+            if (!imageRef) {
+                await updateWorkspaceData((data) => {
+                    const target = data.itemsById[id];
+                    if (!target) return;
+                    target.imageRef = "";
+                    target.updatedAt = nowString();
+                });
+                new Notice("🧹 图片为空，已清除");
+                return;
+            }
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[id];
+                if (!target) return;
+                target.imageRef = imageRef;
+                target.updatedAt = nowString();
+            });
+            if (resolveImageSrc(imageRef)) new Notice("🖼️ 图片已设置");
+            else new Notice("⚠️ 图片引用已保存，但未解析到文件；请检查路径");
+        };
+
+        const moveItem = async (draggedIdRaw, targetIdRaw, position) => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            const dragged = getItemById(draggedId);
+            const target = getItemById(targetId);
+            if (!dragged || !target) return;
+            const activeTabId = getActiveTabId();
+            if (dragged.tabId !== activeTabId || target.tabId !== activeTabId) return;
+            if (isParadigmMountedItem(dragged)) {
+                new Notice("📐 范式条目请在范式面板中移动");
+                return;
+            }
+
+            let nextParentId = null;
+            if (position === "child") nextParentId = target.id;
+            else nextParentId = target.parentId || null;
+
+            if (wouldCreateCycle(WORKSPACE_DATA, dragged.id, nextParentId, activeTabId)) {
+                new Notice("⚠️ 无效操作：不能把条目移动到自己的子级链路中");
+                return;
+            }
+
+            await updateWorkspaceData((data) => {
+                const draggedItem = data.itemsById[dragged.id];
+                const targetItem = data.itemsById[target.id];
+                if (!draggedItem || !targetItem) return;
+
+                removeIdFromChildrenMap(data.childrenByParentByTab, dragged.id, activeTabId);
+                draggedItem.parentId = nextParentId;
+                draggedItem.updatedAt = nowString();
+
+                const pKey = tabParentKey(activeTabId, nextParentId);
+                if (!data.childrenByParentByTab[pKey]) data.childrenByParentByTab[pKey] = [];
+                const siblings = data.childrenByParentByTab[pKey];
+
+                if (position === "child") {
+                    siblings.unshift(dragged.id);
+                    return;
+                }
+
+                const targetIdx = siblings.indexOf(target.id);
+                if (targetIdx < 0) {
+                    siblings.push(dragged.id);
+                    return;
+                }
+                const insertAt = position === "before" ? targetIdx : targetIdx + 1;
+                siblings.splice(insertAt, 0, dragged.id);
+            });
+            new Notice("✅ 已调整层级");
+        };
+
+        const moveItemToRoot = async (draggedIdRaw) => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            if (!draggedId) return;
+            const dragged = getItemById(draggedId);
+            if (!dragged) return;
+            const activeTabId = getActiveTabId();
+            if (dragged.tabId !== activeTabId) return;
+            if (isParadigmMountedItem(dragged)) {
+                new Notice("📐 范式条目请在范式面板中移动");
+                return;
+            }
+            if (dragged.parentId === null) return;
+            await updateWorkspaceData((data) => {
+                const target = data.itemsById[draggedId];
+                if (!target) return;
+                removeIdFromChildrenMap(data.childrenByParentByTab, draggedId, activeTabId);
+                target.parentId = null;
+                target.updatedAt = nowString();
+                const rootKey = tabParentKey(activeTabId, null);
+                if (!data.childrenByParentByTab[rootKey]) data.childrenByParentByTab[rootKey] = [];
+                data.childrenByParentByTab[rootKey].push(draggedId);
+            });
+            new Notice("✅ 已移动到根层");
+        };
+
+        const getLevelBackground = (level) => {
+            const palette = [
+                "rgba(52, 152, 219, 0.06)",
+                "rgba(46, 204, 113, 0.08)",
+                "rgba(241, 196, 15, 0.09)",
+                "rgba(230, 126, 34, 0.09)",
+                "rgba(231, 76, 60, 0.08)",
+                "rgba(155, 89, 182, 0.08)"
+            ];
+            if (!Number.isFinite(level) || level < 0) return palette[0];
+            return palette[level % palette.length];
+        };
+
+        const getParadigmVisual = (paradigmId) => {
+            const seed = String(paradigmId || "default");
+            let hash = 0;
+            for (let i = 0; i < seed.length; i++) {
+                hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+                hash |= 0;
+            }
+            const palette = [
+                { accent: "#3498db", bg: "rgba(52, 152, 219, 0.10)" },
+                { accent: "#16a085", bg: "rgba(22, 160, 133, 0.10)" },
+                { accent: "#d35400", bg: "rgba(211, 84, 0, 0.10)" },
+                { accent: "#8e44ad", bg: "rgba(142, 68, 173, 0.10)" },
+                { accent: "#2c7a3f", bg: "rgba(44, 122, 63, 0.10)" },
+                { accent: "#c0392b", bg: "rgba(192, 57, 43, 0.10)" }
+            ];
+            return palette[Math.abs(hash) % palette.length];
+        };
+
+        const renderItemLine = (container, item, level, chain, tabId) => {
+            const hasKids = hasChildren(item.id, tabId);
+            const boundPath = getBoundNotePathById(item.id);
+            const boundFile = boundPath ? resolveExistingNoteFile(boundPath) : null;
+            const commentText = getTaskCommentById(item.id);
+            const commentSummary = summarizeComment(commentText, 100);
+            const levelBg = getLevelBackground(level);
+            const imageRef = sanitizeImageInput(item.imageRef || "");
+            const imageSrc = resolveImageSrc(imageRef);
+            const isParadigm = isParadigmMountedItem(item);
+            const paradigm = isParadigm ? getParadigmById(item.sourceParadigmId) : null;
+            const paradigmName = paradigm?.name || item.sourceParadigmId || "范式";
+            const paradigmVisual = isParadigm ? getParadigmVisual(item.sourceParadigmId) : null;
+
+            const line = container.createEl("div", {
+                cls: "workspace-item-line",
+                attr: {
+                    style: `margin-left:${level * 26}px; background:${levelBg};`
+                }
+            });
+            let content = null;
+            line.draggable = !isParadigm;
+            if (isParadigm) line.classList.add("is-paradigm");
+            if (isParadigm && paradigmVisual) {
+                line.style.borderLeft = `4px solid ${paradigmVisual.accent}`;
+                line.style.background = `linear-gradient(90deg, ${paradigmVisual.bg} 0%, ${levelBg} 56%)`;
+            }
+
+            line.addEventListener("dragstart", (e) => {
+                if (isParadigm) return;
+                e.stopPropagation();
+                window.workspaceTreeCurrentDragId = item.id;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", item.id);
+                setTimeout(() => line.classList.add("is-dragging"), 0);
+            });
+            line.addEventListener("dragend", (e) => {
+                e.stopPropagation();
+                window.workspaceTreeCurrentDragId = null;
+                line.classList.remove("is-dragging");
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+            });
+            line.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const draggedId = window.workspaceTreeCurrentDragId;
+                if (!draggedId || draggedId === item.id) return;
+                const rect = line.getBoundingClientRect();
+                const childThreshold = content
+                    ? (content.getBoundingClientRect().left - rect.left + 16)
+                    : 42;
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                if ((e.clientX - rect.left) > childThreshold) line.classList.add("drag-over-child");
+                else if ((e.clientY - rect.top) < rect.height / 2) line.classList.add("drag-over-top");
+                else line.classList.add("drag-over-bottom");
+            });
+            line.addEventListener("dragleave", (e) => {
+                e.stopPropagation();
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+            });
+            line.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const draggedId = window.workspaceTreeCurrentDragId;
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                if (!draggedId || draggedId === item.id) return;
+                const rect = line.getBoundingClientRect();
+                const childThreshold = content
+                    ? (content.getBoundingClientRect().left - rect.left + 16)
+                    : 42;
+                let position = "after";
+                if ((e.clientX - rect.left) > childThreshold) position = "child";
+                else if ((e.clientY - rect.top) < rect.height / 2) position = "before";
+                await moveItem(draggedId, item.id, position);
+            });
+
+            const thumbBtn = line.createEl("button", {
+                cls: `workspace-item-thumb ${imageSrc ? "has-image" : "is-empty"}`,
+                attr: {
+                    type: "button",
+                    title: imageRef
+                        ? `图片: ${imageRef}`
+                        : "点击设置图片（粘贴 ![[附件]] / [[附件]] / URL）"
+                }
+            });
+            if (imageSrc) {
+                const thumbImg = thumbBtn.createEl("img", { cls: "workspace-item-thumb-img" });
+                thumbImg.src = imageSrc;
+                thumbImg.alt = `${item.title} image`;
+            } else {
+                thumbBtn.createEl("span", { text: "🖼️", cls: "workspace-item-thumb-placeholder" });
+            }
+            thumbBtn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await editItemImage(item.id);
+            };
+
+            const left = line.createEl("div", { cls: "workspace-line-left" });
+            const dragHandle = left.createEl("span", { text: isParadigm ? "📐" : "⋮⋮", cls: "workspace-drag-handle" });
+            dragHandle.title = isParadigm ? "范式挂载条目" : "拖拽调整位置";
+            const collapseBtn = left.createEl("span", {
+                text: hasKids ? (item.isCollapsed ? "▶" : "▼") : "•",
+                cls: `workspace-collapse ${hasKids ? "clickable" : "dot"}`
+            });
+            if (hasKids) collapseBtn.onclick = (e) => { e.stopPropagation(); toggleCollapse(item.id); };
+
+            content = line.createEl("div", { cls: "workspace-line-content" });
+            const titleLink = content.createEl("a", {
+                text: item.title,
+                cls: "internal-link workspace-title-link",
+                attr: { "data-href": boundPath || "", href: boundPath || "", target: "_blank", rel: "noopener" }
+            });
+            titleLink.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await openBoundNote(item.id);
+            };
+            if (isParadigm) {
+                content.createEl("span", {
+                    text: `📐 ${paradigmName}`,
+                    cls: "workspace-origin-badge",
+                    attr: paradigmVisual
+                        ? { style: `border-color:${paradigmVisual.accent}66;color:${paradigmVisual.accent};background:${paradigmVisual.bg};` }
+                        : {}
+                });
+            }
+            if (item.orphaned) {
+                content.createEl("span", { text: "🔓 原范式条目", cls: "workspace-origin-badge orphaned" });
+            }
+            if (commentSummary) {
+                content.createEl("span", {
+                    text: `💬 ${commentSummary}`,
+                    cls: "workspace-comment-summary",
+                    attr: { title: commentText }
+                });
+            }
+            if (boundPath) {
+                const boundLabel = boundFile ? boundFile.basename : "绑定失效";
+                content.createEl("span", {
+                    text: `🔗 ${boundLabel}`,
+                    cls: "workspace-bound-label",
+                    attr: { title: boundPath }
+                });
+            }
+
+            const actions = line.createEl("div", { cls: "workspace-line-actions" });
+            const addChildBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: "添加子条目" } });
+            addChildBtn.onclick = (e) => { e.stopPropagation(); addItem(item.id); };
+            const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: isParadigm ? "范式条目请在范式面板重命名" : "重命名" } });
+            renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(item.id); };
+            const imageBtn = actions.createEl("span", {
+                text: imageSrc ? "🖼️" : "🖼",
+                cls: "workspace-action-btn",
+                attr: { title: "图片设置（弹窗内可粘贴/修改/清除）" }
+            });
+            imageBtn.onclick = async (e) => { e.stopPropagation(); await editItemImage(item.id); };
+            const bindBtn = actions.createEl("span", {
+                text: boundPath ? "🔗" : "📝",
+                cls: "workspace-action-btn",
+                attr: { title: boundPath ? "修改/清除绑定" : "绑定笔记（EVA 索引优先）" }
+            });
+            bindBtn.onclick = async (e) => { e.stopPropagation(); await bindItemNote(item.id); };
+            const commentBtn = actions.createEl("span", {
+                text: commentText ? "💬" : "🗒️",
+                cls: "workspace-action-btn",
+                attr: { title: commentText ? "编辑评论（已填写）" : "添加评论" }
+            });
+            commentBtn.onclick = async (e) => { e.stopPropagation(); await editTaskComment(item.id); };
+            const deleteBtn = actions.createEl("span", { text: "🗑️", cls: "workspace-action-btn", attr: { title: isParadigm ? "范式条目请在范式面板删除" : "删除条目（含子树）" } });
+            deleteBtn.onclick = async (e) => { e.stopPropagation(); await deleteItem(item.id); };
+
+            if (hasKids && !item.isCollapsed) {
+                if (chain.has(item.id)) {
+                    const loopWarn = container.createEl("div", { text: "⚠️ 检测到循环引用，已停止渲染该分支", cls: "workspace-loop-warn", attr: { style: `margin-left:${(level + 1) * 26}px;` } });
+                    loopWarn.style.marginBottom = "4px";
+                } else {
+                    const nextChain = new Set(chain);
+                    nextChain.add(item.id);
+                    renderTree(container, item.id, level + 1, nextChain, tabId);
+                }
+            }
+        };
+
+        const renderTree = (container, parentId = null, level = 0, chain = new Set(), tabId = getActiveTabId()) => {
+            const ids = getChildrenIds(parentId, tabId);
+            ids.forEach((id) => {
+                const item = getItemById(id);
+                if (!item || item.tabId !== tabId) return;
+                renderItemLine(container, item, level, chain, tabId);
+            });
+        };
+
+        const renderParadigmTree = (container, paradigmId, parentId = null, level = 0, chain = new Set()) => {
+            const ids = getParadigmChildrenIds(paradigmId, parentId);
+            ids.forEach((id) => {
+                const item = getParadigmItemById(id);
+                if (!item) return;
+                const imageRef = sanitizeImageInput(item.imageRef || "");
+                const commentText = typeof item.comment === "string" ? item.comment : "";
+                const commentSummary = summarizeComment(commentText, 100);
+                const binding = normalizeTaskBinding(item.noteBinding);
+                const boundPath = binding?.path || null;
+                const boundFile = boundPath ? resolveExistingNoteFile(boundPath) : null;
+                const line = container.createEl("div", {
+                    cls: "workspace-paradigm-item-line",
+                    attr: { style: `margin-left:${level * 22}px;` }
+                });
+                let info = line.createEl("div", { cls: "workspace-line-content" });
+                line.draggable = true;
+                line.addEventListener("dragstart", (e) => {
+                    e.stopPropagation();
+                    window.workspaceParadigmCurrentDragId = item.id;
+                    window.workspaceParadigmDragParadigmId = paradigmId;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", item.id);
+                    setTimeout(() => line.classList.add("is-dragging"), 0);
+                });
+                line.addEventListener("dragend", (e) => {
+                    e.stopPropagation();
+                    window.workspaceParadigmCurrentDragId = null;
+                    window.workspaceParadigmDragParadigmId = null;
+                    line.classList.remove("is-dragging", "drag-over-top", "drag-over-bottom", "drag-over-child");
+                });
+                line.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = window.workspaceParadigmCurrentDragId;
+                    if (!draggedId || draggedId === item.id) return;
+                    if (window.workspaceParadigmDragParadigmId !== paradigmId) return;
+                    const rect = line.getBoundingClientRect();
+                    const childThreshold = info
+                        ? (info.getBoundingClientRect().left - rect.left + 16)
+                        : 42;
+                    line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    if ((e.clientX - rect.left) > childThreshold) line.classList.add("drag-over-child");
+                    else if ((e.clientY - rect.top) < rect.height / 2) line.classList.add("drag-over-top");
+                    else line.classList.add("drag-over-bottom");
+                });
+                line.addEventListener("dragleave", (e) => {
+                    e.stopPropagation();
+                    line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                });
+                line.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = window.workspaceParadigmCurrentDragId;
+                    line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    if (!draggedId || draggedId === item.id) return;
+                    if (window.workspaceParadigmDragParadigmId !== paradigmId) return;
+                    const rect = line.getBoundingClientRect();
+                    const childThreshold = info
+                        ? (info.getBoundingClientRect().left - rect.left + 16)
+                        : 42;
+                    let position = "after";
+                    if ((e.clientX - rect.left) > childThreshold) position = "child";
+                    else if ((e.clientY - rect.top) < rect.height / 2) position = "before";
+                    await moveParadigmItem(draggedId, item.id, position);
+                });
+                info.createEl("span", { text: `📐 ${item.title}`, cls: "workspace-paradigm-item-title" });
+                info.createEl("small", { text: `#${item.id}`, cls: "workspace-paradigm-item-id" });
+                if (commentSummary) info.createEl("span", { text: `💬 ${commentSummary}`, cls: "workspace-comment-summary", attr: { title: commentText } });
+                if (boundPath) info.createEl("span", { text: `🔗 ${boundFile ? boundFile.basename : "绑定失效"}`, cls: "workspace-bound-label", attr: { title: boundPath } });
+                if (imageRef) info.createEl("span", { text: "🖼️", cls: "workspace-origin-badge", attr: { title: imageRef } });
+                const actions = line.createEl("div", { cls: "workspace-line-actions" });
+                const dragBtn = actions.createEl("span", { text: "⋮⋮", cls: "workspace-action-btn", attr: { title: "拖拽调整层级" } });
+                dragBtn.style.cursor = "grab";
+                const addBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: "添加子条目" } });
+                addBtn.onclick = async () => { await addParadigmItem(paradigmId, item.id); };
+                const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: "重命名范式条目" } });
+                renameBtn.onclick = async () => { await renameParadigmItem(item.id); };
+                const imageBtn = actions.createEl("span", { text: imageRef ? "🖼️" : "🖼", cls: "workspace-action-btn", attr: { title: "范式图片设置" } });
+                imageBtn.onclick = async () => { await editParadigmItemImage(item.id); };
+                const bindBtn = actions.createEl("span", { text: boundPath ? "🔗" : "📝", cls: "workspace-action-btn", attr: { title: "范式笔记绑定" } });
+                bindBtn.onclick = async () => { await bindParadigmItemNote(item.id); };
+                const openBtn = actions.createEl("span", { text: "📂", cls: "workspace-action-btn", attr: { title: "打开范式绑定笔记" } });
+                openBtn.onclick = async () => { await openParadigmBoundNote(item.id); };
+                const commentBtn = actions.createEl("span", { text: commentText ? "💬" : "🗒️", cls: "workspace-action-btn", attr: { title: "范式评论" } });
+                commentBtn.onclick = async () => { await editParadigmItemComment(item.id); };
+                const toRootBtn = actions.createEl("span", { text: "⇡", cls: "workspace-action-btn", attr: { title: "移动到根层" } });
+                toRootBtn.onclick = async () => { await moveParadigmItemToRoot(item.id, paradigmId); };
+                const changeParentBtn = actions.createEl("span", { text: "↥", cls: "workspace-action-btn", attr: { title: "输入父条目ID移动" } });
+                changeParentBtn.onclick = async () => {
+                    const val = await runWithPromptLock(() => prompt("移动范式条目", "输入新父条目 ID", item.parentId || ""));
+                    if (val === null) return;
+                    const nextParent = normalizeText(val);
+                    if (!nextParent) return;
+                    await moveParadigmItem(item.id, nextParent, "child");
+                };
+                const delBtn = actions.createEl("span", { text: "🗑️", cls: "workspace-action-btn", attr: { title: "删除范式条目（含子树）" } });
+                delBtn.onclick = async () => { await deleteParadigmItem(item.id); };
+
+                if (chain.has(item.id)) return;
+                const nextChain = new Set(chain);
+                nextChain.add(item.id);
+                renderParadigmTree(container, paradigmId, item.id, level + 1, nextChain);
+            });
+        };
+
+        const renderSnapshotPreview = (container, snapshot, parentId = null, level = 0, chain = new Set()) => {
+            if (!snapshot || !snapshot.itemsById) return;
+            const childrenMap = snapshot.childrenByParentByTab && typeof snapshot.childrenByParentByTab === "object"
+                ? snapshot.childrenByParentByTab
+                : {};
+            const scoped = tabParentKey(snapshot.tabId, parentId);
+            const ids = ensureUniqueIds(childrenMap[scoped] || []);
+            ids.forEach((id) => {
+                const item = snapshot.itemsById?.[id];
+                if (!item) return;
+                const row = container.createEl("div", { cls: "workspace-snapshot-row", attr: { style: `margin-left:${level * 20}px;` } });
+                row.createEl("span", { text: item.title || "(空标题)" });
+                if (chain.has(id)) return;
+                const next = new Set(chain);
+                next.add(id);
+                renderSnapshotPreview(container, snapshot, id, level + 1, next);
+            });
+        };
+
+        const renderView = () => {
+            dv.container.innerHTML = "";
+            dv.container.createEl("style", {
+                text: `
+                .workspace-wrap { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 14px; background: var(--background-primary-alt); }
+                .workspace-tabbar { display:flex; gap:8px; row-gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+                .workspace-tab-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:999px; padding:4px 10px; cursor:pointer; font-size:12px; user-select:none; transition:filter .15s,border-color .15s,transform .15s; }
+                .workspace-tab-btn.active { background:var(--interactive-accent); color:var(--text-on-accent); border-color:var(--interactive-accent); font-weight:700; }
+                .workspace-tab-btn.is-dragging { opacity:.45; transform:scale(.98); }
+                .workspace-tab-btn.drag-over-before { border-left:3px solid #2ecc71; }
+                .workspace-tab-btn.drag-over-after { border-right:3px solid #2ecc71; }
+                .workspace-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+                .workspace-title { margin:0; font-size:1.1em; font-weight:700; color:var(--text-normal); }
+                .workspace-subtitle { color:var(--text-muted); font-size:12px; }
+                .workspace-main-actions { display:flex; gap:8px; flex-wrap:wrap; }
+                .workspace-main-btn { background:var(--interactive-accent); color:var(--text-on-accent); border:none; border-radius:6px; padding:6px 10px; font-weight:600; cursor:pointer; }
+                .workspace-sub-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:6px; padding:6px 10px; cursor:pointer; }
+                .workspace-main-btn:hover, .workspace-sub-btn:hover, .workspace-tab-btn:hover { filter:brightness(1.05); }
+                .workspace-panel { margin:10px 0; border:1px solid var(--background-modifier-border); border-radius:8px; padding:10px; background:var(--background-secondary); }
+                .workspace-panel-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+                .workspace-panel-title { font-weight:700; }
+                .workspace-panel-list { display:flex; flex-direction:column; gap:6px; }
+                .workspace-panel-row { display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--background-modifier-border); background:var(--background-primary); padding:6px 8px; border-radius:7px; }
+                .workspace-root-drop-zone { margin-bottom:10px; border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
+                .workspace-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
+                .workspace-item-line { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; margin-bottom:4px; border:1px solid var(--background-modifier-border); transition:filter .15s,border-color .15s; user-select:none; }
+                .workspace-item-line.is-paradigm { border-style:dashed; }
+                .workspace-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
+                .workspace-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
+                .workspace-item-line.drag-over-top { border-top:3px solid #2ecc71; }
+                .workspace-item-line.drag-over-bottom { border-bottom:3px solid #2ecc71; }
+                .workspace-item-line.drag-over-child { background:rgba(46,204,113,.15); border-left:3px solid #2ecc71; }
+                .workspace-item-thumb { width:40px; height:40px; padding:0; border-radius:8px; border:1px dashed var(--background-modifier-border); background:var(--background-secondary); display:flex; align-items:center; justify-content:center; flex:0 0 40px; cursor:pointer; overflow:hidden; transition:border-color .15s,filter .15s; }
+                .workspace-item-thumb:hover { border-color:var(--interactive-accent); filter:brightness(1.03); }
+                .workspace-item-thumb.has-image { border-style:solid; }
+                .workspace-item-thumb.is-empty { color:var(--text-muted); }
+                .workspace-item-thumb-img { width:100%; height:100%; object-fit:cover; display:block; }
+                .workspace-item-thumb-placeholder { line-height:1; opacity:.85; }
+                .workspace-line-left { display:flex; align-items:center; gap:6px; width:58px; flex-shrink:0; align-self:flex-start; padding-top:2px; }
+                .workspace-drag-handle { color:var(--text-faint); cursor:grab; letter-spacing:-1px; }
+                .workspace-collapse { width:14px; text-align:center; color:var(--text-muted); user-select:none; }
+                .workspace-collapse.clickable { cursor:pointer; }
+                .workspace-collapse.dot { opacity:.4; }
+                .workspace-line-content { flex:1; min-width:0; display:flex; align-items:flex-start; flex-wrap:wrap; gap:6px 8px; overflow:visible; }
+                .workspace-origin-badge { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; }
+                .workspace-origin-badge.orphaned { color:#c0392b; border-color:#c0392b66; }
+                .workspace-bound-label { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; flex-shrink:0; }
+                .workspace-title-link { font-weight:600; color:var(--text-normal); min-width:0; flex:1 1 100%; white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word; }
+                .workspace-title-link:hover { color:var(--interactive-accent); text-decoration:underline; }
+                .workspace-comment-summary { font-size:12px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+                .workspace-line-actions { display:flex; align-items:center; gap:7px; flex-shrink:0; align-self:flex-start; padding-top:2px; }
+                .workspace-action-btn { cursor:pointer; font-size:14px; opacity:.85; }
+                .workspace-action-btn:hover { opacity:1; transform:translateY(-1px); }
+                .workspace-loop-warn { color:#c0392b; font-size:12px; padding:3px 6px; }
+                .workspace-empty { color:var(--text-faint); font-style:italic; padding:8px 4px; }
+                .workspace-paradigm-item-line { display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--background-modifier-border); border-radius:7px; padding:6px 8px; margin-bottom:5px; background:var(--background-primary); transition:filter .15s,border-color .15s; user-select:none; }
+                .workspace-paradigm-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
+                .workspace-paradigm-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
+                .workspace-paradigm-item-line.drag-over-top { border-top:3px solid #2ecc71; }
+                .workspace-paradigm-item-line.drag-over-bottom { border-bottom:3px solid #2ecc71; }
+                .workspace-paradigm-item-line.drag-over-child { background:rgba(46,204,113,.15); border-left:3px solid #2ecc71; }
+                .workspace-paradigm-item-title { font-weight:600; }
+                .workspace-paradigm-item-id { color:var(--text-muted); }
+                .workspace-snapshot-row { padding:3px 6px; border-left:2px solid var(--background-modifier-border); margin-bottom:2px; }
+                `
+            });
+
+            const activeTab = getActiveTab();
+            const activeTabId = activeTab?.id || getActiveTabId();
+            const boundParadigmIds = normalizeBoundParadigmIds(activeTab || {});
+            const boundParadigms = boundParadigmIds.map((id) => getParadigmById(id)).filter(Boolean);
+            const boundParadigmText = boundParadigms.length > 0 ? boundParadigms.map((pg) => pg.name).join("、") : "无";
+
+            const wrap = dv.container.createEl("div", { cls: "workspace-wrap" });
+
+            const tabBar = wrap.createEl("div", { cls: "workspace-tabbar" });
+            (WORKSPACE_DATA.tabOrder || []).forEach((tabId) => {
+                const tab = getTabById(tabId);
+                if (!tab) return;
+                const tabBtn = tabBar.createEl("button", {
+                    text: `${tab.id === activeTabId ? "● " : ""}${tab.name}`,
+                    cls: `workspace-tab-btn ${tab.id === activeTabId ? "active" : ""}`,
+                    attr: { title: "点击切换；拖拽可调整 Tab 排序" }
+                });
+                tabBtn.draggable = true;
+                tabBtn.addEventListener("dragstart", (e) => {
+                    e.stopPropagation();
+                    window.workspaceTabCurrentDragId = tab.id;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", tab.id);
+                    setTimeout(() => tabBtn.classList.add("is-dragging"), 0);
+                });
+                tabBtn.addEventListener("dragend", (e) => {
+                    e.stopPropagation();
+                    window.workspaceTabCurrentDragId = null;
+                    tabBtn.classList.remove("is-dragging", "drag-over-before", "drag-over-after");
+                });
+                tabBtn.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = window.workspaceTabCurrentDragId;
+                    if (!draggedId || draggedId === tab.id) return;
+                    const rect = tabBtn.getBoundingClientRect();
+                    const isBefore = (e.clientX - rect.left) < rect.width / 2;
+                    tabBtn.classList.remove("drag-over-before", "drag-over-after");
+                    tabBtn.classList.add(isBefore ? "drag-over-before" : "drag-over-after");
+                });
+                tabBtn.addEventListener("dragleave", (e) => {
+                    e.stopPropagation();
+                    tabBtn.classList.remove("drag-over-before", "drag-over-after");
+                });
+                tabBtn.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = window.workspaceTabCurrentDragId;
+                    tabBtn.classList.remove("drag-over-before", "drag-over-after");
+                    if (!draggedId || draggedId === tab.id) return;
+                    const rect = tabBtn.getBoundingClientRect();
+                    const position = (e.clientX - rect.left) < rect.width / 2 ? "before" : "after";
+                    await moveTabOrder(draggedId, tab.id, position);
+                });
+                tabBtn.onclick = async () => { await switchTab(tab.id); };
+            });
+
+            const header = wrap.createEl("div", { cls: "workspace-header" });
+            const headerLeft = header.createEl("div");
+            headerLeft.createEl("h3", { text: "🧩 Workspace（多 Tab / 范式 / 快照）", cls: "workspace-title" });
+            headerLeft.createEl("div", {
+                text: `当前 Tab: ${activeTab?.name || "-"}；绑定范式: ${boundParadigmText}；数据文件: ${JSON_FILENAME}`,
+                cls: "workspace-subtitle"
+            });
+            headerLeft.createEl("div", {
+                text: `附属文件: ${TASK_NOTE_BINDINGS_FILENAME} / ${TASK_COMMENTS_FILENAME}（图片保存到 /${ATTACHMENTS_FOLDER}）`,
+                cls: "workspace-subtitle"
+            });
+
+            const mainActions = header.createEl("div", { cls: "workspace-main-actions" });
+            const addRootBtn = mainActions.createEl("button", { text: "＋ 根条目", cls: "workspace-main-btn" });
+            addRootBtn.onclick = () => addItem(null);
+            const newTabBtn = mainActions.createEl("button", { text: "📁 新建Tab", cls: "workspace-sub-btn" });
+            newTabBtn.onclick = async () => { await createTab(); };
+            const renameTabBtn = mainActions.createEl("button", { text: "✏️ 重命名Tab", cls: "workspace-sub-btn" });
+            renameTabBtn.onclick = async () => { await renameCurrentTab(); };
+            const closeTabBtn = mainActions.createEl("button", { text: "🗑️ 关闭Tab", cls: "workspace-sub-btn" });
+            closeTabBtn.onclick = async () => { await closeCurrentTab(); };
+            const paradigmBtn = mainActions.createEl("button", { text: "📐 范式面板", cls: "workspace-sub-btn" });
+            paradigmBtn.onclick = () => {
+                window.workspaceShowParadigmPanel = !window.workspaceShowParadigmPanel;
+                if (!window.workspaceShowParadigmPanel) window.workspaceEditingParadigmId = null;
+                renderViewFn?.();
+            };
+            const snapshotBtn = mainActions.createEl("button", { text: "💾 快照面板", cls: "workspace-sub-btn" });
+            snapshotBtn.onclick = () => {
+                window.workspaceShowSnapshotPanel = !window.workspaceShowSnapshotPanel;
+                renderViewFn?.();
+            };
+
+            if (window.workspaceShowParadigmPanel) {
+                const panel = wrap.createEl("div", { cls: "workspace-panel" });
+                const panelHead = panel.createEl("div", { cls: "workspace-panel-head" });
+                panelHead.createEl("div", { text: "📐 范式管理", cls: "workspace-panel-title" });
+                const panelActions = panelHead.createEl("div", { cls: "workspace-main-actions" });
+                const createBtn = panelActions.createEl("button", { text: "新建范式", cls: "workspace-sub-btn" });
+                createBtn.onclick = async () => { await createParadigm(); };
+                const unbindBtn = panelActions.createEl("button", { text: "解绑当前Tab全部范式", cls: "workspace-sub-btn" });
+                unbindBtn.onclick = async () => { await unbindParadigmFromCurrentTab(); };
+                if (boundParadigmIds.length > 0) {
+                    const syncBtn = panelActions.createEl("button", { text: "同步当前Tab已绑定范式", cls: "workspace-sub-btn" });
+                    syncBtn.onclick = async () => {
+                        await updateWorkspaceData((data) => {
+                            const tab = data.tabsById?.[activeTabId];
+                            normalizeBoundParadigmIds(tab).forEach((pgId) => {
+                                syncParadigmToTabInData(data, activeTabId, pgId);
+                            });
+                        });
+                        new Notice("✅ 当前 Tab 已同步已绑定范式");
+                    };
+                }
+
+                const list = panel.createEl("div", { cls: "workspace-panel-list" });
+                Object.values(WORKSPACE_DATA.paradigmsById || {}).forEach((paradigm) => {
+                    const row = list.createEl("div", { cls: "workspace-panel-row" });
+                    const left = row.createEl("div");
+                    const itemCount = Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((x) => x.paradigmId === paradigm.id).length;
+                    left.createEl("div", { text: `${paradigm.name} (${itemCount})` });
+                    left.createEl("small", { text: paradigm.id, attr: { style: "color:var(--text-muted);" } });
+                    const actions = row.createEl("div", { cls: "workspace-main-actions" });
+                    const isBound = boundParadigmIds.includes(paradigm.id);
+                    const bindBtn = actions.createEl("button", { text: isBound ? "解绑" : "绑定到当前Tab", cls: "workspace-sub-btn" });
+                    bindBtn.onclick = async () => {
+                        if (isBound) await unbindParadigmFromCurrentTab(paradigm.id);
+                        else await bindParadigmToCurrentTab(paradigm.id);
+                    };
+                    const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === paradigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
+                    editBtn.onclick = () => {
+                        window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === paradigm.id ? null : paradigm.id;
+                        renderViewFn?.();
+                    };
+                    const renameBtn = actions.createEl("button", { text: "重命名", cls: "workspace-sub-btn" });
+                    renameBtn.onclick = async () => { await renameParadigm(paradigm.id); };
+                    const deleteBtn = actions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
+                    deleteBtn.onclick = async () => { await deleteParadigm(paradigm.id); };
+                });
+
+                const editingParadigmId = window.workspaceEditingParadigmId;
+                const editingParadigm = editingParadigmId ? getParadigmById(editingParadigmId) : null;
+                if (editingParadigm) {
+                    const editor = panel.createEl("div", { cls: "workspace-panel", attr: { style: "margin-top:10px;" } });
+                    const head = editor.createEl("div", { cls: "workspace-panel-head" });
+                    head.createEl("div", { text: `🛠 范式条目：${editingParadigm.name}`, cls: "workspace-panel-title" });
+                    const actions = head.createEl("div", { cls: "workspace-main-actions" });
+                    const addRoot = actions.createEl("button", { text: "＋ 根条目", cls: "workspace-sub-btn" });
+                    addRoot.onclick = async () => { await addParadigmItem(editingParadigm.id, null); };
+                    const syncAll = actions.createEl("button", { text: "同步到已绑定Tab", cls: "workspace-sub-btn" });
+                    syncAll.onclick = async () => {
+                        await updateWorkspaceData((data) => {
+                            syncParadigmAcrossTabsInData(data, editingParadigm.id);
+                        });
+                        new Notice("✅ 已同步到所有绑定 Tab");
+                    };
+                    const paradigmRootDropZone = editor.createEl("div", {
+                        cls: "workspace-root-drop-zone",
+                        text: "↥ 拖拽到这里设为该范式根条目（顶层）"
+                    });
+                    paradigmRootDropZone.addEventListener("dragover", (e) => {
+                        e.preventDefault();
+                        if (!window.workspaceParadigmCurrentDragId) return;
+                        if (window.workspaceParadigmDragParadigmId !== editingParadigm.id) return;
+                        paradigmRootDropZone.classList.add("drag-over");
+                    });
+                    paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
+                    paradigmRootDropZone.addEventListener("drop", async (e) => {
+                        e.preventDefault();
+                        paradigmRootDropZone.classList.remove("drag-over");
+                        if (!window.workspaceParadigmCurrentDragId) return;
+                        if (window.workspaceParadigmDragParadigmId !== editingParadigm.id) return;
+                        await moveParadigmItemToRoot(window.workspaceParadigmCurrentDragId, editingParadigm.id);
+                    });
+                    const tree = editor.createEl("div");
+                    const roots = getParadigmChildrenIds(editingParadigm.id, null);
+                    if (roots.length === 0) tree.createEl("div", { text: "_暂无范式条目_", cls: "workspace-empty" });
+                    else renderParadigmTree(tree, editingParadigm.id, null, 0, new Set());
+                }
+            }
+
+            if (window.workspaceShowSnapshotPanel) {
+                const panel = wrap.createEl("div", { cls: "workspace-panel" });
+                const head = panel.createEl("div", { cls: "workspace-panel-head" });
+                head.createEl("div", { text: "💾 快照管理", cls: "workspace-panel-title" });
+                const actions = head.createEl("div", { cls: "workspace-main-actions" });
+                const saveBtn = actions.createEl("button", { text: "命名保存快照", cls: "workspace-sub-btn" });
+                saveBtn.onclick = async () => { await createSnapshot(); };
+
+                const list = panel.createEl("div", { cls: "workspace-panel-list" });
+                const snapIds = (WORKSPACE_DATA.snapshotOrderByTab?.[activeTabId] || []).filter((id) => !!WORKSPACE_DATA.snapshotsById?.[id]);
+                if (snapIds.length === 0) {
+                    list.createEl("div", { text: "_当前 Tab 暂无快照_", cls: "workspace-empty" });
+                } else {
+                    snapIds.forEach((snapId) => {
+                        const snap = WORKSPACE_DATA.snapshotsById[snapId];
+                        const row = list.createEl("div", { cls: "workspace-panel-row" });
+                        const left = row.createEl("div");
+                        left.createEl("div", { text: snap.name || snapId });
+                        left.createEl("small", { text: `${snap.createdAt || ""} · ${snap.id}`, attr: { style: "color:var(--text-muted);" } });
+                        const rActions = row.createEl("div", { cls: "workspace-main-actions" });
+                        const viewBtn = rActions.createEl("button", { text: window.workspaceSelectedSnapshotId === snapId ? "已查看" : "查看", cls: "workspace-sub-btn" });
+                        viewBtn.onclick = () => { window.workspaceSelectedSnapshotId = snapId; renderViewFn?.(); };
+                        const restoreBtn = rActions.createEl("button", { text: "恢复为新Tab", cls: "workspace-sub-btn" });
+                        restoreBtn.onclick = async () => { await restoreSnapshotAsNewTab(snapId); };
+                        const delBtn = rActions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
+                        delBtn.onclick = async () => { await deleteSnapshot(snapId); };
+                    });
+                }
+
+                const selectedId = window.workspaceSelectedSnapshotId;
+                const selected = selectedId ? WORKSPACE_DATA.snapshotsById?.[selectedId] : null;
+                if (selected) {
+                    const preview = panel.createEl("div", { cls: "workspace-panel", attr: { style: "margin-top:10px;" } });
+                    preview.createEl("div", { text: `📜 快照预览：${selected.name || selected.id}`, cls: "workspace-panel-title" });
+                    const tree = preview.createEl("div", { attr: { style: "margin-top:6px;" } });
+                    renderSnapshotPreview(tree, selected, null, 0, new Set());
+                }
+            }
+
+            const rootDropZone = wrap.createEl("div", { cls: "workspace-root-drop-zone", text: "↥ 拖拽到这里设为当前 Tab 根条目（顶层）" });
+            rootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                if (!window.workspaceTreeCurrentDragId) return;
+                rootDropZone.classList.add("drag-over");
+            });
+            rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
+            rootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                rootDropZone.classList.remove("drag-over");
+                if (!window.workspaceTreeCurrentDragId) return;
+                await moveItemToRoot(window.workspaceTreeCurrentDragId);
+            });
+
+            const list = wrap.createEl("div");
+            const roots = getChildrenIds(null, activeTabId);
+            if (roots.length === 0) {
+                list.createEl("div", { text: "_当前 Tab 暂无条目，点击上方按钮先创建一个_", cls: "workspace-empty" });
+            } else {
+                renderTree(list, null, 0, new Set(), activeTabId);
+            }
+        };
+
+        let renderQueued = false;
+        renderViewFn = () => {
+            if (renderQueued) return;
+            renderQueued = true;
+            setTimeout(() => {
+                renderQueued = false;
+                renderView();
+            }, 0);
+        };
+
+        renderViewFn();
+    } catch (e) {
+        console.error("[Workspace] 初始化失败:", e);
+        dv.container.innerHTML = "";
+        dv.container.createEl("div", {
+            text: `❌ Workspace 初始化失败: ${e.message}`,
+            attr: {
+                style: "padding:12px; border:1px solid var(--text-error); border-radius:8px; color:var(--text-error); background:var(--background-secondary);"
+            }
+        });
+    }
+})();
+```
+
+## Workspace V2（多 Tab + 范式 + 快照）改造规范
+
+> 目标：在保留扁平字典 JSON 结构的前提下，引入多 Tab、范式（父子条目）、范式挂载同步、命名快照，并保证对旧数据非破坏升级。
+
+### 1) 核心模型（保持扁平字典）
+
+```json
+{
+  "schemaVersion": "2.0",
+  "lastModified": "2026-03-05 17:00:00",
+  "activeTabId": "tab_xxx",
+  "tabsById": {
+    "tab_xxx": {
+      "id": "tab_xxx",
+      "name": "项目A",
+      "kind": "project",
+      "boundParadigmIds": ["pg_xxx", "pg_yyy"],
+      "boundParadigmId": "pg_xxx",
+      "createdAt": "2026-03-05 16:50:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "tabOrder": ["tab_xxx"],
+  "itemsById": {
+    "item_x1": {
+      "id": "item_x1",
+      "title": "需求澄清",
+      "parentId": null,
+      "tabId": "tab_xxx",
+      "sourceType": "tab",
+      "sourceParadigmId": null,
+      "sourceParadigmItemId": null,
+      "isCollapsed": false,
+      "imageRef": "",
+      "comment": "",
+      "noteBinding": null,
+      "createdAt": "2026-03-05 16:55:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    },
+    "item_p1_in_tab_xxx": {
+      "id": "item_p1_in_tab_xxx",
+      "title": "范式：目标定义",
+      "parentId": null,
+      "tabId": "tab_xxx",
+      "sourceType": "paradigm",
+      "sourceParadigmId": "pg_xxx",
+      "sourceParadigmItemId": "pgItem_p1",
+      "isCollapsed": false,
+      "imageRef": "",
+      "comment": "",
+      "noteBinding": null,
+      "createdAt": "2026-03-05 16:56:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "childrenByParentByTab": {
+    "tab_xxx::__root__": ["item_x1", "item_p1_in_tab_xxx"],
+    "tab_xxx::item_p1_in_tab_xxx": []
+  },
+  "paradigmsById": {
+    "pg_xxx": {
+      "id": "pg_xxx",
+      "name": "任务启动范式",
+      "createdAt": "2026-03-05 16:40:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "paradigmItemsById": {
+    "pgItem_p1": {
+      "id": "pgItem_p1",
+      "paradigmId": "pg_xxx",
+      "title": "目标定义",
+      "parentId": null,
+      "order": 10,
+      "imageRef": "",
+      "comment": "",
+      "noteBinding": null,
+      "createdAt": "2026-03-05 16:41:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "paradigmChildrenByParent": {
+    "pg_xxx::__root__": ["pgItem_p1"]
+  },
+  "paradigmToTabItemMapByTab": {
+    "tab_xxx::pgItem_p1": "item_p1_in_tab_xxx"
+  },
+  "collapsedById": {},
+  "snapshotsById": {},
+  "snapshotOrderByTab": {
+    "tab_xxx": []
+  }
+}
+```
+
+说明：
+- `childrenByParentByTab` 与 `paradigmChildrenByParent` 用 `tabId::parentId` / `paradigmId::parentId` 作为键，保持扁平字典。
+- 范式挂载条目通过 `sourceType=paradigm` + `sourceParadigmItemId` 明确标注“这是范式条目”。
+- 范式条目与挂载实例都支持 `imageRef`、`comment`、`noteBinding`，并按范式同步到各 Tab。
+- Tab 可表示项目/任务/对象，建议 `kind` 支持 `project | task | object`。
+
+### 2) Tab 系统规则
+
+- 多开界面：顶部 `tabOrder` 渲染 Tab 条；`activeTabId` 决定当前树。
+- Tab 条支持拖拽重排，直接更新 `tabOrder`（按前后插入）。
+- Tab 条支持自动换行（Tab 很多时折行显示）。
+- Tab 操作：新增、重命名、关闭（关闭前确认是否保留快照）。
+- 每个 Tab 独立树：渲染和拖拽只读写当前 `tabId` 对应的 `childrenByParentByTab` 关系。
+
+### 3) 范式系统规则
+
+- 范式是独立父子树：`paradigmsById + paradigmItemsById + paradigmChildrenByParent`。
+- Tab 可绑定多个范式：在 Tab 上保存 `boundParadigmIds`（兼容保留 `boundParadigmId` 首项），并建立 `paradigmToTabItemMapByTab`。
+- 挂载时创建实例条目：
+  - 每个范式条目在 Tab 内有一个实例 `itemId`（可编辑显示状态，但核心标题/结构受范式驱动）。
+  - 实例条目保留 `sourceParadigmItemId`，用于后续同步定位。
+
+### 4) 范式编辑同步（你要求的“联动移动”）
+
+- 范式条目改名：同步所有绑定 Tab 的实例标题。
+- 范式条目移动（改 parent/order）：
+  - 在每个绑定 Tab 中找到对应实例条目并更新 `parentId` 与同级顺序。
+  - 如果该范式实例节点下挂了 Tab 私有子节点，这些子节点不变；因为父节点实例 ID 不变，随父节点整体移动。
+- 范式条目删除：对应实例条目标记为 `orphaned=true`（推荐）或按策略级联删除。
+
+### 5) 快照系统规则
+
+- 快照是“Tab 级只读历史切片”，不与当前范式冲突。
+- 保存快照（命名保存）时写入：
+  - `snapshotsById[snapshotId] = { id, tabId, name, createdAt, itemsById, childrenByParentByTab, collapsedById }`
+- 浏览快照：独立视图只读渲染快照树。
+- 恢复策略建议：`恢复为新 Tab`，避免覆盖当前 Tab 与范式同步状态。
+
+### 6) 非破坏升级与兼容
+
+- `schemaVersion 1.x -> 2.0` 迁移时：
+  - 原 `itemsById/childrenByParent` 迁移到默认 `tab_default`。
+  - 原字段保留，不做删除式重写；仅追加新字段与新索引。
+- 更新采用“复制-修改-保存”：
+  - 读取当前 JSON -> `clone` -> 在内存变更 -> `sanitize` -> 整体写回。
+  - 禁止就地破坏旧 key（尤其历史快照与旧绑定）。
+
+### 7) UI 最小落地清单
+
+- 顶部：Tab 条 + `新建Tab` + `快照`按钮。
+- 侧栏/弹窗：范式管理（新建范式、编辑范式树、绑定到当前 Tab）。
+- 主树：范式条目标识（如 `📐` 徽标）、普通条目保持原操作。
+- 快照面板：按 Tab 列出快照，支持“查看”和“恢复为新 Tab”。
+
+```mermaid
+flowchart LR
+  %% 节点样式定义
+  classDef level0 fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+  classDef level1 fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+  classDef level2 fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+  classDef level3 fill:#fff3e0,stroke:#e65100,stroke-width:2px
+  classDef level4 fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+  classDef levelOther fill:#fafafa,stroke:#424242,stroke-width:1px
+  classDef targetNode fill:#ffeb3b,stroke:#f57f17,stroke-width:3px
+  classDef clickable cursor:pointer
+  %% 按层级分组的子图
+  subgraph level0["第 0 层 (1 个节点)"]
+    node_ATOMat121dot001dot007dot001dot003C002dot010E["🎯 ATOM@121.001.007.001.003C002.010E<br/>配合与间隙为啥不画必检项目的三角号哇<br/>[引用:0 被引用:0]"]
+  end
+  %% 引用关系
+  %% 应用样式
+  class node_ATOMat121dot001dot007dot001dot003C002dot010E targetNode
+  %% 点击事件
+  click node_ATOMat121dot001dot007dot001dot003C002dot010E handleNodeClick
+  class node_ATOMat121dot001dot007dot001dot003C002dot010E clickable
+
+```

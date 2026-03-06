@@ -1,0 +1,69 @@
+{
+  "keywords": {
+    "kw-j6qpgz": {
+      "id": "kw-j6qpgz",
+      "baseKeyword": "索引页操作介绍",
+      "displayText": "索引页操作介绍",
+      "sortLetter": "#",
+      "type": "yaml",
+      "notes": [
+        {
+          "path": "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作.md",
+          "name": "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作",
+          "suffix": "",
+          "sourceType": "yaml"
+        }
+      ],
+      "sortKey": "121.001.007.002.058.001.001",
+      "parentId": "kw-lk8o1l",
+      "order": 0
+    },
+    "kw-lk8o1l": {
+      "id": "kw-lk8o1l",
+      "baseKeyword": "给ANTINET的大家都好懂的说明书",
+      "displayText": "给ANTINET的大家都好懂的说明书",
+      "sortLetter": "#",
+      "type": "yaml",
+      "notes": [
+        {
+          "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md",
+          "name": "ATOM@121.001.007.002.058- 说明书",
+          "suffix": "",
+          "sourceType": "yaml"
+        }
+      ],
+      "sortKey": "121.001.007.002.058",
+      "parentId": null,
+      "order": 0
+    },
+    "kw-7ny1u5": {
+      "id": "kw-7ny1u5",
+      "baseKeyword": "M02- mermaid图系列",
+      "displayText": "02- mermaid图系列",
+      "sortLetter": "M",
+      "type": "yaml",
+      "notes": [
+        {
+          "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了.md",
+          "name": "ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了",
+          "suffix": "+项目+项目015- 信条电影拆解",
+          "sourceType": "yaml"
+        }
+      ],
+      "sortKey": "121.001.007.002.225.006.002",
+      "parentId": null,
+      "order": 0
+    }
+  },
+  "capsuleExpanded": {
+    "kw-j6qpgz": true,
+    "kw-lk8o1l": true,
+    "kw-7ny1u5": true
+  },
+  "version": "3.9",
+  "lastModified": "2026-03-06 23:13:44",
+  "metadata": {
+    "total": 3,
+    "topLevel": 2
+  }
+}

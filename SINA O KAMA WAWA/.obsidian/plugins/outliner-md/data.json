@@ -1,0 +1,18 @@
+{
+  "editableBacklinks": true,
+  "livePreviewForBacklinks": false,
+  "editableBlockEmbeds": true,
+  "hideFrontmatter": false,
+  "timeFormatWidget": false,
+  "dragAndDrop": false,
+  "noteAsNotebook": true,
+  "markForSplitSections": "%%SECTION{NAME}%%",
+  "showFullBtnAtLeftSide": false,
+  "alwaysShowSectionHeader": true,
+  "showSectionTitle": true,
+  "autoHideEmptySectionHeader": false,
+  "markForSplitPages": "++PAGE{NAME}++",
+  "foldTaskGroup": false,
+  "taskGroupQuery": "#now",
+  "paperLayout": false
+}

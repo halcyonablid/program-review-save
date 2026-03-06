@@ -1,0 +1,15 @@
+{
+  "outputFolder": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain",
+  "atomRegex": "^ATOM@",
+  "debounceMs": 800,
+  "fullScanOnStartup": true,
+  "autoExportOnFlush": true,
+  "useCachedRead": true,
+  "notesFileName": "EVA_Notes.json",
+  "linksFileName": "EVA_Links.json",
+  "indexesFileName": "EVA_Indexes.json",
+  "stateFileName": "EVA_Indexer_State.json",
+  "compatibilityMode": true,
+  "maxConcurrency": 4,
+  "showNotices": true
+}

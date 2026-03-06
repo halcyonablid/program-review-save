@@ -1,0 +1,40 @@
+
+
+<%*
+async function openFile() {
+    const filePath = '项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.002- ATEC7项目，以及之前的内容的汇总，这里是学习历程，卡片集合.md';
+    
+    const targetFile = app.vault.getAbstractFileByPath(filePath);
+    
+    if (!targetFile) {
+        new Notice('未找到目标文件');
+        return;
+    }
+
+    try {
+        // 创建新标签页
+        const newLeaf = app.workspace.getLeaf('tab');
+        // 打开文件
+        await newLeaf.openFile(targetFile);
+        // 设置为阅读模式
+        await newLeaf.setViewState({
+            type: 'markdown',
+            state: { mode: 'source' }
+        });
+        
+        new Notice('已在新标签页成功打开文件');
+    } catch (error) {
+        console.error('Error:', error);
+        new Notice(`打开文件时发生错误：${error.message}`);
+    }
+}
+
+// 执行主函数
+await openFile();
+%>
+
+
+
+
+
+

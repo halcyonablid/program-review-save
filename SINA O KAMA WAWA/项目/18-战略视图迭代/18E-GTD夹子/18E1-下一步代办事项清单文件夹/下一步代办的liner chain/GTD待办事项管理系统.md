@@ -1,0 +1,3762 @@
+```dataviewjs
+// ============================================================
+// 🚀 GTD 管理系统 (v20.0 多标签筛选与Quick Nav标签版)
+// 新增：多标签筛选 + Quick Nav 项目标签同步显示
+// 调整：移除 Timeline 功能，降低操作阻力
+// ====================================
+
+(async () => {
+
+    // --- 0. 标签数据文件管理 ---
+    const JSON_FILENAME = "GTD_Database.json";
+    const TAGS_FILENAME = "GTD_Tags.json";
+    const VIEW_STATE_FILENAME = "GTD_ViewState.json";
+    const currentFolder = dv.current().file.folder;
+    const currentNotePath = dv.current().file.path;
+    const DB_PATH = currentFolder + "/" + JSON_FILENAME;
+    const TAGS_PATH = currentFolder + "/" + TAGS_FILENAME;
+    const VIEW_STATE_PATH = currentFolder + "/" + VIEW_STATE_FILENAME;
+    const TAG_FILTER_STORAGE_KEY = `gtd.tagFilters::${DB_PATH}`;
+    const TAG_FILTER_PRESETS_STORAGE_KEY = `gtd.tagFilterPresets::${DB_PATH}`;
+    const SCROLL_STATE_STORAGE_KEY = `gtd.scrollState::${currentNotePath}`;
+    const VIEW_CONTEXT_STORAGE_KEY = `gtd.viewContext::${currentNotePath}`;
+    const VIEW_STATE_DEBUG_ENABLED = false;
+    const MAX_VIEW_DEBUG_ENTRIES = 24;
+    const AUTO_PERSIST_INTERVAL_MS = 8000;
+    const USER_SCROLL_INTENT_WINDOW_MS = 1800;
+    const TOP_OVERWRITE_GUARD_MIN_SCROLL = 160;
+
+    // 默认标签定义（首次使用或文件不存在时）
+    const DEFAULT_TAG_DEFINITIONS = {
+        "work-type":     { label: "工作类型", icon: "📋", color: "#7f8c8d", parentId: null, isCategory: true, order: 0 },
+        "system":        { label: "架构设计", icon: "🏗️", color: "#9b59b6", parentId: "work-type", isCategory: false, order: 0 },
+        "learning":      { label: "学习钻研", icon: "📚", color: "#3498db", parentId: "work-type", isCategory: false, order: 1 },
+        "review":        { label: "复盘沉淀", icon: "💡", color: "#f1c40f", parentId: "work-type", isCategory: false, order: 2 },
+        "urgent":        { label: "紧急救火", icon: "🔥", color: "#e74c3c", parentId: "work-type", isCategory: false, order: 3 },
+        "waiting":       { label: "外部等待", icon: "⏳", color: "#95a5a6", parentId: "work-type", isCategory: false, order: 4 },
+        "domain":        { label: "能力域", icon: "🎯", color: "#2c3e50", parentId: null, isCategory: true, order: 1 },
+        "tech":          { label: "技术能力", icon: "⚙️", color: "#1abc9c", parentId: "domain", isCategory: false, order: 0 },
+        "mgmt":          { label: "管理能力", icon: "👔", color: "#e67e22", parentId: "domain", isCategory: false, order: 1 },
+        "personal":      { label: "个人发展", icon: "🌱", color: "#27ae60", parentId: "domain", isCategory: false, order: 2 },
+        "priority":      { label: "紧急程度", icon: "⚡", color: "#8e44ad", parentId: null, isCategory: true, order: 2 },
+        "p1-critical":   { label: "P1-紧急", icon: "🔴", color: "#c0392b", parentId: "priority", isCategory: false, order: 0 },
+        "p2-high":       { label: "P2-重要", icon: "🟠", color: "#d35400", parentId: "priority", isCategory: false, order: 1 },
+        "p3-normal":     { label: "P3-正常", icon: "🟡", color: "#f39c12", parentId: "priority", isCategory: false, order: 2 },
+        "p4-low":        { label: "P4-低", icon: "🟢", color: "#27ae60", parentId: "priority", isCategory: false, order: 3 }
+    };
+
+    // 从文件加载标签定义
+    const loadTagDefinitions = async () => {
+        try {
+            if (await app.vault.adapter.exists(TAGS_PATH)) {
+                const content = await app.vault.adapter.read(TAGS_PATH);
+                const data = JSON.parse(content);
+                return data.tags || DEFAULT_TAG_DEFINITIONS;
+            }
+        } catch (e) {
+            console.error("加载标签定义失败:", e);
+        }
+        return DEFAULT_TAG_DEFINITIONS;
+    };
+
+    // 保存标签定义到文件
+    const saveTagDefinitions = async (tags) => {
+        const data = {
+            tags: tags,
+            version: "1.0",
+            lastModified: moment().format("YYYY-MM-DD HH:mm:ss")
+        };
+        const jsonString = JSON.stringify(data, null, 2);
+        const file = app.vault.getAbstractFileByPath(TAGS_PATH);
+        if (file) {
+            await app.vault.modify(file, jsonString);
+        } else {
+            await app.vault.create(TAGS_PATH, jsonString);
+        }
+    };
+
+    // 加载标签定义
+    let TAG_DEFINITIONS = await loadTagDefinitions();
+
+    const normalizeTagFilterList = (filters) => {
+        const uniq = [];
+        const seen = new Set();
+        (Array.isArray(filters) ? filters : []).forEach((id) => {
+            const key = String(id || "").trim();
+            if (!key || seen.has(key)) return;
+            if (!TAG_DEFINITIONS[key]) return;
+            seen.add(key);
+            uniq.push(key);
+        });
+        return uniq;
+    };
+    const loadPersistedTagFilters = () => {
+        try {
+            const raw = localStorage.getItem(TAG_FILTER_STORAGE_KEY);
+            if (!raw) return null;
+            return normalizeTagFilterList(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    };
+    const savePersistedTagFilters = (filters) => {
+        try {
+            localStorage.setItem(TAG_FILTER_STORAGE_KEY, JSON.stringify(normalizeTagFilterList(filters)));
+        } catch (e) {}
+    };
+    const setTagFilters = (filters) => {
+        window.gtdTagFilters = normalizeTagFilterList(filters);
+        savePersistedTagFilters(window.gtdTagFilters);
+    };
+    const normalizeTagPresetName = (name) => String(name || "").trim().slice(0, 50);
+    const normalizeTagFilterPresets = (presets) => {
+        const result = [];
+        const seen = new Set();
+        (Array.isArray(presets) ? presets : []).forEach((preset) => {
+            const rawName = typeof preset === "string" ? preset : (preset?.name ?? "");
+            const name = normalizeTagPresetName(rawName);
+            if (!name || seen.has(name)) return;
+            seen.add(name);
+            const filters = normalizeTagFilterList(typeof preset === "string" ? [] : preset?.filters);
+            result.push({
+                name,
+                filters,
+                createdAt: preset?.createdAt || preset?.updatedAt || moment().format("YYYY-MM-DD HH:mm:ss"),
+                updatedAt: preset?.updatedAt || moment().format("YYYY-MM-DD HH:mm:ss")
+            });
+        });
+        return result;
+    };
+    const loadPersistedTagFilterPresets = () => {
+        try {
+            const raw = localStorage.getItem(TAG_FILTER_PRESETS_STORAGE_KEY);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return normalizeTagFilterPresets(parsed);
+        } catch (e) {
+            return [];
+        }
+    };
+    const savePersistedTagFilterPresets = (presets) => {
+        try {
+            localStorage.setItem(TAG_FILTER_PRESETS_STORAGE_KEY, JSON.stringify(normalizeTagFilterPresets(presets)));
+        } catch (e) {}
+    };
+    const setTagFilterPresets = (presets) => {
+        window.gtdTagFilterPresets = normalizeTagFilterPresets(presets);
+        savePersistedTagFilterPresets(window.gtdTagFilterPresets);
+    };
+    const isSameFilterSet = (a, b) => {
+        const aa = normalizeTagFilterList(a).slice().sort();
+        const bb = normalizeTagFilterList(b).slice().sort();
+        if (aa.length !== bb.length) return false;
+        for (let i = 0; i < aa.length; i++) if (aa[i] !== bb[i]) return false;
+        return true;
+    };
+    const getTagPresetSummaryText = (filters) => {
+        const normalized = normalizeTagFilterList(filters);
+        if (normalized.length === 0) return "全部标签";
+        return normalized.map((id) => {
+            const def = TAG_DEFINITIONS[id];
+            return def ? `${def.icon} ${def.label}` : id;
+        }).join(" · ");
+    };
+
+    // ============================================================
+    // 🔷 标签层级工具函数
+    // ============================================================
+
+    // --- 0.1 标签层级工具函数 ---
+    // 获取标签的所有子孙标签ID（用于筛选时父级包含子级）
+    const getDescendantTagIds = (tagId) => {
+        const descendants = [];
+        const findChildren = (parentId) => {
+            Object.keys(TAG_DEFINITIONS).forEach(key => {
+                if (TAG_DEFINITIONS[key].parentId === parentId) {
+                    descendants.push(key);
+                    findChildren(key); // 递归查找子孙
+                }
+            });
+        };
+        findChildren(tagId);
+        return descendants;
+    };
+
+    // 获取标签的所有祖先标签ID（用于显示面包屑路径）
+    const getAncestorTagIds = (tagId) => {
+        const ancestors = [];
+        let current = TAG_DEFINITIONS[tagId];
+        while (current && current.parentId) {
+            ancestors.unshift(current.parentId);
+            current = TAG_DEFINITIONS[current.parentId];
+        }
+        return ancestors;
+    };
+
+    // 获取顶层标签（parentId为null的）
+    const getTopLevelTags = () => {
+        return Object.keys(TAG_DEFINITIONS).filter(key => TAG_DEFINITIONS[key].parentId === null);
+    };
+
+    // 获取某个标签的直接子标签
+    const getChildTags = (parentId) => {
+        return Object.keys(TAG_DEFINITIONS).filter(key => TAG_DEFINITIONS[key].parentId === parentId);
+    };
+
+    // 标签是否匹配筛选条件（支持多标签，父标签包含子孙标签）
+    const tagMatchesFilter = (itemTags, filterTagIds) => {
+        if (!filterTagIds || filterTagIds.length === 0) return true;
+        if (!itemTags || itemTags.length === 0) return false;
+        const matchesOne = (filterId) => {
+            if (itemTags.includes(filterId)) return true;
+            return itemTags.some(t => getDescendantTagIds(filterId).includes(t));
+        };
+        return filterTagIds.some(matchesOne);
+    };
+
+    // 初始化全局状态
+    if (window.gtdShowOnlyFirstClass === undefined) window.gtdShowOnlyFirstClass = false;
+    if (window.gtdShowOnlyFocus === undefined) window.gtdShowOnlyFocus = false;
+    if (!Array.isArray(window.gtdTagFilters)) {
+        if (window.gtdTagFilter) window.gtdTagFilters = [window.gtdTagFilter];
+        else window.gtdTagFilters = [];
+    }
+    if (!Array.isArray(window.gtdTagFilterPresets)) window.gtdTagFilterPresets = loadPersistedTagFilterPresets();
+    else setTagFilterPresets(window.gtdTagFilterPresets);
+    const persistedTagFilters = loadPersistedTagFilters();
+    if (persistedTagFilters !== null) setTagFilters(persistedTagFilters);
+    else setTagFilters(window.gtdTagFilters);
+    if (window.gtdKaioKenMode === undefined) window.gtdKaioKenMode = false;
+    if (window.gtdTagManagerMode === undefined) window.gtdTagManagerMode = false;
+    if (window.gtdRecentIds === undefined) window.gtdRecentIds = [];
+    if (window.gtdQuickNavCollapsed === undefined) window.gtdQuickNavCollapsed = {};
+    if (!window.gtdCommentDrawerState || typeof window.gtdCommentDrawerState !== "object") {
+        window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
+    }
+    if (window.gtdCommentPreviewComponent === undefined) window.gtdCommentPreviewComponent = null;
+    if (!(window.gtdOutlinerFileRawCache instanceof Map)) window.gtdOutlinerFileRawCache = new Map();
+    if (!(window.gtdOutlinerMarkerBodyCache instanceof Map)) window.gtdOutlinerMarkerBodyCache = new Map();
+    if (!window.gtdScrollStateRegistry || typeof window.gtdScrollStateRegistry !== "object") window.gtdScrollStateRegistry = {};
+    if (!window.gtdScrollListenerRegistry || typeof window.gtdScrollListenerRegistry !== "object") window.gtdScrollListenerRegistry = {};
+    if (!window.gtdLifecycleListenerRegistry || typeof window.gtdLifecycleListenerRegistry !== "object") window.gtdLifecycleListenerRegistry = {};
+    if (!window.gtdViewContextRegistry || typeof window.gtdViewContextRegistry !== "object") window.gtdViewContextRegistry = {};
+    if (!window.gtdRenderRestoreState || typeof window.gtdRenderRestoreState !== "object") {
+        window.gtdRenderRestoreState = {
+            pendingContext: null,
+            expandedItemIds: [],
+            expandedProjectIds: [],
+            nextContextOverride: null,
+            isRestoring: false,
+            hasUserMovedSinceRestore: false,
+            timerIds: [],
+            interactionAbortController: null
+        };
+    }
+    if (!window.gtdViewContextFileRegistry || typeof window.gtdViewContextFileRegistry !== "object") {
+        window.gtdViewContextFileRegistry = {
+            loaded: {},
+            loading: {},
+            payloads: {},
+            timers: {},
+            saveChains: {}
+        };
+    }
+    if (!window.gtdAutoPersistRegistry || typeof window.gtdAutoPersistRegistry !== "object") window.gtdAutoPersistRegistry = {};
+    if (!window.gtdViewDebugRegistry || typeof window.gtdViewDebugRegistry !== "object") window.gtdViewDebugRegistry = {};
+    if (!window.gtdViewTraceRegistry || typeof window.gtdViewTraceRegistry !== "object") window.gtdViewTraceRegistry = {};
+    if (!window.gtdUserScrollIntentRegistry || typeof window.gtdUserScrollIntentRegistry !== "object") window.gtdUserScrollIntentRegistry = {};
+
+    window.gtdCurrentDragId = null;
+    window.gtdCurrentDragTagId = null;
+    window.gtdCurrentDragProjectId = null;
+
+    const normalizeScrollState = (state) => ({
+        top: Math.max(0, Number(state?.top) || 0),
+        left: Math.max(0, Number(state?.left) || 0)
+    });
+    const normalizeViewContext = (state) => {
+        const scroll = normalizeScrollState(state?.scroll || state);
+        const anchorItemId = String(state?.anchorItemId || "").trim() || null;
+        const anchorSectionId = String(state?.anchorSectionId || "").trim() || null;
+        const anchorProjectId = String(state?.anchorProjectId || "").trim() || null;
+        const expandedItemPath = Array.isArray(state?.expandedItemPath)
+            ? state.expandedItemPath.map((id) => String(id || "").trim()).filter(Boolean)
+            : [];
+        const expandedProjectPath = Array.isArray(state?.expandedProjectPath)
+            ? state.expandedProjectPath.map((id) => String(id || "").trim()).filter(Boolean)
+            : [];
+        const anchorOffset = Number.isFinite(Number(state?.anchorOffset)) ? Number(state.anchorOffset) : 0;
+        return {
+            scroll,
+            anchorItemId,
+            anchorSectionId,
+            anchorProjectId,
+            expandedItemPath: Array.from(new Set(expandedItemPath)),
+            expandedProjectPath: Array.from(new Set(expandedProjectPath)),
+            anchorOffset: Math.max(-2000, Math.min(2000, anchorOffset))
+        };
+    };
+    const createDefaultViewStatePayload = () => ({
+        version: "1.0",
+        updatedAt: "",
+        views: {},
+        debug: {},
+        trace: {}
+    });
+    const normalizeDebugEntries = (entries) => {
+        const list = Array.isArray(entries) ? entries : [];
+        return list
+            .slice(-MAX_VIEW_DEBUG_ENTRIES)
+            .map((entry) => ({
+                ts: String(entry?.ts || ""),
+                event: String(entry?.event || "unknown"),
+                details: entry?.details && typeof entry.details === "object" ? entry.details : {}
+            }));
+    };
+    const normalizeViewStatePayload = (data) => {
+        const base = createDefaultViewStatePayload();
+        const rawViews = data?.views && typeof data.views === "object" ? data.views : {};
+        const rawDebug = data?.debug && typeof data.debug === "object" ? data.debug : {};
+        const rawTrace = data?.trace && typeof data.trace === "object" ? data.trace : {};
+        const views = {};
+        const debug = {};
+        const trace = {};
+        Object.keys(rawViews).forEach((path) => {
+            views[path] = normalizeViewContext(rawViews[path]);
+        });
+        Object.keys(rawDebug).forEach((path) => {
+            debug[path] = normalizeDebugEntries(rawDebug[path]);
+        });
+        Object.keys(rawTrace).forEach((path) => {
+            trace[path] = rawTrace[path] && typeof rawTrace[path] === "object" ? rawTrace[path] : {};
+        });
+        return {
+            version: String(data?.version || base.version),
+            updatedAt: String(data?.updatedAt || base.updatedAt),
+            views,
+            debug,
+            trace
+        };
+    };
+    const recordViewTrace = (key, details = {}) => {
+        const current = window.gtdViewTraceRegistry[currentNotePath] && typeof window.gtdViewTraceRegistry[currentNotePath] === "object"
+            ? window.gtdViewTraceRegistry[currentNotePath]
+            : {};
+        current[key] = {
+            ts: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+            details
+        };
+        window.gtdViewTraceRegistry[currentNotePath] = current;
+    };
+    const shouldPersistTraceEvent = (event) => [
+        "script_boot",
+        "bind_scroll_host",
+        "persist_guard_top",
+        "restore_cancelled",
+        "restore_start",
+        "restore_finish",
+        "restore_anchor_hit",
+        "restore_anchor_miss",
+        "restore_anchor_invalid_offset",
+        "restore_section_hit"
+    ].includes(String(event || ""));
+    const appendViewDebugLog = (event, details = {}) => {
+        const eventName = String(event || "unknown");
+        if (VIEW_STATE_DEBUG_ENABLED) {
+            const current = normalizeDebugEntries(window.gtdViewDebugRegistry[currentNotePath] || []);
+            current.push({
+                ts: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+                event: eventName,
+                details
+            });
+            window.gtdViewDebugRegistry[currentNotePath] = normalizeDebugEntries(current);
+        }
+        if (shouldPersistTraceEvent(eventName)) {
+            recordViewTrace(String(event || "unknown"), details);
+        }
+    };
+    appendViewDebugLog("script_boot", {
+        notePath: currentNotePath,
+        dbPath: DB_PATH,
+        viewStatePath: VIEW_STATE_PATH
+    });
+    const escapeSelectorValue = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const loadPersistedScrollState = () => {
+        try {
+            const raw = localStorage.getItem(SCROLL_STATE_STORAGE_KEY);
+            if (!raw) return null;
+            return normalizeScrollState(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    };
+    const savePersistedScrollState = (state) => {
+        const normalized = normalizeScrollState(state);
+        window.gtdScrollStateRegistry[currentNotePath] = normalized;
+        try {
+            localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized));
+        } catch (e) {}
+        return normalized;
+    };
+    const loadPersistedViewContext = () => {
+        const mem = window.gtdViewContextRegistry[currentNotePath];
+        if (mem) return normalizeViewContext(mem);
+        try {
+            const raw = localStorage.getItem(VIEW_CONTEXT_STORAGE_KEY);
+            if (!raw) return null;
+            return normalizeViewContext(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    };
+    const ensureViewContextFileLoaded = async () => {
+        const registry = window.gtdViewContextFileRegistry;
+        if (registry.loaded[VIEW_STATE_PATH]) return;
+        if (registry.loading[VIEW_STATE_PATH]) {
+            await registry.loading[VIEW_STATE_PATH];
+            return;
+        }
+        registry.loading[VIEW_STATE_PATH] = (async () => {
+            let payload = createDefaultViewStatePayload();
+            try {
+                if (await app.vault.adapter.exists(VIEW_STATE_PATH)) {
+                    const raw = await app.vault.adapter.read(VIEW_STATE_PATH);
+                    payload = normalizeViewStatePayload(JSON.parse(raw));
+                }
+            } catch (e) {
+                console.error("加载 GTD 视图状态文件失败:", e);
+            }
+            registry.payloads[VIEW_STATE_PATH] = payload;
+            if (payload.views[currentNotePath]) {
+                window.gtdViewContextRegistry[currentNotePath] = normalizeViewContext(payload.views[currentNotePath]);
+            }
+            if (payload.debug[currentNotePath]) {
+                window.gtdViewDebugRegistry[currentNotePath] = normalizeDebugEntries(payload.debug[currentNotePath]);
+            }
+            registry.loaded[VIEW_STATE_PATH] = true;
+        })();
+        try {
+            await registry.loading[VIEW_STATE_PATH];
+        } finally {
+            delete registry.loading[VIEW_STATE_PATH];
+        }
+    };
+    const flushPersistedViewContextToFile = async () => {
+        const registry = window.gtdViewContextFileRegistry;
+        await ensureViewContextFileLoaded();
+        const payload = normalizeViewStatePayload(registry.payloads[VIEW_STATE_PATH] || createDefaultViewStatePayload());
+        payload.views[currentNotePath] = normalizeViewContext(window.gtdViewContextRegistry[currentNotePath] || getSavedViewContext());
+        if (VIEW_STATE_DEBUG_ENABLED) {
+            payload.debug[currentNotePath] = normalizeDebugEntries(window.gtdViewDebugRegistry[currentNotePath] || []);
+        } else {
+            delete payload.debug[currentNotePath];
+        }
+        const tracePayload = window.gtdViewTraceRegistry[currentNotePath] && typeof window.gtdViewTraceRegistry[currentNotePath] === "object"
+            ? window.gtdViewTraceRegistry[currentNotePath]
+            : {};
+        if (Object.keys(tracePayload).length > 0) payload.trace[currentNotePath] = tracePayload;
+        else delete payload.trace[currentNotePath];
+        payload.updatedAt = moment().format("YYYY-MM-DD HH:mm:ss");
+        registry.payloads[VIEW_STATE_PATH] = payload;
+        const jsonString = JSON.stringify(payload, null, 2);
+        const file = app.vault.getAbstractFileByPath(VIEW_STATE_PATH);
+        if (file) await app.vault.modify(file, jsonString);
+        else await app.vault.create(VIEW_STATE_PATH, jsonString);
+    };
+    const schedulePersistedViewContextToFile = (immediate = false) => {
+        const registry = window.gtdViewContextFileRegistry;
+        const timerKey = VIEW_STATE_PATH;
+        const enqueue = () => {
+            registry.saveChains[timerKey] = (registry.saveChains[timerKey] || Promise.resolve())
+                .then(() => flushPersistedViewContextToFile())
+                .catch((error) => console.error("保存 GTD 视图状态文件失败:", error));
+            return registry.saveChains[timerKey];
+        };
+        if (registry.timers[timerKey]) {
+            window.clearTimeout(registry.timers[timerKey]);
+            delete registry.timers[timerKey];
+        }
+        if (immediate) return enqueue();
+        registry.timers[timerKey] = window.setTimeout(() => {
+            delete registry.timers[timerKey];
+            enqueue();
+        }, 900);
+        return registry.saveChains[timerKey] || Promise.resolve();
+    };
+    const savePersistedViewContext = (state, options = {}) => {
+        const normalized = normalizeViewContext(state);
+        const host = findScrollHost();
+        window.gtdViewContextRegistry[currentNotePath] = normalized;
+        window.gtdScrollStateRegistry[currentNotePath] = normalized.scroll;
+        appendViewDebugLog("persist_save", {
+            reason: options?.reason || "unknown",
+            scrollTop: normalized.scroll.top,
+            section: normalized.anchorSectionId,
+            anchorItemId: normalized.anchorItemId,
+            anchorProjectId: normalized.anchorProjectId,
+            anchorOffset: normalized.anchorOffset,
+            host: getScrollHostDebugLabel(host),
+            hostRange: getScrollRange(host),
+            restoring: window.gtdRenderRestoreState.isRestoring === true
+        });
+        try {
+            localStorage.setItem(VIEW_CONTEXT_STORAGE_KEY, JSON.stringify(normalized));
+            localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized.scroll));
+        } catch (e) {}
+        schedulePersistedViewContextToFile(options?.immediate === true);
+        return normalized;
+    };
+    const getSavedScrollState = () => {
+        const mem = window.gtdScrollStateRegistry[currentNotePath];
+        if (mem) return normalizeScrollState(mem);
+        const persisted = loadPersistedScrollState();
+        if (persisted) {
+            window.gtdScrollStateRegistry[currentNotePath] = persisted;
+            return persisted;
+        }
+        return { top: 0, left: 0 };
+    };
+    const getSavedViewContext = () => {
+        const persisted = loadPersistedViewContext();
+        if (persisted) return persisted;
+        return normalizeViewContext({ scroll: getSavedScrollState() });
+    };
+    const markUserScrollIntent = (type = "unknown") => {
+        window.gtdUserScrollIntentRegistry[currentNotePath] = {
+            ts: Date.now(),
+            type: String(type || "unknown")
+        };
+    };
+    const hasRecentUserScrollIntent = (maxAgeMs = USER_SCROLL_INTENT_WINDOW_MS) => {
+        const state = window.gtdUserScrollIntentRegistry[currentNotePath];
+        if (!state?.ts) return false;
+        return (Date.now() - Number(state.ts || 0)) <= maxAgeMs;
+    };
+    const getScrollRange = (el) => {
+        if (!el) return 0;
+        return Math.max(0, Number(el.scrollHeight || 0) - Number(el.clientHeight || 0));
+    };
+    const getScrollHostDebugLabel = (el) => {
+        if (!el) return "null";
+        if (el === document.scrollingElement || el === document.documentElement) return "document.scrollingElement";
+        const tag = String(el.tagName || "node").toLowerCase();
+        const id = el.id ? `#${el.id}` : "";
+        const cls = typeof el.className === "string" && el.className.trim()
+            ? `.${el.className.trim().split(/\s+/).slice(0, 3).join(".")}`
+            : "";
+        return `${tag}${id}${cls}`;
+    };
+    const findScrollHost = () => {
+        const candidates = [];
+        let el = dv.container;
+        while (el) {
+            const style = window.getComputedStyle(el);
+            const overflowY = style.overflowY || "";
+            const overflowX = style.overflowX || "";
+            const canScrollY = /(auto|scroll|overlay)/.test(overflowY) && el.scrollHeight > el.clientHeight + 4;
+            const canScrollX = /(auto|scroll|overlay)/.test(overflowX) && el.scrollWidth > el.clientWidth + 4;
+            if (canScrollY || canScrollX) {
+                let bonus = 0;
+                const className = typeof el.className === "string" ? el.className : "";
+                if (/\b(markdown-reading-view|markdown-preview-view|view-content|workspace-leaf-content)\b/.test(className)) {
+                    bonus += 100000;
+                }
+                candidates.push({ el, score: getScrollRange(el) + bonus });
+            }
+            el = el.parentElement;
+        }
+        const docEl = document.scrollingElement || document.documentElement;
+        candidates.push({ el: docEl, score: getScrollRange(docEl) + 50000 });
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0]?.el || docEl;
+    };
+    const getHostViewportMetrics = (host) => {
+        const scrollingRoot = document.scrollingElement || document.documentElement;
+        if (!host || host === scrollingRoot || host === document.documentElement || host === document.body) {
+            return { top: 0, bottom: window.innerHeight, height: window.innerHeight, left: 0, right: window.innerWidth, width: window.innerWidth };
+        }
+        const rect = host.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, width: rect.width };
+    };
+    const findBestAnchorCandidate = (host) => {
+        const viewport = getHostViewportMetrics(host);
+        const sampleX = Math.max(8, Math.min(window.innerWidth - 8, viewport.left + Math.max(24, viewport.width * 0.5)));
+        const maxY = Math.min(viewport.bottom - 8, viewport.top + Math.min(180, viewport.height - 8));
+        for (let y = viewport.top + 12; y <= maxY; y += 28) {
+            const stack = document.elementsFromPoint(sampleX, y);
+            for (const node of stack) {
+                const anchorEl = node?.closest?.("[data-gtd-anchor-id]");
+                if (anchorEl && dv.container.contains(anchorEl)) {
+                    const rect = anchorEl.getBoundingClientRect();
+                    if (rect.bottom > viewport.top + 1 && rect.top < viewport.bottom - 1) {
+                        return { el: anchorEl, rect };
+                    }
+                }
+            }
+        }
+        const anchors = Array.from(dv.container.querySelectorAll("[data-gtd-anchor-id]"));
+        if (anchors.length === 0) return null;
+        const visible = anchors
+            .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+            .filter(({ rect }) => rect.bottom > viewport.top + 1 && rect.top < viewport.bottom - 1)
+            .sort((a, b) => a.rect.top - b.rect.top);
+        return visible[0] || null;
+    };
+    const buildExpandedItemPath = (list, anchorItemId) => {
+        const anchorId = String(anchorItemId || "").trim();
+        if (!anchorId || !Array.isArray(list) || list.length === 0) return [];
+        const byId = new Map(list.map((item) => [item.id, item]));
+        const path = [];
+        let cursor = byId.get(anchorId)?.parentId || null;
+        while (cursor) {
+            path.unshift(cursor);
+            cursor = byId.get(cursor)?.parentId || null;
+        }
+        return path;
+    };
+    const buildExpandedProjectPath = (list, anchorProjectId) => {
+        const anchorId = String(anchorProjectId || "").trim();
+        if (!anchorId || !Array.isArray(list) || list.length === 0) return [];
+        const byId = new Map(list.filter((item) => item?.type === "project").map((item) => [item.id, item]));
+        const path = [];
+        let cursor = anchorId;
+        while (cursor) {
+            path.unshift(cursor);
+            cursor = byId.get(cursor)?.parentId || null;
+        }
+        return path;
+    };
+    const buildCurrentViewContext = (host = findScrollHost(), list = gtdList) => {
+        if (!host) return getSavedViewContext();
+        const previous = getSavedViewContext();
+        const scroll = normalizeScrollState({ top: host.scrollTop, left: host.scrollLeft });
+        const candidate = findBestAnchorCandidate(host);
+        if (!candidate) {
+            return normalizeViewContext({
+                ...previous,
+                scroll
+            });
+        }
+        const viewport = getHostViewportMetrics(host);
+        const anchorElement = candidate?.el || null;
+        const sectionElement = anchorElement?.closest?.("[id^='gtd-section-']") || null;
+        const projectDetailsElement = anchorElement?.closest?.("details[data-gtd-anchor-id]") || null;
+        const anchorItemId = anchorElement?.dataset?.gtdAnchorId || null;
+        const anchorProjectId = projectDetailsElement?.dataset?.gtdAnchorId || null;
+        return normalizeViewContext({
+            scroll,
+            anchorItemId,
+            anchorSectionId: anchorElement?.dataset?.gtdSectionId || sectionElement?.id || null,
+            anchorProjectId,
+            expandedItemPath: buildExpandedItemPath(list, anchorItemId),
+            expandedProjectPath: buildExpandedProjectPath(list, anchorProjectId),
+            anchorOffset: candidate ? candidate.rect.top - viewport.top : 0
+        });
+    };
+    const captureScrollState = () => {
+        const context = buildCurrentViewContext();
+        savePersistedViewContext(context);
+        return context.scroll;
+    };
+    const captureViewContext = () => {
+        const context = buildCurrentViewContext();
+        return savePersistedViewContext(context);
+    };
+    const rememberAnchorTarget = (anchorItemId, anchorSectionId = null, anchorProjectId = null, options = {}) => {
+        const host = findScrollHost();
+        const context = buildCurrentViewContext(host);
+        window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
+        if (anchorItemId) context.anchorItemId = String(anchorItemId);
+        if (anchorSectionId) context.anchorSectionId = String(anchorSectionId);
+        if (anchorProjectId) context.anchorProjectId = String(anchorProjectId);
+        context.expandedItemPath = buildExpandedItemPath(gtdList, context.anchorItemId);
+        context.expandedProjectPath = buildExpandedProjectPath(gtdList, context.anchorProjectId || context.anchorItemId);
+        const targetEl = anchorItemId
+            ? dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorItemId)}"]`)
+            : null;
+        if (host && targetEl) {
+            const viewport = getHostViewportMetrics(host);
+            context.anchorOffset = targetEl.getBoundingClientRect().top - viewport.top;
+        }
+        return savePersistedViewContext(context, options);
+    };
+    const queueRestoreContext = (state) => {
+        window.gtdRenderRestoreState.nextContextOverride = normalizeViewContext(state);
+    };
+    const queueRestoreContextForAnchor = (list, anchorItemId, anchorSectionId = null, anchorProjectId = null) => {
+        const host = findScrollHost();
+        const context = buildCurrentViewContext(host, list);
+        if (anchorItemId) context.anchorItemId = String(anchorItemId);
+        if (anchorSectionId) context.anchorSectionId = String(anchorSectionId);
+        if (anchorProjectId) context.anchorProjectId = String(anchorProjectId);
+        context.expandedItemPath = buildExpandedItemPath(list, context.anchorItemId);
+        context.expandedProjectPath = buildExpandedProjectPath(list, context.anchorProjectId || context.anchorItemId);
+        queueRestoreContext(context);
+        return context;
+    };
+    const applyPendingRenderRestoreState = (state) => {
+        const normalized = normalizeViewContext(state || {});
+        window.gtdRenderRestoreState.pendingContext = normalized;
+        window.gtdRenderRestoreState.expandedItemIds = normalized.expandedItemPath.slice();
+        window.gtdRenderRestoreState.expandedProjectIds = normalized.expandedProjectPath.slice();
+    };
+    const clearPendingRenderRestoreState = () => {
+        window.gtdRenderRestoreState.pendingContext = null;
+        window.gtdRenderRestoreState.expandedItemIds = [];
+        window.gtdRenderRestoreState.expandedProjectIds = [];
+    };
+    const cancelPendingRestoreTimers = () => {
+        const state = window.gtdRenderRestoreState;
+        (Array.isArray(state.timerIds) ? state.timerIds : []).forEach((timerId) => {
+            try { window.clearTimeout(timerId); } catch (e) {}
+        });
+        state.timerIds = [];
+        if (state.interactionAbortController) {
+            try { state.interactionAbortController.abort(); } catch (e) {}
+            state.interactionAbortController = null;
+        }
+    };
+    const isRestoreExpandedItem = (itemId) => window.gtdRenderRestoreState.expandedItemIds.includes(String(itemId || ""));
+    const isRestoreExpandedProject = (itemId) => window.gtdRenderRestoreState.expandedProjectIds.includes(String(itemId || ""));
+    const persistCurrentViewContext = (options = {}) => {
+        const hasAnchors = !!dv.container.querySelector("[data-gtd-anchor-id]");
+        const host = findScrollHost();
+        if (!hasAnchors || !host || host.clientHeight <= 0) {
+            appendViewDebugLog("persist_skip", {
+                reason: options?.reason || "unknown",
+                why: "host_or_anchors_missing"
+            });
+            return null;
+        }
+        if (window.gtdRenderRestoreState.isRestoring && options?.allowDuringRestore !== true) {
+            appendViewDebugLog("persist_skip", {
+                reason: options?.reason || "unknown",
+                why: "during_restore"
+            });
+            return null;
+        }
+        if (
+            window.gtdRenderRestoreState.hasUserMovedSinceRestore !== true &&
+            options?.force !== true &&
+            (options?.reason === "auto" || options?.reason === "lifecycle")
+        ) {
+            appendViewDebugLog("persist_skip", {
+                reason: options?.reason || "unknown",
+                why: "waiting_for_user_move"
+            });
+            return null;
+        }
+        const nextContext = buildCurrentViewContext(host);
+        const previousContext = getSavedViewContext();
+        const reason = String(options?.reason || "unknown");
+        const shouldGuardTopOverwrite =
+            options?.force !== true &&
+            options?.allowTopOverwrite !== true &&
+            ["scroll", "auto", "lifecycle"].includes(reason) &&
+            Number(nextContext.scroll?.top || 0) <= 2 &&
+            Number(previousContext.scroll?.top || 0) >= TOP_OVERWRITE_GUARD_MIN_SCROLL &&
+            hasRecentUserScrollIntent() !== true;
+        if (shouldGuardTopOverwrite) {
+            appendViewDebugLog("persist_guard_top", {
+                reason,
+                nextScrollTop: nextContext.scroll.top,
+                previousScrollTop: previousContext.scroll.top,
+                anchorItemId: nextContext.anchorItemId,
+                previousAnchorItemId: previousContext.anchorItemId
+            });
+            return previousContext;
+        }
+        return savePersistedViewContext(nextContext, options);
+    };
+    const bindScrollPersistence = () => {
+        const host = findScrollHost();
+        if (!host) return;
+        const currentBinding = window.gtdScrollListenerRegistry[currentNotePath];
+        if (currentBinding?.host === host) return;
+        if (currentBinding?.controller) {
+            try { currentBinding.controller.abort(); } catch (e) {}
+        }
+        if (currentBinding?.frameId) {
+            try { window.cancelAnimationFrame(currentBinding.frameId); } catch (e) {}
+        }
+        const controller = new AbortController();
+        let frameId = 0;
+        const persistNow = () => {
+            frameId = 0;
+            persistCurrentViewContext({ reason: "scroll" });
+        };
+        const markWheelIntent = () => markUserScrollIntent("wheel");
+        const markTouchIntent = () => markUserScrollIntent("touchmove");
+        const markKeyIntent = (event) => {
+            const key = String(event?.key || "");
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(key)) {
+                markUserScrollIntent(`key:${key}`);
+            }
+        };
+        const schedulePersist = () => {
+            if (!window.gtdRenderRestoreState.isRestoring) {
+                window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
+            }
+            if (frameId) return;
+            frameId = window.requestAnimationFrame(persistNow);
+            window.gtdScrollListenerRegistry[currentNotePath].frameId = frameId;
+        };
+        host.addEventListener("wheel", markWheelIntent, { passive: true, signal: controller.signal });
+        host.addEventListener("touchmove", markTouchIntent, { passive: true, signal: controller.signal });
+        window.addEventListener("keydown", markKeyIntent, { signal: controller.signal });
+        host.addEventListener("scroll", schedulePersist, { passive: true, signal: controller.signal });
+        window.gtdScrollListenerRegistry[currentNotePath] = { host, controller, frameId: 0 };
+        appendViewDebugLog("bind_scroll_host", {
+            host: getScrollHostDebugLabel(host),
+            hostRange: getScrollRange(host),
+            scrollTop: Number(host.scrollTop || 0),
+            clientHeight: Number(host.clientHeight || 0),
+            scrollHeight: Number(host.scrollHeight || 0)
+        });
+    };
+    const bindLifecyclePersistence = () => {
+        const currentBinding = window.gtdLifecycleListenerRegistry[currentNotePath];
+        if (currentBinding?.controller) return;
+        const controller = new AbortController();
+        const persist = () => {
+            persistCurrentViewContext({ immediate: true, reason: "lifecycle" });
+        };
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "hidden") persist();
+        }, { signal: controller.signal });
+        window.addEventListener("pagehide", persist, { signal: controller.signal });
+        window.addEventListener("beforeunload", persist, { signal: controller.signal });
+        window.addEventListener("blur", persist, { signal: controller.signal });
+        window.gtdLifecycleListenerRegistry[currentNotePath] = { controller };
+    };
+    const bindAutoPersistence = () => {
+        if (window.gtdAutoPersistRegistry[currentNotePath]) return;
+        const intervalId = window.setInterval(() => {
+            persistCurrentViewContext({ reason: "auto" });
+        }, AUTO_PERSIST_INTERVAL_MS);
+        window.gtdAutoPersistRegistry[currentNotePath] = intervalId;
+    };
+    const applyScrollStateToHost = (host, state) => {
+        if (!host) return;
+        const normalized = normalizeScrollState(state);
+        const maxTop = Math.max(0, host.scrollHeight - host.clientHeight);
+        const maxLeft = Math.max(0, host.scrollWidth - host.clientWidth);
+        host.scrollTop = Math.min(normalized.top, maxTop);
+        host.scrollLeft = Math.min(normalized.left, maxLeft);
+    };
+    const setRestorePresentationState = (isRestoring) => {
+        if (isRestoring) {
+            dv.container.dataset.gtdRestoring = "1";
+            dv.container.style.opacity = "0";
+            dv.container.style.pointerEvents = "none";
+            dv.container.style.transition = "none";
+            return;
+        }
+        delete dv.container.dataset.gtdRestoring;
+        dv.container.style.pointerEvents = "";
+        dv.container.style.transition = "opacity 140ms ease";
+        window.requestAnimationFrame(() => {
+            dv.container.style.opacity = "1";
+            window.setTimeout(() => {
+                if (dv.container.dataset.gtdRestoring === "1") return;
+                dv.container.style.transition = "";
+            }, 180);
+        });
+    };
+    const restoreAnchorContext = (host, state) => {
+        const target = normalizeViewContext(state);
+        const anchorId = String(target.anchorItemId || "").trim();
+        const sectionId = String(target.anchorSectionId || "").trim();
+        const projectId = String(target.anchorProjectId || "").trim();
+        if (!anchorId && !projectId) {
+            appendViewDebugLog("restore_anchor_skip", {
+                why: "missing_anchor_ids",
+                sectionId
+            });
+            return false;
+        }
+        let anchorEl = null;
+        let matchMode = "none";
+        if (anchorId && sectionId) {
+            const sectionEl = document.getElementById(sectionId);
+            if (sectionEl) {
+                anchorEl = sectionEl.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+                if (anchorEl) matchMode = "section-anchor";
+            }
+        }
+        if (!anchorEl && anchorId) {
+            anchorEl = dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+            if (anchorEl) matchMode = "global-anchor";
+        }
+        if (!anchorEl && projectId) {
+            const projectDetails = document.getElementById(`proj-${projectId}`);
+            if (projectDetails && projectDetails.tagName === "DETAILS") {
+                projectDetails.open = true;
+            }
+            if (anchorId) {
+                if (sectionId) {
+                    const sectionEl = document.getElementById(sectionId);
+                    if (sectionEl) {
+                        anchorEl = sectionEl.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+                        if (anchorEl) matchMode = "expanded-section-anchor";
+                    }
+                }
+                if (!anchorEl) {
+                    anchorEl = dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(anchorId)}"]`);
+                    if (anchorEl) matchMode = "expanded-global-anchor";
+                }
+            }
+            if (!anchorEl && projectDetails) {
+                anchorEl = projectDetails.querySelector("summary") || projectDetails;
+                if (anchorEl) matchMode = "project-fallback";
+            }
+        }
+        if (!anchorEl) {
+            appendViewDebugLog("restore_anchor_miss", {
+                anchorId,
+                sectionId,
+                projectId
+            });
+            return false;
+        }
+        const viewport = getHostViewportMetrics(host);
+        const rawOffset = Number(target.anchorOffset);
+        if (!Number.isFinite(rawOffset) || Math.abs(rawOffset) > Math.max(240, viewport.height + 120)) {
+            appendViewDebugLog("restore_anchor_invalid_offset", {
+                anchorId,
+                sectionId,
+                projectId,
+                matchMode,
+                rawOffset,
+                viewportHeight: viewport.height
+            });
+            return false;
+        }
+        const rect = anchorEl.getBoundingClientRect();
+        const idealOffset = Math.max(0, Math.min(viewport.height, rawOffset));
+        const delta = rect.top - (viewport.top + idealOffset);
+        host.scrollTop += delta;
+        appendViewDebugLog("restore_anchor_hit", {
+            anchorId,
+            sectionId,
+            projectId,
+            matchMode,
+            rawOffset,
+            rectTop: rect.top,
+            appliedDelta: delta,
+            finalScrollTop: host.scrollTop
+        });
+        return true;
+    };
+    const restoreSectionContext = (host, state) => {
+        const target = normalizeViewContext(state);
+        const sectionId = String(target.anchorSectionId || "").trim();
+        if (!sectionId) {
+            appendViewDebugLog("restore_section_skip", { why: "missing_section_id" });
+            return false;
+        }
+        const sectionEl = document.getElementById(sectionId);
+        if (!sectionEl) {
+            appendViewDebugLog("restore_section_miss", { sectionId });
+            return false;
+        }
+        const viewport = getHostViewportMetrics(host);
+        const rect = sectionEl.getBoundingClientRect();
+        host.scrollTop += rect.top - (viewport.top + 18);
+        appendViewDebugLog("restore_section_hit", {
+            sectionId,
+            rectTop: rect.top,
+            finalScrollTop: host.scrollTop
+        });
+        return true;
+    };
+    const restoreScrollState = (state = getSavedScrollState()) => {
+        const targetState = normalizeScrollState(state);
+        [0, 80, 220].forEach((delay) => {
+            window.setTimeout(() => {
+                const host = findScrollHost();
+                if (!host) return;
+                applyScrollStateToHost(host, targetState);
+                if (delay === 220) bindScrollPersistence();
+            }, delay);
+        });
+    };
+    const restoreViewContext = (state = getSavedViewContext(), options = {}) => {
+        const targetState = normalizeViewContext(state);
+        const maskDuringRestore = options?.maskDuringRestore === true;
+        cancelPendingRestoreTimers();
+        window.gtdRenderRestoreState.isRestoring = true;
+        window.gtdRenderRestoreState.hasUserMovedSinceRestore = false;
+        const finalizeRestore = (host, restoredByAnchor = false) => {
+            cancelPendingRestoreTimers();
+            window.gtdRenderRestoreState.isRestoring = false;
+            const committedContext = savePersistedViewContext(buildCurrentViewContext(host), {
+                reason: "restore_commit",
+                immediate: true
+            });
+            bindScrollPersistence();
+            bindLifecyclePersistence();
+            bindAutoPersistence();
+            appendViewDebugLog("restore_finish", {
+                finalScrollTop: committedContext?.scroll?.top ?? host?.scrollTop ?? 0,
+                targetScrollTop: targetState.scroll.top,
+                restoredByAnchor,
+                host: getScrollHostDebugLabel(host),
+                hostRange: getScrollRange(host)
+            });
+            if (maskDuringRestore) setRestorePresentationState(false);
+        };
+        const abortRestoreOnInteraction = (reason) => {
+            if (!window.gtdRenderRestoreState.isRestoring) return;
+            const host = findScrollHost();
+            appendViewDebugLog("restore_cancelled", {
+                reason,
+                host: getScrollHostDebugLabel(host),
+                scrollTop: Number(host?.scrollTop || 0)
+            });
+            window.gtdRenderRestoreState.hasUserMovedSinceRestore = true;
+            finalizeRestore(host, false);
+        };
+        appendViewDebugLog("restore_start", {
+            scrollTop: targetState.scroll.top,
+            section: targetState.anchorSectionId,
+            anchorItemId: targetState.anchorItemId,
+            anchorProjectId: targetState.anchorProjectId,
+            anchorOffset: targetState.anchorOffset,
+            delays: Array.isArray(options?.delays) ? options.delays : null
+        });
+        if (maskDuringRestore) setRestorePresentationState(true);
+        const initialHost = findScrollHost();
+        const interactionAbortController = new AbortController();
+        window.gtdRenderRestoreState.interactionAbortController = interactionAbortController;
+        if (initialHost) {
+            initialHost.addEventListener("wheel", () => abortRestoreOnInteraction("wheel"), { passive: true, signal: interactionAbortController.signal });
+            initialHost.addEventListener("touchmove", () => abortRestoreOnInteraction("touchmove"), { passive: true, signal: interactionAbortController.signal });
+            initialHost.addEventListener("scroll", () => {
+                if (window.gtdRenderRestoreState.isRestoring) abortRestoreOnInteraction("scroll");
+            }, { passive: true, signal: interactionAbortController.signal });
+        }
+        window.addEventListener("keydown", (event) => {
+            const key = String(event?.key || "");
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(key)) {
+                abortRestoreOnInteraction(`key:${key}`);
+            }
+        }, { signal: interactionAbortController.signal });
+        window.addEventListener("mousedown", () => abortRestoreOnInteraction("mousedown"), { signal: interactionAbortController.signal });
+        const restoreDelays = Array.isArray(options?.delays) && options.delays.length > 0
+            ? options.delays
+            : [0, 120, 360, 900, 1800];
+        restoreDelays.forEach((delay, index) => {
+            const timerId = window.setTimeout(() => {
+                if (!window.gtdRenderRestoreState.isRestoring) return;
+                const host = findScrollHost();
+                if (!host) return;
+                applyScrollStateToHost(host, targetState.scroll);
+                const restoredByAnchor = restoreAnchorContext(host, targetState);
+                if (!restoredByAnchor && Number(targetState.scroll?.top || 0) <= 0) {
+                    restoreSectionContext(host, targetState);
+                }
+                if (index === restoreDelays.length - 1) {
+                    finalizeRestore(host, restoredByAnchor);
+                }
+            }, delay);
+            window.gtdRenderRestoreState.timerIds.push(timerId);
+        });
+    };
+
+    // --- 1. 核心交互组件 ---
+    class QuickSuggester extends obsidian.FuzzySuggestModal {
+        constructor(app, items, onChoose) { super(app); this.items = items; this.onChoose = onChoose; }
+        getItems() { return this.items; }
+        getItemText(item) { return item; }
+        onChooseItem(item, evt) { this.onChoose(item); }
+    }
+    
+    // --- 层级标签选择器（支持树状展示）---
+    class TagSuggester extends obsidian.FuzzySuggestModal {
+        constructor(app, currentTags, onChoose) {
+            super(app);
+            this.currentTags = currentTags || [];
+            this.onChoose = onChoose;
+            // 构建层级列表：先顶层，然后递归加入子级
+            this.items = [];
+            const buildTreeItems = (parentId, level) => {
+                const children = getChildTags(parentId);
+                children.forEach(key => {
+                    const def = TAG_DEFINITIONS[key];
+                    const isSelected = this.currentTags.includes(key);
+                    const indent = "　".repeat(level); // 全角空格缩进
+                    const prefix = level > 0 ? "└─ " : "";
+                    this.items.push({
+                        key: key,
+                        label: def.label,
+                        icon: def.icon,
+                        color: def.color,
+                        isCategory: def.isCategory || false,
+                        level: level,
+                        displayText: `${indent}${prefix}${def.icon} ${def.label}`,
+                        desc: def.isCategory ? "📁 分类" : (isSelected ? "✅ 已应用" : "⬜ 点击添加"),
+                        action: isSelected ? "remove" : "add"
+                    });
+                    buildTreeItems(key, level + 1); // 递归子级
+                });
+            };
+            buildTreeItems(null, 0); // 从顶层开始
+        }
+        getItems() { return this.items; }
+        getItemText(item) { return `${item.displayText}  ${item.desc}`; }
+        onChooseItem(item, evt) {
+            // 分类标签不可直接选择，只能选子标签
+            if (item.isCategory) {
+                new Notice(`📁 "${item.label}" 是分类，请选择其下的子标签`);
+                return;
+            }
+            this.onChoose(item);
+        }
+    }
+
+    class QuickPrompt extends obsidian.Modal {
+        constructor(app, title, placeholder, onSubmit, defaultValue = "") {
+            super(app); this.titleStr = title; this.placeholder = placeholder; this.defaultValue = defaultValue; this.onSubmit = onSubmit;
+        }
+        onOpen() {
+            const { contentEl } = this; contentEl.createEl("h3", { text: this.titleStr });
+            const input = contentEl.createEl("input", { type: "text", value: this.defaultValue });
+            input.placeholder = this.placeholder; input.style.width = "100%"; input.focus();
+            const btn = contentEl.createEl("button", { text: "确定", cls: "mod-cta", style: "margin-top:15px; float:right;" });
+            const submit = () => { if(input.value) { this.close(); this.onSubmit(input.value); }};
+            btn.onclick = submit; input.addEventListener("keypress", (e) => { if (e.key === "Enter") submit(); });
+        }
+        onClose() { this.contentEl.empty(); }
+    }
+    class ConfirmModal extends obsidian.Modal {
+        constructor(app, title, message, onConfirm) {
+            super(app); this.titleStr = title; this.message = message; this.onConfirm = onConfirm;
+        }
+        onOpen() {
+            const { contentEl } = this;
+            contentEl.createEl("h3", { text: this.titleStr });
+            const msgEl = contentEl.createEl("div");
+            msgEl.innerHTML = this.message;
+            msgEl.style.marginBottom = "20px";
+            
+            const btnDiv = contentEl.createEl("div", { attr: { style: "display:flex; justify-content:flex-end; gap:10px;" } });
+            const cancelBtn = btnDiv.createEl("button", { text: "取消" });
+            cancelBtn.onclick = () => this.close();
+            const confirmBtn = btnDiv.createEl("button", { text: "确认移动", cls: "mod-cta" });
+            confirmBtn.onclick = () => { this.close(); this.onConfirm(); };
+        }
+        onClose() { this.contentEl.empty(); }
+    }
+
+    const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
+    const suggester = (items) => new Promise(r => new QuickSuggester(app, items, r).open());
+    const tagSelector = (currentTags) => new Promise(r => new TagSuggester(app, currentTags, r).open());
+    const confirm = (title, message) => new Promise(r => new ConfirmModal(app, title, message, r).open());
+
+    // --- 2. 文件管理 ---
+    const getOrCreateProjectFile = async (projectName) => {
+        const projectPath = `${currentFolder}/${projectName}.md`;
+        let projectFile = app.vault.getAbstractFileByPath(projectPath);
+        if (!projectFile) {
+            const initialContent = `创建时间: ${moment().format("YYYY-MM-DD HH:mm:ss")}\n\n# ${projectName}\n\n## 项目概述\n\n## 相关资料\n\n`;
+            await app.vault.create(projectPath, initialContent);
+            projectFile = app.vault.getAbstractFileByPath(projectPath);
+            new Notice(`📄 已自动创建项目文件: ${projectName}`);
+        }
+        return projectFile;
+    };
+
+    const openOrCreateNote = async (displayName) => {
+        const sourcePath = dv.current().file.path;
+        const existing = app.metadataCache.getFirstLinkpathDest(displayName, sourcePath);
+        if (!existing) {
+            const sourceFile = app.vault.getAbstractFileByPath(sourcePath);
+            const parentPath = sourceFile?.parent?.path || "";
+            const newPath = parentPath && parentPath !== "/" ? `${parentPath}/${displayName}.md` : `${displayName}.md`;
+            const initialContent = `创建时间: ${moment().format("YYYY-MM-DD HH:mm:ss")}\n\n`;
+            await app.vault.create(newPath, initialContent);
+        }
+        await app.workspace.openLinkText(displayName, sourcePath, true);
+    };
+
+    // --- 3. 数据处理与自愈机制 ---
+    const repairOrphans = (list) => {
+        let fixedCount = 0;
+        const idMap = new Map(list.map(i => [i.id, i]));
+        list.forEach(item => {
+            if (item.status === 'active' && item.parentId) {
+                const parent = idMap.get(item.parentId);
+                if (parent && parent.status === 'completed') {
+                    parent.status = 'active';
+                    delete parent.completed_date;
+                    delete parent.archived_by_project;
+                    fixedCount++;
+                }
+            }
+        });
+        return fixedCount;
+    };
+
+    const repairHierarchyConsistency = (list) => {
+        let fixedMissingParent = 0;
+        let fixedInvalidParentType = 0;
+        let fixedProjectMismatch = 0;
+        const idMap = new Map(list.map(i => [i.id, i]));
+        list.forEach(item => {
+            if (item.status !== "active") return;
+            if (item.type !== "next_action" && item.type !== "inbox") return;
+            const parentId = item.parentId || null;
+            if (!parentId) return;
+            const parent = idMap.get(parentId);
+            if (!parent) {
+                item.parentId = null;
+                fixedMissingParent++;
+                return;
+            }
+            if (item.type === "next_action" && parent.type !== "next_action") {
+                item.parentId = null;
+                fixedInvalidParentType++;
+                return;
+            }
+            if (item.type === "next_action" && parent.type === "next_action") {
+                const parentProject = parent.project || null;
+                if ((item.project || null) !== parentProject) {
+                    item.project = parentProject;
+                    fixedProjectMismatch++;
+                }
+            }
+        });
+        return { fixedMissingParent, fixedInvalidParentType, fixedProjectMismatch };
+    };
+
+    const loadData = async () => {
+        if (!await app.vault.adapter.exists(DB_PATH)) return [];
+        const content = await app.vault.adapter.read(DB_PATH);
+        try { 
+            let list = JSON.parse(content);
+            let modified = false;
+            list.forEach(i => { 
+                if(i.isFirstClass === undefined) i.isFirstClass = false;
+                if(i.isFocusSession === undefined) i.isFocusSession = false;
+                if(i.isDimmed === undefined) i.isDimmed = false; 
+                if(i.isCollapsed === undefined) i.isCollapsed = false;
+                if(i.tags === undefined) i.tags = []; 
+                if(!i.id) i.id = Date.now() + Math.random().toString().slice(2,8);
+                if(i.deadline === undefined) i.deadline = null;
+                if(!i.created) i.created = moment().format("YYYY-MM-DD");
+                if(i.parentId === undefined) i.parentId = null; 
+            });
+            const repairedCount = repairOrphans(list);
+            if (repairedCount > 0) { new Notice(`🚑 自动修复 ${repairedCount} 个父级状态`); modified = true; }
+            const hierarchyFix = repairHierarchyConsistency(list);
+            const hierarchyFixCount = hierarchyFix.fixedMissingParent + hierarchyFix.fixedInvalidParentType + hierarchyFix.fixedProjectMismatch;
+            if (hierarchyFixCount > 0) {
+                new Notice(`🧩 自动修复层级异常 ${hierarchyFixCount} 处（孤儿/跨类型/项目不同步）`);
+                modified = true;
+            }
+            if (modified) {
+                const jsonString = JSON.stringify(list, null, 2);
+                const file = app.vault.getAbstractFileByPath(DB_PATH);
+                await app.vault.modify(file, jsonString);
+            }
+            return list;
+        } catch (e) { return []; }
+    };
+    await ensureViewContextFileLoaded();
+    schedulePersistedViewContextToFile(true);
+    let gtdList = await loadData();
+    let renderViewFn = null;
+
+    const updateGTD = async (operationFn) => {
+        let currentList = await loadData(); 
+        const operationResult = operationFn(currentList);
+        const jsonString = JSON.stringify(currentList, null, 2);
+        const file = app.vault.getAbstractFileByPath(DB_PATH);
+        if (file) await app.vault.modify(file, jsonString); else await app.vault.create(DB_PATH, jsonString);
+        gtdList = currentList; 
+        if (operationResult?.restoreContext) queueRestoreContext(operationResult.restoreContext);
+        else if (operationResult?.rememberAnchorItemId || operationResult?.rememberAnchorProjectId) {
+            queueRestoreContextForAnchor(
+                currentList,
+                operationResult?.rememberAnchorItemId || null,
+                operationResult?.rememberAnchorSectionId || null,
+                operationResult?.rememberAnchorProjectId || null
+            );
+        }
+        if (renderViewFn) renderViewFn(); 
+    };
+
+    const disposeCommentPreviewComponent = () => {
+        const comp = window.gtdCommentPreviewComponent;
+        if (comp && typeof comp.unload === "function") {
+            try { comp.unload(); } catch (e) {}
+        }
+        window.gtdCommentPreviewComponent = null;
+    };
+
+    const getItemById = (id) => gtdList.find(i => i.id === id) || null;
+    const getItemCommentText = (item) => (typeof item?.comment === "string" ? item.comment : "");
+    const summarizeComment = (text, maxLen = 24) => {
+        const clean = String(text || "").replace(/\s+/g, " ").trim();
+        if (!clean) return "";
+        return clean.length > maxLen ? `${clean.slice(0, maxLen)}...` : clean;
+    };
+
+    const normalizeCommentDrawerMode = (mode) => {
+        if (mode === "preview") return "preview";
+        if (mode === "raw") return "raw";
+        if (mode === "embed" || mode === "outliner") return "embed";
+        return "preview";
+    };
+
+    const openCommentDrawer = (itemId, mode = "preview") => {
+        const item = getItemById(itemId);
+        if (!item) return;
+        window.gtdCommentDrawerState = {
+            isOpen: true,
+            itemId,
+            mode: normalizeCommentDrawerMode(mode),
+            draft: getItemCommentText(item)
+        };
+        if (renderViewFn) renderViewFn();
+    };
+
+    const closeCommentDrawer = async (persistDraft = false) => {
+        if (persistDraft) {
+            const state = window.gtdCommentDrawerState || {};
+            const itemId = state?.itemId;
+            if (itemId) {
+                const draftText = typeof state?.draft === "string" ? state.draft : "";
+                await saveItemCommentById(itemId, draftText);
+            }
+        }
+        window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
+        disposeCommentPreviewComponent();
+        if (renderViewFn) renderViewFn();
+    };
+
+    const saveItemCommentById = async (itemId, rawText) => {
+        const finalText = String(rawText || "");
+        window.gtdCommentDrawerState = {
+            isOpen: true,
+            itemId,
+            mode: normalizeCommentDrawerMode(window.gtdCommentDrawerState?.mode),
+            draft: finalText
+        };
+        const currentItem = getItemById(itemId);
+        if (!currentItem) return false;
+        if (getItemCommentText(currentItem) === finalText) return false;
+        await updateGTD((list) => {
+            const idx = list.findIndex(i => i.id === itemId);
+            if (idx < 0) return;
+            if (finalText.trim()) list[idx].comment = finalText;
+            else delete list[idx].comment;
+        });
+        return true;
+    };
+
+    const getCurrentNoteLinkName = () => {
+        const name = String(dv.current()?.file?.name || "");
+        if (name) return name.replace(/\.md$/i, "");
+        const path = String(dv.current()?.file?.path || "");
+        const fallback = path.split("/").pop() || "";
+        return fallback.replace(/\.md$/i, "");
+    };
+
+    const resolveRoamUidToTarget = (uidText) => {
+        const raw = String(uidText || "").trim();
+        if (!raw) return "";
+        if (raw.includes("#")) return raw;
+        const cleanUid = raw.replace(/^\^+/, "");
+        if (!cleanUid) return "";
+        const noteName = getCurrentNoteLinkName();
+        return noteName ? `${noteName}#^${cleanUid}` : `#^${cleanUid}`;
+    };
+
+    const convertRoamRefsToEmbeds = (markdownText) => {
+        const text = String(markdownText || "");
+        return text.replace(/\(\(([^\)\n]+)\)\)/g, (full, uid) => {
+            const target = resolveRoamUidToTarget(uid);
+            if (!target) return full;
+            return `![[${target}]]`;
+        });
+    };
+
+    const buildAliasToTargetMap = (markdownText) => {
+        const text = String(markdownText || "");
+        const map = new Map();
+        const matches = [...text.matchAll(/!\[\[([^\]]+)\]\]/g)];
+        matches.forEach((m) => {
+            const inner = String(m?.[1] || "").trim();
+            if (!inner) return;
+            const parts = inner.split("|");
+            if (parts.length < 2) return;
+            const rawTarget = String(parts[0] || "").trim();
+            const alias = String(parts[parts.length - 1] || "").trim();
+            if (!rawTarget || !alias || map.has(alias)) return;
+            map.set(alias, rawTarget);
+        });
+        return map;
+    };
+
+    const escapeRegExp = (text) => String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const normalizeMarkerId = (markerId) => String(markerId || "").trim().replace(/^\^+/, "");
+
+    const resolveOutlinerMarkerToTarget = (markerId, aliasMap) => {
+        const normalizedId = normalizeMarkerId(markerId);
+        if (!normalizedId) return "";
+        const mappedRaw = aliasMap?.get?.(normalizedId) || "";
+        if (mappedRaw) {
+            const mapped = String(mappedRaw).trim();
+            if (!mapped) return "";
+            if (mapped.includes("#")) return mapped;
+            return `${mapped}#^${normalizedId}`;
+        }
+        return "";
+    };
+
+    const convertOutlinerMarkerBlocks = (markdownText) => {
+        const text = String(markdownText || "");
+        const aliasMap = buildAliasToTargetMap(text);
+        return text.replace(/%%([^\s%]+)%%\n?([\s\S]*?)\n?%%\1%%/g, (full, markerId, body) => {
+            const target = resolveOutlinerMarkerToTarget(markerId, aliasMap);
+            if (!target) return `\n${String(body || "").trim()}\n`;
+            return `![[${target}]]`;
+        });
+    };
+
+    const extractOutlinerMarkedBody = (rawText, markerId) => {
+        const normalizedId = normalizeMarkerId(markerId);
+        if (!normalizedId) return "";
+        const pattern = new RegExp(`%%${escapeRegExp(normalizedId)}%%\\n?([\\s\\S]*?)\\n?%%${escapeRegExp(normalizedId)}%%`, "m");
+        const matched = String(rawText || "").match(pattern);
+        if (!matched) return "";
+        return String(matched[1] || "").trim();
+    };
+
+    const readFileRawWithCache = async (file) => {
+        const path = String(file?.path || "");
+        if (!path) return "";
+        const mtime = Number(file?.stat?.mtime || 0);
+        const rawCache = window.gtdOutlinerFileRawCache;
+        const cached = rawCache.get(path);
+        if (cached && cached.mtime === mtime) return String(cached.raw || "");
+        const raw = await app.vault.read(file);
+        rawCache.set(path, { mtime, raw });
+        return raw;
+    };
+
+    const getOutlinerMarkerBodyCached = async (targetLink, markerId, sourcePath) => {
+        const target = String(targetLink || "").trim();
+        const normalizedId = normalizeMarkerId(markerId);
+        if (!target || !normalizedId) return "";
+        const file = app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+        if (!file) return "";
+
+        const filePath = String(file.path || "");
+        const mtime = Number(file?.stat?.mtime || 0);
+        const cacheKey = `${filePath}::${normalizedId}`;
+        const bodyCache = window.gtdOutlinerMarkerBodyCache;
+        const cached = bodyCache.get(cacheKey);
+        if (cached && cached.mtime === mtime) return String(cached.body || "");
+
+        const raw = await readFileRawWithCache(file);
+        const body = extractOutlinerMarkedBody(raw, normalizedId);
+        bodyCache.set(cacheKey, { mtime, body });
+        return body;
+    };
+
+    const resolveOutlinerAliasEmbedsToBodies = async (markdownText, sourcePath) => {
+        const text = String(markdownText || "");
+        const pattern = /!\[\[([^\]|]+)\|([^\]]+)\]\]/g;
+        const matches = [...text.matchAll(pattern)];
+        if (matches.length === 0) return text;
+        const requestMap = new Map();
+        matches.forEach((m) => {
+            const targetLink = String(m?.[1] || "").trim();
+            const markerId = normalizeMarkerId(m?.[2]);
+            if (!targetLink || !markerId) return;
+            const key = `${targetLink}::${markerId}`;
+            if (!requestMap.has(key)) requestMap.set(key, { targetLink, markerId });
+        });
+        const resolvedBodyMap = new Map();
+        await Promise.all([...requestMap.entries()].map(async ([key, req]) => {
+            let body = "";
+            try {
+                body = await getOutlinerMarkerBodyCached(req.targetLink, req.markerId, sourcePath);
+            } catch (e) {}
+            resolvedBodyMap.set(key, body);
+        }));
+
+        let output = "";
+        let lastIndex = 0;
+        for (const m of matches) {
+            const idx = typeof m.index === "number" ? m.index : -1;
+            if (idx < 0) continue;
+            output += text.slice(lastIndex, idx);
+            const full = String(m[0] || "");
+            const targetLink = String(m[1] || "").trim();
+            const markerId = normalizeMarkerId(m[2]);
+            let replacement = full;
+            if (targetLink && markerId) {
+                const key = `${targetLink}::${markerId}`;
+                const body = String(resolvedBodyMap.get(key) || "");
+                if (body) replacement = `\n${body}\n`;
+            }
+            output += replacement;
+            lastIndex = idx + full.length;
+        }
+        output += text.slice(lastIndex);
+        return output;
+    };
+
+    const renderMarkdownInContainer = async (markdownText, containerEl) => {
+        containerEl.empty();
+        const text = String(markdownText || "");
+        if (!text.trim()) {
+            containerEl.createEl("div", { text: "（暂无内容）", attr: { style: "color:var(--text-faint);font-style:italic;" } });
+            disposeCommentPreviewComponent();
+            return;
+        }
+        const sourcePath = dv.current().file.path;
+        let renderText = convertRoamRefsToEmbeds(convertOutlinerMarkerBlocks(text));
+        renderText = await resolveOutlinerAliasEmbedsToBodies(renderText, sourcePath);
+        disposeCommentPreviewComponent();
+        const component = new obsidian.Component();
+        component.load();
+        window.gtdCommentPreviewComponent = component;
+
+        try {
+            if (obsidian.MarkdownRenderer && typeof obsidian.MarkdownRenderer.render === "function") {
+                await obsidian.MarkdownRenderer.render(app, renderText, containerEl, sourcePath, component);
+            } else if (obsidian.MarkdownRenderer && typeof obsidian.MarkdownRenderer.renderMarkdown === "function") {
+                await obsidian.MarkdownRenderer.renderMarkdown(renderText, containerEl, sourcePath, component);
+            } else {
+                containerEl.setText(renderText);
+            }
+        } catch (e) {
+            console.error("评论预览渲染失败:", e);
+            containerEl.setText(renderText);
+        }
+
+        containerEl.querySelectorAll("a.internal-link").forEach((linkEl) => {
+            linkEl.addEventListener("click", async (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const href = linkEl.getAttribute("data-href") || linkEl.getAttribute("href") || "";
+                if (!href) return;
+                try {
+                    await openLinkForEditing(href);
+                } catch (e) {
+                    console.error("打开评论内部链接失败:", e);
+                    new Notice("⚠️ 打开链接失败，请检查目标是否存在");
+                }
+            });
+        });
+    };
+
+    const extractEmbedTargets = (markdownText) => {
+        const text = String(markdownText || "");
+        const aliasMap = buildAliasToTargetMap(text);
+        const embedMatches = [...text.matchAll(/!\[\[([^\]]+)\]\]/g)];
+        const roamMatches = [...text.matchAll(/\(\(([^\)\n]+)\)\)/g)];
+        const markerMatches = [...text.matchAll(/%%([^\s%]+)%%\n?[\s\S]*?\n?%%\1%%/g)];
+        const targets = [];
+        const seen = new Set();
+        embedMatches.forEach((m) => {
+            const inner = String(m?.[1] || "").trim();
+            if (!inner) return;
+            const target = inner.split("|")[0].trim();
+            if (!target || seen.has(target)) return;
+            seen.add(target);
+            targets.push(target);
+        });
+        roamMatches.forEach((m) => {
+            const inner = String(m?.[1] || "").trim();
+            if (!inner) return;
+            const target = resolveRoamUidToTarget(inner);
+            if (!target || seen.has(target)) return;
+            seen.add(target);
+            targets.push(target);
+        });
+        markerMatches.forEach((m) => {
+            const markerId = String(m?.[1] || "").trim();
+            if (!markerId) return;
+            const target = resolveOutlinerMarkerToTarget(markerId, aliasMap);
+            if (!target || seen.has(target)) return;
+            seen.add(target);
+            targets.push(target);
+        });
+        return targets;
+    };
+
+    const openLinkForEditing = async (linkText) => {
+        const target = String(linkText || "").trim();
+        if (!target) return;
+        const sourcePath = dv.current().file.path;
+        await app.workspace.openLinkText(target, sourcePath, true);
+        const markdownView = app.workspace.getActiveViewOfType?.(obsidian.MarkdownView);
+        if (markdownView && typeof markdownView.getMode === "function" && typeof markdownView.setMode === "function") {
+            if (markdownView.getMode() !== "source") {
+                await markdownView.setMode("source");
+            }
+            markdownView.editor?.focus?.();
+        }
+    };
+
+    // --- 功能函数区 ---
+    const toggleFirstClass = async (index) => { await updateGTD((list) => { if (list[index]) list[index].isFirstClass = !list[index].isFirstClass; }); };
+    const toggleFocusSession = async (index) => { await updateGTD((list) => { if (list[index]) list[index].isFocusSession = !list[index].isFocusSession; }); };
+    const toggleDimmed = async (index) => { await updateGTD((list) => { if (list[index]) list[index].isDimmed = !list[index].isDimmed; }); };
+    const toggleCollapse = async (index) => { await updateGTD((list) => { if (list[index]) list[index].isCollapsed = !list[index].isCollapsed; }); };
+    
+    const modifyTag = async (index) => {
+        const item = gtdList[index];
+        if (!item) return;
+        const choice = await tagSelector(item.tags);
+        if (!choice) return;
+        
+        await updateGTD((list) => {
+            if (!list[index]) return;
+            if (!list[index].tags) list[index].tags = [];
+            const tagId = choice.key;
+            const action = choice.action;
+            
+            if (action === "add") {
+                if (!list[index].tags.includes(tagId)) list[index].tags.push(tagId);
+            } else {
+                list[index].tags = list[index].tags.filter(t => t !== tagId);
+            }
+        });
+        new Notice(choice.action === "add" ? `✅ 已添加: ${choice.label}` : `🗑️ 已移除: ${choice.label}`);
+    };
+
+    const moveInboxItem = async (index) => {
+        const options = ["📂 转为新项目", "⚡ 转入已有项目"];
+        const choice = await suggester(options);
+        if (!choice) return;
+        if (choice.startsWith("📂")) {
+            await updateGTD((list) => { const item = list[index]; item.type = 'project'; item.project = item.content; item.content = null; });
+            await getOrCreateProjectFile(gtdList[index].content); 
+            new Notice("✅ 已升级为项目");
+        } else {
+            const activeProjects = gtdList.filter(i => i.type === 'project' && i.status === 'active').map(p => p.project).sort((a, b) => a.localeCompare(b, "zh"));
+            if (activeProjects.length === 0) { new Notice("⚠️ 没有活跃项目"); return; }
+            const targetProj = await suggester(activeProjects);
+            if (!targetProj) return;
+            await updateGTD((list) => { const item = list[index]; item.type = 'next_action'; item.project = targetProj; });
+            new Notice(`✅ 已移动到项目: ${targetProj}`);
+        }
+    };
+
+    const renameLinkedFile = async (oldName, newName) => {
+        const currentFile = dv.current().file;
+        const targetFile = app.metadataCache.getFirstLinkpathDest(oldName, currentFile.path);
+        if (targetFile) {
+            try {
+                const parentPath = targetFile.parent.path;
+                const newPath = parentPath === "/" ? `${newName}.md` : `${parentPath}/${newName}.md`;
+                await app.fileManager.renameFile(targetFile, newPath);
+            } catch (e) {}
+        }
+    };
+    
+    const renameItem = async (index, type, oldName) => {
+        const newName = await prompt(`重命名${type === 'project' ? '项目' : '条目'}`, "请输入新名称", oldName);
+        if (!newName || newName === oldName) return;
+        await renameLinkedFile(oldName, newName);
+        await updateGTD((list) => {
+            if (list[index]) {
+                if (type === 'project') list[index].project = newName; else list[index].content = newName;
+            }
+            if (type === 'project') { list.forEach(item => { if (item.type === 'next_action' && item.project === oldName) item.project = newName; }); }
+        });
+        new Notice("✅ 重命名成功");
+    };
+
+    const setItemSchedule = async (index, oldDate) => {
+        const newDate = await prompt("设置日程 (Schedule)", "格式: YYYY-MM-DD", oldDate || moment().format("YYYY-MM-DD"));
+        await updateGTD((list) => { if (list[index]) list[index].scheduled = newDate ? newDate : null; });
+    };
+    
+    const setItemDeadline = async (index, oldDate) => {
+        const newDate = await prompt("设置截止 (Deadline)", "格式: YYYY-MM-DD", oldDate || moment().format("YYYY-MM-DD"));
+        await updateGTD((list) => { if (list[index]) list[index].deadline = newDate ? newDate : null; });
+    };
+
+    const addNewItem = async (type, parentId = null, defaultProject = null, insertAfterId = null) => {
+        let placeholder = type === 'project' ? "例如：年度总结报告" : (type === 'inbox' ? "例如：买牛奶" : "例如：整理Excel数据");
+        let title = insertAfterId
+            ? "添加同级任务"
+            : (parentId ? "添加子任务" : `添加【${type === 'project' ? '项目' : (type === 'inbox' ? '工作篮任务' : '下一步行动')}】`);
+        const inputName = await prompt(title, placeholder);
+        if (!inputName) return;
+        const newId = Date.now().toString();
+        let newItem = { 
+            id: newId, type: type, status: "active", created: moment().format("YYYY-MM-DD"), 
+            project: null, content: null, scheduled: null, deadline: null, 
+            isFirstClass: false, isFocusSession: false, isDimmed: false, isCollapsed: false, tags: [], parentId: parentId 
+        };
+        if (type === 'project') {
+            newItem.project = inputName;
+            await getOrCreateProjectFile(inputName);
+        }
+        else if (type === 'inbox') newItem.content = inputName;
+        else if (type === 'next_action') {
+            let selectedProject = defaultProject;
+            if (!selectedProject) {
+                const activeProjects = gtdList.filter(i => i.type === 'project' && i.status === 'active').map(p => p.project).sort((a, b) => a.localeCompare(b, "zh"));
+                if (activeProjects.length === 0) { new Notice("⚠️ 请先创建一个项目！"); return; }
+                selectedProject = await suggester(activeProjects);
+            }
+            if (!selectedProject) return;
+            newItem.project = selectedProject;
+            newItem.content = inputName;
+        }
+        const siblingOrders = gtdList
+            .filter(i =>
+                i.status === "active" &&
+                (i.type === "next_action" || i.type === "inbox") &&
+                (i.project || null) === (newItem.project || null) &&
+                (i.parentId || null) === (newItem.parentId || null)
+            )
+            .map(i => Number(i?.sortOrder))
+            .filter(v => Number.isFinite(v));
+        if (insertAfterId) {
+            // 同级新增由下方 update 回调精确插入在锚点后
+        } else if (parentId) {
+            // 新增子任务默认置顶，后续需要时再手动拖拽调整
+            newItem.sortOrder = siblingOrders.length > 0 ? Math.min(...siblingOrders) - 10 : 0;
+        } else if (siblingOrders.length > 0) {
+            newItem.sortOrder = Math.max(...siblingOrders) + 10;
+        }
+        window.gtdRecentIds.push(newId);
+        await updateGTD((list) => {
+            list.push(newItem);
+
+            if (!insertAfterId) return;
+            const siblingScope = list
+                .filter(i =>
+                    i.status === "active" &&
+                    (i.type === "next_action" || i.type === "inbox") &&
+                    (i.project || null) === (newItem.project || null) &&
+                    (i.parentId || null) === (newItem.parentId || null)
+                )
+                .sort(compareByOrderThenName);
+            const withoutNew = siblingScope.filter(i => i.id !== newId);
+            const anchorPos = withoutNew.findIndex(i => i.id === insertAfterId);
+            const insertAt = anchorPos >= 0 ? anchorPos + 1 : withoutNew.length;
+            withoutNew.splice(insertAt, 0, newItem);
+            resequenceSiblingOrders(list, withoutNew);
+        });
+    };
+
+    const getManualOrder = (item) => {
+        const num = Number(item?.sortOrder);
+        return Number.isFinite(num) ? num : null;
+    };
+
+    const compareByOrderThenName = (a, b) => {
+        const oa = getManualOrder(a);
+        const ob = getManualOrder(b);
+        if (oa !== null && ob !== null && oa !== ob) return oa - ob;
+        if (oa !== null && ob === null) return -1;
+        if (oa === null && ob !== null) return 1;
+        const an = String(a?.content || a?.project || "");
+        const bn = String(b?.content || b?.project || "");
+        return an.localeCompare(bn, "zh");
+    };
+
+    const resequenceSiblingOrders = (list, siblings) => {
+        siblings.forEach((s, idx) => {
+            const ref = list.find(i => i.id === s.id);
+            if (!ref) return;
+            ref.sortOrder = (idx + 1) * 10;
+        });
+    };
+
+    const wouldCreateTaskCycle = (list, draggedId, nextParentId) => {
+        let cursor = nextParentId || null;
+        while (cursor) {
+            if (cursor === draggedId) return true;
+            const cursorItem = list.find(i => i.id === cursor);
+            cursor = cursorItem ? (cursorItem.parentId || null) : null;
+        }
+        return false;
+    };
+
+    const getDescendantIds = (list, rootId) => {
+        const result = [];
+        const stack = [rootId];
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current) continue;
+            list.forEach(i => {
+                if ((i.parentId || null) === current) {
+                    result.push(i.id);
+                    stack.push(i.id);
+                }
+            });
+        }
+        return result;
+    };
+
+    const checkSubtasks = (parentId) => {
+        return gtdList.some(item => item.parentId === parentId && item.status === 'active');
+    };
+
+    const completeItem = async (index) => {
+        const item = gtdList[index];
+        if (checkSubtasks(item.id)) { new Notice("⚠️ 无法完成：请先完成该任务下的所有子任务！"); return; }
+
+        await updateGTD((list) => { if (list[index]) { list[index].status = "completed"; list[index].completed_date = moment().format("YYYY-MM-DD"); } });
+    };
+    
+    const completeProject = async (index, projectName) => {
+        await updateGTD((list) => {
+            if (list[index]) { list[index].status = "completed"; list[index].completed_date = moment().format("YYYY-MM-DD"); }
+            for (let i = 0; i < list.length; i++) {
+                if (list[i].type === 'next_action' && list[i].project === projectName && list[i].status === 'active') {
+                    list[i].status = "completed"; list[i].completed_date = moment().format("YYYY-MM-DD"); list[i].archived_by_project = true;
+                }
+            }
+        });
+        new Notice(`📂 项目 [${projectName}] 已归档`);
+    };
+
+    const reactivateItem = async (index) => { await updateGTD((list) => { if (list[index]) { list[index].status = "active"; delete list[index].completed_date; delete list[index].archived_by_project; } }); };
+    
+    const reactivateProject = async (index, projectName) => {
+        await updateGTD((list) => {
+            if (list[index]) { list[index].status = "active"; delete list[index].completed_date; }
+            let count = 0;
+            for (let i = 0; i < list.length; i++) {
+                if (list[i].type === 'next_action' && list[i].project === projectName && list[i].archived_by_project === true) {
+                    list[i].status = "active"; delete list[i].completed_date; delete list[i].archived_by_project; count++;
+                }
+            }
+        });
+        new Notice(`📂 项目已回退，恢复 ${count} 个任务`);
+    };
+
+    const deleteItem = async (index) => { 
+        const item = gtdList[index];
+        if (checkSubtasks(item.id)) { new Notice("⚠️ 无法删除：包含子任务！"); return; }
+        await confirm("彻底删除", "确定要彻底删除这个任务吗？").then(async () => {
+            await updateGTD((list) => { list.splice(index, 1); }); 
+            new Notice("🗑️ 任务已彻底删除");
+        }).catch(() => {});
+    };
+
+    const handleDrop = async (draggedId, targetId, position, targetType = 'task') => {
+        if (!draggedId || draggedId === targetId) return;
+        const draggedItem = gtdList.find(i => i.id === draggedId);
+        if (!draggedItem) return;
+        const targetItem = targetType === 'task' ? gtdList.find(i => i.id === targetId) : null;
+        if (targetType === 'task' && !targetItem) return;
+        if (targetType === 'task') {
+            if (draggedItem.type !== targetItem.type) {
+                new Notice("⚠️ 不支持 Inbox 与下一步行动 的跨类型拖拽，避免条目被隐藏");
+                return;
+            }
+            const nextParentId = position === 'child' ? targetItem.id : (targetItem.parentId || null);
+            if (wouldCreateTaskCycle(gtdList, draggedId, nextParentId)) {
+                new Notice("⚠️ 无效操作：不能把条目拖到自己的子级链路中");
+                return;
+            }
+        }
+        const targetName = targetType === 'project' ? targetId : targetItem.content;
+        await updateGTD((list) => {
+            const draggedIndex = list.findIndex(i => i.id === draggedId);
+            if (draggedIndex < 0) return;
+            const item = list[draggedIndex];
+            if (!item) return;
+            const previousProject = item.project || null;
+            if (targetType === 'project') {
+                item.parentId = null;
+                item.project = targetName;
+                const siblingScope = list
+                    .filter(i =>
+                        i.status === "active" &&
+                        (i.type === "next_action" || i.type === "inbox") &&
+                        (i.project || null) === (item.project || null) &&
+                        (i.parentId || null) === null
+                    )
+                    .sort(compareByOrderThenName)
+                    .filter(i => i.id !== item.id);
+                siblingScope.push(item);
+                resequenceSiblingOrders(list, siblingScope);
+            } else {
+                const targetIndex = list.findIndex(i => i.id === targetId); const target = list[targetIndex];
+                if (!target) return;
+                if (position === 'child') { item.parentId = target.id; if (item.project !== target.project) item.project = target.project; }
+                else { item.parentId = target.parentId; if (item.project !== target.project) item.project = target.project; }
+
+                const siblingScope = list
+                    .filter(i =>
+                        i.status === "active" &&
+                        (i.type === "next_action" || i.type === "inbox") &&
+                        (i.project || null) === (item.project || null) &&
+                        (i.parentId || null) === (item.parentId || null)
+                    )
+                    .sort(compareByOrderThenName);
+                const withoutDragged = siblingScope.filter(i => i.id !== item.id);
+                let insertAt = withoutDragged.length;
+                if (position === "child") {
+                    insertAt = 0;
+                } else if (position === "before" || position === "after") {
+                    const targetPos = withoutDragged.findIndex(i => i.id === target.id);
+                    if (targetPos >= 0) insertAt = position === "before" ? targetPos : targetPos + 1;
+                }
+                withoutDragged.splice(insertAt, 0, item);
+                resequenceSiblingOrders(list, withoutDragged);
+            }
+            const currentProject = item.project || null;
+            if (previousProject !== currentProject) {
+                const descendants = getDescendantIds(list, item.id);
+                descendants.forEach((childId) => {
+                    const child = list.find(i => i.id === childId);
+                    if (!child) return;
+                    if (child.type === "next_action" || child.type === "inbox") child.project = currentProject;
+                });
+            }
+            return {
+                rememberAnchorItemId: item.id,
+                rememberAnchorSectionId: item.type === "inbox" ? "gtd-section-inbox" : "gtd-section-projects",
+                rememberAnchorProjectId: item.project ? (list.find((i) => i.type === "project" && i.project === item.project && i.status === "active")?.id || null) : null
+            };
+        });
+        new Notice("✅ 移动成功");
+    };
+
+    const moveProjectUnderParent = async (draggedProjectId, targetParentProjectId = null) => {
+        if (!draggedProjectId) return;
+        if (draggedProjectId === targetParentProjectId) return;
+
+        const draggedProject = gtdList.find(i => i.id === draggedProjectId && i.type === "project" && i.status === "active");
+        if (!draggedProject) return;
+
+        const targetParent = targetParentProjectId
+            ? gtdList.find(i => i.id === targetParentProjectId && i.type === "project" && i.status === "active")
+            : null;
+        if (targetParentProjectId && !targetParent) return;
+
+        const currentParentId = draggedProject.parentId || null;
+        const nextParentId = targetParentProjectId || null;
+        if (currentParentId === nextParentId) return;
+
+        // 防止循环：不能把项目拖到自己的后代下
+        let cursor = nextParentId;
+        while (cursor) {
+            if (cursor === draggedProjectId) {
+                new Notice("⚠️ 无效操作：不能把项目拖到自己的子级下面");
+                return;
+            }
+            const cursorItem = gtdList.find(i => i.id === cursor && i.type === "project");
+            cursor = cursorItem ? (cursorItem.parentId || null) : null;
+        }
+
+        await updateGTD((list) => {
+            const idx = list.findIndex(i => i.id === draggedProjectId && i.type === "project");
+            if (idx < 0) return;
+            list[idx].parentId = nextParentId;
+            return {
+                rememberAnchorItemId: draggedProjectId,
+                rememberAnchorSectionId: "gtd-section-projects",
+                rememberAnchorProjectId: draggedProjectId
+            };
+        });
+        new Notice("✅ 项目层级已更新");
+    };
+
+    // ==========================================================
+    // 🎨 视图逻辑
+    // ==========================================================
+    const renderKaioKenView = (container) => {
+        // ... (KaioKen视图逻辑省略，保持不变) ...
+        const style = `<style>.kaio-container{background:var(--background-secondary);border-radius:12px;padding:20px;font-family:sans-serif;min-height:400px}.kaio-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid var(--interactive-accent)}.kaio-title{font-size:1.5em;font-weight:800;color:var(--text-normal);margin:0;display:flex;align-items:center;gap:8px}.kaio-icon{font-size:1.2em;color:#e74c3c;animation:kaio-glow 2s infinite alternate}@keyframes kaio-glow{from{text-shadow:0 0 5px rgba(231,76,60,.5)}to{text-shadow:0 0 15px #e74c3c}}.kaio-section-title{font-size:1.1em;font-weight:700;margin:25px 0 10px;color:var(--text-muted);border-bottom:1px solid var(--background-modifier-border);padding-bottom:4px;display:flex;justify-content:space-between}.kaio-proj-group{margin-bottom:15px;border-left:2px solid var(--interactive-accent);padding-left:12px}.kaio-proj-name{font-weight:700;font-size:.9em;color:var(--text-normal);margin-bottom:8px;opacity:.9}.kaio-item-card{background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:8px;padding:10px 14px;display:grid;grid-template-columns:200px 1fr 100px;gap:15px;align-items:center;margin-bottom:8px;transition:transform .2s}.kaio-item-card:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.1)}.k-info{display:flex;flex-direction:column;gap:2px;overflow:hidden}.k-name{font-weight:700;font-size:1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-normal);cursor:pointer}.k-name:hover{color:var(--interactive-accent);text-decoration:underline}.k-sub{font-size:.75em;color:var(--text-muted);display:flex;gap:6px;align-items:center}.k-tag{background:var(--background-modifier-hover);padding:1px 4px;border-radius:3px}.k-timeline-container{position:relative;height:28px;width:100%;display:flex;flex-direction:column;justify-content:center}.k-track{width:100%;height:8px;background:var(--background-modifier-form-field);border-radius:4px;position:relative;overflow:visible}.k-zone-kaio{position:absolute;left:0;top:0;bottom:0;width:33.33%;background:linear-gradient(90deg,rgba(231,76,60,.4),rgba(243,156,18,.3));border-radius:4px 0 0 4px;border-right:1px dashed rgba(231,76,60,.6)}.k-marker-now{position:absolute;top:-3px;bottom:-3px;width:3px;background:#3498db;box-shadow:0 0 6px #3498db;z-index:10;border-radius:2px;transition:left .5s ease}.k-dates{display:flex;justify-content:space-between;font-size:.7em;color:var(--text-muted);margin-top:3px}.k-actions{display:flex;flex-direction:column;align-items:flex-end;gap:4px}.k-status{font-size:.8em;font-weight:700}.k-status.rush{color:#e74c3c;display:flex;align-items:center;gap:4px}.k-status.calm{color:#2ecc71}.k-mini-btn{font-size:12px;cursor:pointer;padding:2px 6px;border-radius:4px;background:var(--background-secondary);border:1px solid var(--background-modifier-border)}.k-mini-btn:hover{background:var(--interactive-accent);color:#fff;border-color:transparent}</style>`;
+        container.innerHTML = style;
+        const wrapper = container.createEl("div", { cls: "kaio-container" });
+        const header = wrapper.createEl("div", { cls: "kaio-header" });
+        header.createEl("div", { cls: "kaio-title" }).innerHTML = `<span class="kaio-icon">🔥</span> 界王拳突击看板`;
+        const exitBtn = header.createEl("button", { text: "退出模式" });
+        exitBtn.onclick = () => { window.gtdKaioKenMode = false; if(renderViewFn) renderViewFn(); };
+
+        const today = moment();
+        let rawItems = gtdList.map((item, index) => ({ item, index })).filter(({ item }) => 
+            item.status === 'active' && item.deadline
+        );
+
+        if (rawItems.length === 0) {
+            wrapper.createEl("div", { text: "🧘 暂无带截止日期的突击任务", attr: { style: "text-align:center; padding:40px; color:var(--text-muted);" } });
+            return;
+        }
+
+        rawItems.forEach(wrap => {
+            const startStr = wrap.item.created;
+            const endStr = wrap.item.deadline;
+            let percent = 0;
+            if (endStr) {
+                const startDate = moment(startStr);
+                const endDate = moment(endStr);
+                const totalDays = endDate.diff(startDate, 'days');
+                const passedDays = today.diff(startDate, 'days');
+                totalDays <= 0 ? percent = 100 : percent = (passedDays / totalDays) * 100;
+                percent = Math.max(0, Math.min(100, percent));
+            }
+            wrap.percent = percent;
+            wrap.isSprint = percent <= 33.33;
+            wrap.displayName = wrap.item.type === 'project' ? wrap.item.project : wrap.item.content;
+            wrap.projectName = wrap.item.type === 'project' ? wrap.item.project : (wrap.item.project || "未分类");
+        });
+
+        const sprintItems = rawItems.filter(x => x.isSprint).sort((a, b) => a.item.deadline.localeCompare(b.item.deadline));
+        const calmItems = rawItems.filter(x => !x.isSprint);
+
+        const renderCard = (targetEl, wrap) => {
+            const card = targetEl.createEl("div", { cls: "kaio-item-card" });
+            const { item, index, displayName, percent } = wrap;
+            const info = card.createEl("div", { cls: "k-info" });
+            const link = info.createEl("div", { text: displayName, cls: "k-name" });
+            link.onclick = async () => { await openOrCreateNote(displayName); };
+            const sub = info.createEl("div", { cls: "k-sub" });
+            if (item.type === 'next_action') sub.innerHTML = `<span class="k-tag">📂 ${item.project}</span>`;
+            else if (item.type === 'inbox') sub.innerHTML = `<span class="k-tag">📥 Inbox</span>`; 
+            else sub.innerHTML = `<span class="k-tag">🚩 Project</span>`;
+            const timelineBox = card.createEl("div", { cls: "k-timeline-container" });
+            const track = timelineBox.createEl("div", { cls: "k-track" });
+            track.createEl("div", { cls: "k-zone-kaio" }); 
+            const marker = track.createEl("div", { cls: "k-marker-now" });
+            marker.style.left = `${percent}%`;
+            const dateRow = timelineBox.createEl("div", { cls: "k-dates" });
+            dateRow.createEl("span", { text: item.created }); dateRow.createEl("span", { text: `🏁 ${item.deadline}` });
+            const actions = card.createEl("div", { cls: "k-actions" });
+            const statusDiv = actions.createEl("div", { cls: "k-status" });
+            if (today.isAfter(moment(item.deadline))) statusDiv.innerHTML = `<span style="color:#e74c3c">💀 已过期</span>`;
+            else if (wrap.isSprint) { statusDiv.className += " rush"; statusDiv.innerHTML = `🔥 突击中`; }
+            else { statusDiv.className += " calm"; statusDiv.innerHTML = `☕ 平稳期`; }
+            const btnGroup = actions.createEl("div", { attr: { style: "display:flex; gap:4px;" } });
+            const dlBtn = btnGroup.createEl("button", { text: "🏁", cls: "k-mini-btn", title: "修改" });
+            dlBtn.onclick = () => setItemDeadline(index, item.deadline);
+            const doneBtn = btnGroup.createEl("button", { text: "✅", cls: "k-mini-btn", title: "完成" });
+            doneBtn.onclick = async () => { if (item.type === 'project') await completeProject(index, item.project); else await completeItem(index); };
+        };
+
+        const listContainer = wrapper.createEl("div");
+        if (sprintItems.length > 0) {
+            listContainer.createEl("div", { cls: "kaio-section-title" }).innerHTML = `<span style="color:#e74c3c">🔥 突击冲刺</span> <span>${sprintItems.length}</span>`;
+            sprintItems.forEach(wrap => renderCard(listContainer, wrap));
+        }
+        if (calmItems.length > 0) {
+            listContainer.createEl("div", { cls: "kaio-section-title" }).innerHTML = `<span style="color:#2ecc71">☕ 平稳推进</span> <span>${calmItems.length}</span>`;
+            const groups = {};
+            calmItems.forEach(wrap => { if (!groups[wrap.projectName]) groups[wrap.projectName] = []; groups[wrap.projectName].push(wrap); });
+            Object.keys(groups).sort().forEach(projName => {
+                const groupDiv = listContainer.createEl("div", { cls: "kaio-proj-group" });
+                groupDiv.createEl("div", { text: `📂 ${projName}`, cls: "kaio-proj-name" });
+                groups[projName].forEach(wrap => renderCard(groupDiv, wrap));
+            });
+        }
+    };
+
+    // ==========================================================
+    // 🏷️ 标签管理视图
+    // ==========================================================
+    const renderTagManagerView = (container) => {
+        const style = `<style>
+            .tag-mgr-container { background: var(--background-secondary); border-radius: 12px; padding: 20px; font-family: sans-serif; min-height: 500px; }
+            .tag-mgr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--interactive-accent); }
+            .tag-mgr-title { font-size: 1.5em; font-weight: 800; color: var(--text-normal); margin: 0; display: flex; align-items: center; gap: 8px; }
+            .tag-mgr-actions { display: flex; gap: 8px; }
+            .tag-mgr-btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+            .tag-mgr-btn-primary { background: var(--interactive-accent); color: white; }
+            .tag-mgr-btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+            .tag-mgr-btn-secondary { background: var(--background-modifier-border); color: var(--text-normal); }
+            .tag-mgr-btn-secondary:hover { background: var(--background-modifier-hover); }
+            .tag-tree { margin-top: 15px; }
+            .tag-item { display: flex; align-items: center; padding: 10px 12px; margin: 4px 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: grab; transition: all 0.2s; user-select: none; }
+            .tag-item:hover { border-color: var(--interactive-accent); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+            .tag-item.is-category { background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%); border-width: 2px; }
+            .tag-item.drag-over { border: 2px dashed var(--interactive-accent); background: rgba(var(--interactive-accent-rgb), 0.1); }
+            .tag-item.dragging { opacity: 0.5; transform: scale(0.98); }
+            .tag-icon { font-size: 1.3em; margin-right: 10px; width: 30px; text-align: center; }
+            .tag-info { flex: 1; }
+            .tag-label { font-weight: 600; color: var(--text-normal); }
+            .tag-meta { font-size: 0.8em; color: var(--text-muted); margin-top: 2px; }
+            .tag-color-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+            .tag-actions { display: flex; gap: 6px; opacity: 0; transition: opacity 0.2s; }
+            .tag-item:hover .tag-actions { opacity: 1; }
+            .tag-action-btn { padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); cursor: pointer; font-size: 12px; }
+            .tag-action-btn:hover { background: var(--interactive-accent); color: white; border-color: transparent; }
+            .tag-action-btn.delete:hover { background: #e74c3c; }
+            .tag-children { margin-left: 30px; border-left: 2px solid var(--background-modifier-border); padding-left: 10px; }
+            .tag-drop-zone { height: 30px; border: 2px dashed transparent; border-radius: 6px; margin: 4px 0; transition: all 0.2s; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.85em; }
+            .tag-drop-zone.active { border-color: var(--interactive-accent); background: rgba(var(--interactive-accent-rgb), 0.05); }
+            .tag-drop-zone.active::before { content: "拖放到此处设为顶层标签"; }
+            .tag-form { background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 15px; margin-bottom: 15px; }
+            .tag-form-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+            .tag-form-label { width: 60px; font-weight: 500; color: var(--text-muted); font-size: 0.9em; }
+            .tag-form-input { flex: 1; padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); font-size: 14px; }
+            .tag-form-input:focus { outline: none; border-color: var(--interactive-accent); }
+            .tag-parent-selector { position: relative; flex: 1; }
+            .tag-parent-input-wrapper { display: flex; align-items: center; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); overflow: hidden; }
+            .tag-parent-input-wrapper:focus-within { border-color: var(--interactive-accent); }
+            .tag-parent-input { flex: 1; padding: 8px 12px; border: none; background: transparent; color: var(--text-normal); font-size: 14px; outline: none; }
+            .tag-parent-clear { padding: 0 8px; cursor: pointer; color: var(--text-muted); }
+            .tag-parent-clear:hover { color: var(--text-normal); }
+            .tag-parent-dropdown { position: absolute; top: 100%; left: 0; right: 0; max-height: 260px; overflow-y: auto; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-top: none; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 100; display: none; }
+            .tag-parent-dropdown.visible { display: block; }
+            .tag-parent-option { padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; transition: background 0.1s; }
+            .tag-parent-option:hover, .tag-parent-option.highlighted { background: var(--background-modifier-hover); }
+            .tag-parent-option.selected { background: rgba(var(--interactive-accent-rgb), 0.1); color: var(--interactive-accent); }
+            .tag-parent-empty { padding: 8px 12px; color: var(--text-faint); font-size: 12px; }
+            .tag-parent-stats { padding: 6px 12px; font-size: 11px; color: var(--text-faint); border-top: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+            .tag-form-checkbox { width: 18px; height: 18px; cursor: pointer; }
+            .tag-stats { display: flex; gap: 20px; padding: 10px 15px; background: var(--background-primary); border-radius: 8px; margin-bottom: 15px; font-size: 0.9em; color: var(--text-muted); }
+            .tag-stat-item { display: flex; align-items: center; gap: 6px; }
+            .tag-stat-num { font-weight: 700; color: var(--text-normal); }
+        </style>`;
+        container.innerHTML = style;
+
+        const wrapper = container.createEl("div", { cls: "tag-mgr-container" });
+
+        // 头部
+        const header = wrapper.createEl("div", { cls: "tag-mgr-header" });
+        header.createEl("div", { cls: "tag-mgr-title" }).innerHTML = `🏷️ 标签管理器`;
+        const headerActions = header.createEl("div", { cls: "tag-mgr-actions" });
+        const addTagBtn = headerActions.createEl("button", { text: "➕ 新建标签", cls: "tag-mgr-btn tag-mgr-btn-primary" });
+        const addCategoryBtn = headerActions.createEl("button", { text: "📁 新建分类", cls: "tag-mgr-btn tag-mgr-btn-secondary" });
+        const exitBtn = headerActions.createEl("button", { text: "返回主界面", cls: "tag-mgr-btn tag-mgr-btn-secondary" });
+        exitBtn.onclick = () => { window.gtdTagManagerMode = false; if (renderViewFn) renderViewFn(); };
+
+        // 统计信息
+        const topLevelCount = Object.keys(TAG_DEFINITIONS).filter(k => TAG_DEFINITIONS[k].parentId === null).length;
+        const categoryCount = Object.keys(TAG_DEFINITIONS).filter(k => TAG_DEFINITIONS[k].isCategory).length;
+        const leafCount = Object.keys(TAG_DEFINITIONS).filter(k => !TAG_DEFINITIONS[k].isCategory).length;
+        const stats = wrapper.createEl("div", { cls: "tag-stats" });
+        stats.innerHTML = `
+            <div class="tag-stat-item">📊 总计: <span class="tag-stat-num">${Object.keys(TAG_DEFINITIONS).length}</span> 个标签</div>
+            <div class="tag-stat-item">📁 分类: <span class="tag-stat-num">${categoryCount}</span></div>
+            <div class="tag-stat-item">🏷️ 叶子标签: <span class="tag-stat-num">${leafCount}</span></div>
+            <div class="tag-stat-item">🌲 顶层: <span class="tag-stat-num">${topLevelCount}</span></div>
+        `;
+
+        // 新建/编辑表单（默认隐藏）
+        const formContainer = wrapper.createEl("div", { cls: "tag-form", attr: { style: "display:none;" } });
+        let editingTagId = null;
+
+        const showTagForm = (tagId = null) => {
+            editingTagId = tagId;
+            const tag = tagId ? TAG_DEFINITIONS[tagId] : null;
+            formContainer.innerHTML = "";
+            formContainer.style.display = "block";
+
+            formContainer.createEl("div", { text: tagId ? "✏️ 编辑标签" : "➕ 新建标签", attr: { style: "font-weight:700; margin-bottom:12px; font-size:1.1em;" } });
+
+            // ID（新建时可编辑，编辑时禁用）
+            const idRow = formContainer.createEl("div", { cls: "tag-form-row" });
+            idRow.createEl("span", { text: "ID:", cls: "tag-form-label" });
+            const idInputAttr = tagId
+                ? { placeholder: "唯一标识符 (英文)", disabled: "true" }
+                : { placeholder: "唯一标识符 (英文)" };
+            const idInput = idRow.createEl("input", { type: "text", cls: "tag-form-input", value: tagId || "", attr: idInputAttr });
+
+            // 名称
+            const labelRow = formContainer.createEl("div", { cls: "tag-form-row" });
+            labelRow.createEl("span", { text: "名称:", cls: "tag-form-label" });
+            const labelInput = labelRow.createEl("input", { type: "text", cls: "tag-form-input", value: tag?.label || "", attr: { placeholder: "显示名称" } });
+
+            // 图标
+            const iconRow = formContainer.createEl("div", { cls: "tag-form-row" });
+            iconRow.createEl("span", { text: "图标:", cls: "tag-form-label" });
+            const iconInput = iconRow.createEl("input", { type: "text", cls: "tag-form-input", value: tag?.icon || "🏷️", attr: { placeholder: "Emoji图标" } });
+
+            // 颜色
+            const colorRow = formContainer.createEl("div", { cls: "tag-form-row" });
+            colorRow.createEl("span", { text: "颜色:", cls: "tag-form-label" });
+            const colorInput = colorRow.createEl("input", { type: "color", cls: "tag-form-input", value: tag?.color || "#3498db", attr: { style: "width:60px; padding:2px;" } });
+
+            // 父级
+            const parentRow = formContainer.createEl("div", { cls: "tag-form-row" });
+            parentRow.createEl("span", { text: "父级:", cls: "tag-form-label" });
+            const parentSelector = parentRow.createEl("div", { cls: "tag-parent-selector" });
+            const parentInputWrapper = parentSelector.createEl("div", { cls: "tag-parent-input-wrapper" });
+            const parentInput = parentInputWrapper.createEl("input", { type: "text", cls: "tag-parent-input", attr: { placeholder: "输入标签名称筛选..." } });
+            const parentClear = parentInputWrapper.createEl("span", { cls: "tag-parent-clear", text: "×" });
+            const parentDropdown = parentSelector.createEl("div", { cls: "tag-parent-dropdown" });
+
+            const excluded = new Set();
+            if (tagId) {
+                excluded.add(tagId);
+                getDescendantTagIds(tagId).forEach(id => excluded.add(id));
+            }
+            const availableParents = Object.keys(TAG_DEFINITIONS)
+                .filter(k => !excluded.has(k))
+                .map(k => ({ id: k, ...TAG_DEFINITIONS[k] }))
+                .sort((a, b) => (a.label || '').localeCompare(b.label || '', 'zh-CN', { numeric: true, sensitivity: 'base' }));
+
+            let selectedParentId = tag?.parentId || null;
+            let highlightedIndex = -1;
+
+            const updateInputDisplay = () => {
+                if (selectedParentId) {
+                    const def = TAG_DEFINITIONS[selectedParentId];
+                    parentInput.value = def ? `${def.icon} ${def.label}` : "";
+                } else {
+                    parentInput.value = "";
+                }
+            };
+            updateInputDisplay();
+
+            const renderParentOptions = (query = "") => {
+                parentDropdown.innerHTML = "";
+                const q = query.trim().toLowerCase();
+                const filtered = q
+                    ? availableParents.filter(p =>
+                        (p.label || "").toLowerCase().includes(q) ||
+                        (p.id || "").toLowerCase().includes(q)
+                      )
+                    : availableParents;
+
+                const topOpt = parentDropdown.createEl("div", {
+                    cls: `tag-parent-option ${!selectedParentId ? "selected" : ""}`,
+                    attr: { "data-value": "" }
+                });
+                topOpt.innerHTML = `<span>🏠</span><span>-- 顶层标签 --</span>`;
+                topOpt.onclick = () => {
+                    selectedParentId = null;
+                    updateInputDisplay();
+                    parentDropdown.classList.remove("visible");
+                    parentInput.blur();
+                };
+
+                if (filtered.length === 0) {
+                    parentDropdown.createEl("div", { cls: "tag-parent-empty", text: "无匹配父级" });
+                } else {
+                    filtered.forEach((p, idx) => {
+                        const opt = parentDropdown.createEl("div", {
+                            cls: `tag-parent-option ${selectedParentId === p.id ? "selected" : ""} ${idx === highlightedIndex ? "highlighted" : ""}`,
+                            attr: { "data-value": p.id }
+                        });
+                        opt.innerHTML = `<span>${p.icon}</span><span>${p.label}</span>`;
+                        opt.onclick = () => {
+                            selectedParentId = p.id;
+                            updateInputDisplay();
+                            parentDropdown.classList.remove("visible");
+                            parentInput.blur();
+                        };
+                    });
+                }
+
+                const statsText = q
+                    ? `显示 ${filtered.length}/${availableParents.length} 个可选父级`
+                    : `共 ${availableParents.length} 个可选父级`;
+                parentDropdown.createEl("div", { cls: "tag-parent-stats", text: statsText });
+                highlightedIndex = -1;
+            };
+
+            const showParentDropdown = () => {
+                renderParentOptions(parentInput.value);
+                parentDropdown.classList.add("visible");
+            };
+            const hideParentDropdown = () => {
+                setTimeout(() => parentDropdown.classList.remove("visible"), 150);
+            };
+
+            parentInput.addEventListener("focus", showParentDropdown);
+            parentInput.addEventListener("blur", hideParentDropdown);
+            parentInput.addEventListener("input", () => {
+                highlightedIndex = -1;
+                showParentDropdown();
+            });
+            parentInput.addEventListener("keydown", (e) => {
+                const options = parentDropdown.querySelectorAll(".tag-parent-option");
+                if (options.length === 0) return;
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    highlightedIndex = Math.min(highlightedIndex + 1, options.length - 1);
+                    options.forEach((opt, i) => opt.classList.toggle("highlighted", i === highlightedIndex));
+                    if (options[highlightedIndex]) options[highlightedIndex].scrollIntoView({ block: "nearest" });
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    highlightedIndex = Math.max(highlightedIndex - 1, 0);
+                    options.forEach((opt, i) => opt.classList.toggle("highlighted", i === highlightedIndex));
+                    if (options[highlightedIndex]) options[highlightedIndex].scrollIntoView({ block: "nearest" });
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (highlightedIndex >= 0 && options[highlightedIndex]) {
+                        options[highlightedIndex].click();
+                    } else if (options[0]) {
+                        options[0].click();
+                    }
+                } else if (e.key === "Escape") {
+                    parentDropdown.classList.remove("visible");
+                    parentInput.blur();
+                }
+            });
+
+            parentClear.onclick = (e) => {
+                e.stopPropagation();
+                selectedParentId = null;
+                updateInputDisplay();
+                parentInput.focus();
+            };
+
+            // 是否为分类
+            const categoryRow = formContainer.createEl("div", { cls: "tag-form-row" });
+            categoryRow.createEl("span", { text: "分类:", cls: "tag-form-label" });
+            const categoryCheck = categoryRow.createEl("input", { type: "checkbox", cls: "tag-form-checkbox" });
+            categoryCheck.checked = tag?.isCategory || false;
+            categoryRow.createEl("span", { text: "设为分类（只能包含子标签，不能直接标记条目）", attr: { style: "color:var(--text-muted); font-size:0.85em; margin-left:8px;" } });
+
+            // 按钮
+            const btnRow = formContainer.createEl("div", { cls: "tag-form-row", attr: { style: "justify-content:flex-end; margin-top:15px;" } });
+            const cancelBtn = btnRow.createEl("button", { text: "取消", cls: "tag-mgr-btn tag-mgr-btn-secondary" });
+            cancelBtn.onclick = () => { formContainer.style.display = "none"; };
+            const saveBtn = btnRow.createEl("button", { text: tagId ? "保存修改" : "创建标签", cls: "tag-mgr-btn tag-mgr-btn-primary" });
+            saveBtn.onclick = async () => {
+                const newId = idInput.value.trim();
+                if (!newId) { new Notice("⚠️ 请输入标签ID"); return; }
+                if (!labelInput.value.trim()) { new Notice("⚠️ 请输入标签名称"); return; }
+                if (!tagId && TAG_DEFINITIONS[newId]) { new Notice("⚠️ 该ID已存在"); return; }
+
+                TAG_DEFINITIONS[newId] = {
+                    label: labelInput.value.trim(),
+                    icon: iconInput.value.trim() || "🏷️",
+                    color: colorInput.value,
+                    parentId: selectedParentId || null,
+                    isCategory: categoryCheck.checked,
+                    order: tag?.order || Object.keys(TAG_DEFINITIONS).filter(k => TAG_DEFINITIONS[k].parentId === (selectedParentId || null)).length
+                };
+
+                if (tagId && tagId !== newId) {
+                    // ID变更，需要更新所有子标签的parentId
+                    Object.keys(TAG_DEFINITIONS).forEach(k => {
+                        if (TAG_DEFINITIONS[k].parentId === tagId) TAG_DEFINITIONS[k].parentId = newId;
+                    });
+                    delete TAG_DEFINITIONS[tagId];
+                }
+
+                await saveTagDefinitions(TAG_DEFINITIONS);
+                new Notice(tagId ? "✅ 标签已更新" : "✅ 标签已创建");
+                formContainer.style.display = "none";
+                if (renderViewFn) renderViewFn();
+            };
+        };
+
+        addTagBtn.onclick = () => showTagForm(null);
+        addCategoryBtn.onclick = () => {
+            showTagForm(null);
+            setTimeout(() => {
+                const checkbox = formContainer.querySelector('input[type="checkbox"]');
+                if (checkbox) checkbox.checked = true;
+            }, 50);
+        };
+
+        // 标签树
+        const treeContainer = wrapper.createEl("div", { cls: "tag-tree" });
+
+        // 顶层拖放区
+        const topDropZone = treeContainer.createEl("div", { cls: "tag-drop-zone" });
+        topDropZone.addEventListener("dragover", (e) => { e.preventDefault(); topDropZone.classList.add("active"); });
+        topDropZone.addEventListener("dragleave", () => { topDropZone.classList.remove("active"); });
+        topDropZone.addEventListener("drop", async (e) => {
+            e.preventDefault();
+            topDropZone.classList.remove("active");
+            const draggedId = window.gtdCurrentDragTagId;
+            if (draggedId && TAG_DEFINITIONS[draggedId]) {
+                TAG_DEFINITIONS[draggedId].parentId = null;
+                await saveTagDefinitions(TAG_DEFINITIONS);
+                new Notice("✅ 已移动到顶层");
+                if (renderViewFn) renderViewFn();
+            }
+        });
+
+        // 递归渲染标签树
+        const renderTagTree = (parentId, container, level = 0) => {
+            const children = Object.keys(TAG_DEFINITIONS)
+                .filter(k => TAG_DEFINITIONS[k].parentId === parentId)
+                .sort((a, b) => (TAG_DEFINITIONS[a].order || 0) - (TAG_DEFINITIONS[b].order || 0));
+
+            children.forEach(tagId => {
+                const def = TAG_DEFINITIONS[tagId];
+                const item = container.createEl("div", {
+                    cls: `tag-item ${def.isCategory ? 'is-category' : ''}`,
+                    attr: { draggable: "true", "data-tag-id": tagId }
+                });
+
+                // 拖拽事件
+                item.addEventListener("dragstart", (e) => {
+                    window.gtdCurrentDragTagId = tagId;
+                    item.classList.add("dragging");
+                    e.dataTransfer.effectAllowed = "move";
+                });
+                item.addEventListener("dragend", () => {
+                    window.gtdCurrentDragTagId = null;
+                    item.classList.remove("dragging");
+                });
+                item.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    if (window.gtdCurrentDragTagId && window.gtdCurrentDragTagId !== tagId) {
+                        item.classList.add("drag-over");
+                    }
+                });
+                item.addEventListener("dragleave", () => { item.classList.remove("drag-over"); });
+                item.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    item.classList.remove("drag-over");
+                    const draggedId = window.gtdCurrentDragTagId;
+                    if (draggedId && draggedId !== tagId && TAG_DEFINITIONS[draggedId]) {
+                        // 检查是否会造成循环引用
+                        let current = tagId;
+                        while (current) {
+                            if (current === draggedId) {
+                                new Notice("⚠️ 不能将父标签拖入其子标签");
+                                return;
+                            }
+                            current = TAG_DEFINITIONS[current]?.parentId;
+                        }
+                        TAG_DEFINITIONS[draggedId].parentId = tagId;
+                        await saveTagDefinitions(TAG_DEFINITIONS);
+                        new Notice(`✅ 已移动到 "${def.label}" 下`);
+                        if (renderViewFn) renderViewFn();
+                    }
+                });
+
+                // 颜色点
+                const colorDot = item.createEl("div", { cls: "tag-color-dot" });
+                colorDot.style.backgroundColor = def.color;
+
+                // 图标
+                item.createEl("span", { text: def.icon, cls: "tag-icon" });
+
+                // 信息
+                const info = item.createEl("div", { cls: "tag-info" });
+                info.createEl("div", { text: def.label, cls: "tag-label" });
+                const childCount = Object.keys(TAG_DEFINITIONS).filter(k => TAG_DEFINITIONS[k].parentId === tagId).length;
+                const usageCount = gtdList.filter(i => i.tags && i.tags.includes(tagId)).length;
+                info.createEl("div", {
+                    cls: "tag-meta",
+                    text: `ID: ${tagId} | ${def.isCategory ? '📁 分类' : '🏷️ 标签'} | 子级: ${childCount} | 使用: ${usageCount}次`
+                });
+
+                // 操作按钮
+                const actions = item.createEl("div", { cls: "tag-actions" });
+                const editBtn = actions.createEl("button", { text: "✏️", cls: "tag-action-btn", title: "编辑" });
+                editBtn.onclick = (e) => { e.stopPropagation(); showTagForm(tagId); };
+                const deleteBtn = actions.createEl("button", { text: "🗑️", cls: "tag-action-btn delete", title: "删除" });
+                deleteBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (childCount > 0) {
+                        new Notice("⚠️ 请先删除或移动该标签下的子标签");
+                        return;
+                    }
+                    if (usageCount > 0) {
+                        new Notice(`⚠️ 该标签正在被 ${usageCount} 个条目使用，请先移除`);
+                        return;
+                    }
+                    delete TAG_DEFINITIONS[tagId];
+                    await saveTagDefinitions(TAG_DEFINITIONS);
+                    new Notice("🗑️ 标签已删除");
+                    if (renderViewFn) renderViewFn();
+                };
+
+                // 子标签容器
+                const hasChildren = Object.keys(TAG_DEFINITIONS).some(k => TAG_DEFINITIONS[k].parentId === tagId);
+                if (hasChildren) {
+                    const childrenContainer = container.createEl("div", { cls: "tag-children" });
+                    renderTagTree(tagId, childrenContainer, level + 1);
+                }
+            });
+        };
+
+        renderTagTree(null, treeContainer, 0);
+
+        // 提示信息
+        if (Object.keys(TAG_DEFINITIONS).length === 0) {
+            treeContainer.createEl("div", {
+                text: "暂无标签，点击上方按钮创建你的第一个标签！",
+                attr: { style: "text-align:center; padding:40px; color:var(--text-muted);" }
+            });
+        }
+
+        wrapper.createEl("div", {
+            attr: { style: "margin-top:20px; padding:12px; background:var(--background-primary); border-radius:8px; font-size:0.85em; color:var(--text-muted);" }
+        }).innerHTML = `
+            <strong>💡 使用提示：</strong><br>
+            • 拖拽标签可以调整层级关系（拖到另一个标签上设为子标签，拖到顶部区域设为顶层）<br>
+            • 分类标签只能包含子标签，不能直接用于标记任务条目<br>
+            • 删除标签前需要先移除其子标签和使用该标签的条目
+        `;
+    };
+
+    const renderNormalView = () => {
+        disposeCommentPreviewComponent();
+        dv.container.innerHTML = "";
+        if (!gtdList) { dv.paragraph(`⏳ 读取数据中...`); return; }
+        applyPendingRenderRestoreState(window.gtdRenderRestoreState.pendingContext);
+
+        const getDisplayName = (item) => item.type === 'project' ? (item.project || "未命名") : (item.content || "未命名");
+        const isItemEffectivelyCollapsed = (item) => Boolean(item?.isCollapsed) && !isRestoreExpandedItem(item?.id);
+        const isProjectEffectivelyCollapsed = (item) => Boolean(item?.isCollapsed) && !isRestoreExpandedProject(item?.id);
+        const nameSort = (a, b) => getDisplayName(a.item).localeCompare(getDisplayName(b.item), "zh"); 
+        const scheduleSort = (a, b) => {
+            const d1 = a.item.scheduled || "9999-99-99";
+            const d2 = b.item.scheduled || "9999-99-99";
+            if (d1 !== d2) return d1.localeCompare(d2);
+            const p1 = a.item.project || "";
+            const p2 = b.item.project || "";
+            if (p1 !== p2) return p1.localeCompare(p2, "zh");
+            return getDisplayName(a.item).localeCompare(getDisplayName(b.item), "zh");
+        };
+        
+        const containerStyle = "margin-bottom: 20px; padding: 15px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background-color: var(--background-primary-alt);";
+        const headerStyle = "margin: 0 0 10px 0; font-size: 1.1em; font-weight: bold; color: var(--text-normal); border-bottom: 2px solid var(--interactive-accent); padding-bottom: 5px; display:flex; justify-content:space-between; align-items:center;";
+        const btnStyle = "background-color: var(--interactive-accent); color: var(--text-on-accent); padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; margin-right: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);";
+
+        dv.container.createEl("style", { text: `
+            .gtd-item-line { user-select: none; position: relative; }
+            .gtd-item-line.is-first-class {
+                box-shadow: inset 3px 0 0 rgba(241, 196, 15, 0.78);
+                background-image: linear-gradient(90deg, rgba(241, 196, 15, 0.20) 0%, rgba(241, 196, 15, 0.11) 28%, rgba(241, 196, 15, 0.04) 56%, transparent 88%);
+            }
+            .gtd-item-line.is-focus-session {
+                border-right: 2px solid rgba(233, 30, 99, 0.55);
+                box-shadow: none;
+                background-image: linear-gradient(270deg, rgba(233, 30, 99, 0.14) 0%, rgba(233, 30, 99, 0.08) 28%, rgba(233, 30, 99, 0.03) 58%, transparent 88%);
+            }
+            .gtd-item-line.is-first-class.is-focus-session {
+                box-shadow: inset 3px 0 0 rgba(241, 196, 15, 0.78);
+                background-image:
+                    linear-gradient(90deg, rgba(241, 196, 15, 0.16) 0%, rgba(241, 196, 15, 0.07) 24%, rgba(241, 196, 15, 0.02) 52%, transparent 75%),
+                    linear-gradient(270deg, rgba(233, 30, 99, 0.13) 0%, rgba(233, 30, 99, 0.07) 30%, rgba(233, 30, 99, 0.02) 58%, transparent 88%);
+            }
+            .gtd-item-line.is-focus-session::after {
+                content: attr(data-focus-badge);
+                position: absolute;
+                right: 8px;
+                top: -8px;
+                background: #e91e63;
+                color: #fff;
+                border-radius: 999px;
+                font-size: 10px;
+                line-height: 1;
+                padding: 2px 6px;
+                letter-spacing: 0.3px;
+                box-shadow: 0 2px 6px rgba(233, 30, 99, 0.35);
+            }
+            .drag-over-top { border-top: 3px solid #2ecc71 !important; }
+            .drag-over-bottom { border-bottom: 3px solid #2ecc71 !important; }
+            .drag-over-child { background-color: rgba(46, 204, 113, 0.2) !important; border-left: 3px solid #2ecc71 !important; }
+            .drag-over-project { background-color: rgba(46, 204, 113, 0.3) !important; border: 2px dashed #2ecc71 !important; border-radius: 6px; }
+            summary.gtd-focus-project {
+                border: none;
+                border-right: 2px solid rgba(233, 30, 99, 0.5);
+                border-radius: 8px;
+                padding: 4px 8px;
+                background: linear-gradient(270deg, rgba(233, 30, 99, 0.12) 0%, rgba(233, 30, 99, 0.06) 32%, transparent 86%);
+                box-shadow: none;
+            }
+            .is-dragging { opacity: 0.4; background: var(--background-modifier-hover); transform: scale(0.99); }
+            .completed-line { opacity: 0.9; }
+            .ghost-line { opacity: 0.5; font-style: italic; pointer-events: none; }
+            .gtd-drag-handle { color: var(--text-faint); cursor: grab; letter-spacing: -1px; user-select: none; padding: 0 2px; }
+            .gtd-drag-handle:active { cursor: grabbing; }
+            .proj-nav-drop-root { border: 1px dashed var(--background-modifier-border); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; color: var(--text-muted); font-size: 0.85em; text-align: center; transition: all 0.2s; }
+            .proj-nav-drop-root.drag-over { border-color: #2ecc71; background: rgba(46, 204, 113, 0.15); color: var(--text-normal); }
+            .proj-nav-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; padding: 1px 2px; transition: background 0.2s; }
+            .proj-nav-row.drag-over { background: rgba(46, 204, 113, 0.18); outline: 1px dashed #2ecc71; }
+            .proj-nav-row.is-dragging { opacity: 0.45; }
+            .proj-nav-toggle { width: 16px; text-align: center; color: var(--text-muted); cursor: pointer; user-select: none; font-size: 11px; }
+            .proj-nav-toggle.spacer { opacity: 0.35; cursor: default; }
+            .proj-nav-tag { cursor: pointer; font-size: 0.9em; display:flex; align-items:center; gap:6px; flex-wrap:nowrap; background: transparent; padding: 4px 8px; margin-bottom: 2px; border-radius: 4px; color: var(--text-muted); transition: all 0.2s; border: 1px solid transparent; user-select: none; flex: 1; }
+            .proj-nav-tag:hover { color: var(--interactive-accent); border-color: var(--background-modifier-border); background: var(--background-primary); }
+            .proj-nav-main { color: var(--text-normal); font-weight: 600; line-height: 1.25; white-space: nowrap; }
+            .proj-nav-tags { display: inline-flex; flex-wrap: nowrap; gap: 4px; }
+            .proj-nav-pill { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 10px; font-size: 0.72em; color: var(--text-normal); border: 1px solid var(--background-modifier-border); background: transparent; box-shadow: none; white-space: nowrap; }
+            .proj-nav-tag-edit { cursor: pointer; user-select: none; font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 10px; border: 1px solid transparent; color: var(--text-muted); transition: all 0.2s; }
+            .proj-nav-tag-edit:hover { color: var(--interactive-accent); border-color: var(--background-modifier-border); background: var(--background-primary); }
+            @keyframes highlight-pulse { 0% { background-color: rgba(255, 235, 59, 0.4); } 50% { background-color: rgba(255, 235, 59, 0.2); } 100% { background-color: transparent; } }
+            .highlight-target { animation: highlight-pulse 1.5s ease-out; border-radius: 8px; }
+            .tag-pill { display: inline-flex; align-items: center; gap: 4px; padding: 0px 6px; border-radius: 10px; font-size: 0.75em; margin-left: 6px; font-weight: 500; color: white; opacity: 0.9; vertical-align: middle; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+            .tag-filter-btn { padding: 4px 10px; border-radius: 12px; border: 1px solid var(--background-modifier-border); cursor: pointer; font-size: 12px; background: transparent; transition: all 0.2s; display: flex; align-items: center; gap: 4px; }
+            .tag-filter-btn.active { color: white; border-color: transparent; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+            .tag-filter-btn:hover { background: var(--background-modifier-hover); }
+            .tag-category-group { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 8px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); margin-left: 6px; }
+            .tag-category-header { display: flex; align-items: center; gap: 4px; }
+            .tag-category-label { font-size: 13px; cursor: pointer; padding: 2px 6px; border-radius: 10px; transition: all 0.2s; font-weight: 600; }
+            .tag-category-label:hover { background: var(--background-modifier-hover); }
+            .tag-category-label.active { color: white; }
+            .tag-children-group { display: flex; gap: 4px; flex-wrap: wrap; padding-left: 12px; border-left: 2px solid var(--background-modifier-border); margin-left: 8px; margin-top: 4px; }
+            .tag-preset-toolbar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+            .tag-preset-btn { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--background-modifier-border); cursor: pointer; background: transparent; color: var(--text-normal); font-size: 11px; }
+            .tag-preset-btn:hover { background: var(--background-modifier-hover); }
+            .tag-preset-chip { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--background-modifier-border); cursor: pointer; background: var(--background-secondary); color: var(--text-normal); font-size: 11px; }
+            .tag-preset-chip.active { color: var(--text-on-accent); background: var(--interactive-accent); border-color: transparent; }
+            .gtd-comment-chip { display: inline-flex; align-items: center; max-width: 360px; padding: 2px 8px; border: 1px solid var(--background-modifier-border); border-radius: 10px; font-size: 11px; color: var(--text-muted); background: var(--background-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 8px; cursor: pointer; }
+            .gtd-comment-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+            .gtd-comment-mask { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35); z-index: 9998; }
+            .gtd-comment-drawer { position: fixed; right: 0; top: 0; width: min(760px, 92vw); height: 100vh; background: var(--background-primary); border-left: 1px solid var(--background-modifier-border); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.22); z-index: 9999; display: flex; flex-direction: column; }
+            .gtd-comment-drawer-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 10px; border-bottom: 1px solid var(--background-modifier-border); }
+            .gtd-comment-drawer-title { margin: 0; font-size: 1em; color: var(--text-normal); }
+            .gtd-comment-drawer-sub { margin-top: 3px; color: var(--text-muted); font-size: 12px; }
+            .gtd-comment-drawer-close { border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); border-radius: 6px; cursor: pointer; padding: 2px 8px; }
+            .gtd-comment-drawer-close:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+            .gtd-comment-tabs { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--background-modifier-border); }
+            .gtd-comment-tab-btn { border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+            .gtd-comment-tab-btn.active { color: var(--text-on-accent); background: var(--interactive-accent); border-color: transparent; }
+            .gtd-comment-drawer-body { padding: 12px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+            .gtd-comment-outliner-panel { display: none; flex-direction: column; gap: 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 12px; background: var(--background-primary-alt); }
+            .gtd-comment-outliner-row { display: flex; flex-wrap: wrap; gap: 8px; }
+            .gtd-comment-editor { width: 100%; min-height: 220px; flex: 1; resize: vertical; border-radius: 8px; border: 1px solid var(--background-modifier-border); background: var(--background-primary-alt); color: var(--text-normal); padding: 10px 12px; line-height: 1.6; font-family: var(--font-text); }
+            .gtd-comment-editor:focus { outline: none; border-color: var(--interactive-accent); }
+            .gtd-comment-counter { text-align: right; color: var(--text-muted); font-size: 12px; }
+            .gtd-comment-preview-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 12px; background: var(--background-primary-alt); }
+            .gtd-comment-preview-wrap .internal-link { cursor: pointer; }
+            .gtd-comment-drawer-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 10px 16px 14px; border-top: 1px solid var(--background-modifier-border); }
+            .gtd-comment-drawer-btn { border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-normal); border-radius: 8px; cursor: pointer; padding: 6px 12px; }
+            .gtd-comment-drawer-btn.save { background: var(--interactive-accent); color: var(--text-on-accent); border-color: transparent; }
+            .gtd-comment-drawer-btn:hover { filter: brightness(1.03); }
+            @media (max-width: 768px) {
+                .gtd-comment-drawer { width: 100vw; }
+            }
+        `});
+
+        const topAnchor = dv.el("div", "", { attr: { id: "gtd-top-anchor", style: "height:0;" } });
+
+        const controlContainer = dv.el("div", "", { attr: { style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;" } });
+        const leftBtns = controlContainer.createEl("div");
+        const createMainBtn = (text, onClick, style = btnStyle) => { const btn = leftBtns.createEl("button", { text: text, attr: { style: style } }); btn.onclick = onClick; return btn; };
+        createMainBtn("📥 添加到工作篮", () => addNewItem('inbox')); createMainBtn("📂 创建新项目", () => addNewItem('project')); createMainBtn("⚡ 添加下一步行动", () => addNewItem('next_action'));
+        
+        const kaioBtnStyle = "background-color: #c0392b; color: white; padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; margin-right: 10px; box-shadow: 0 0 10px rgba(192, 57, 43, 0.4); animation: pulse 2s infinite;";
+        controlContainer.createEl("style", { text: "@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(192, 57, 43, 0); } 100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0); } }" });
+        createMainBtn("🔥 界王拳模式", () => { window.gtdKaioKenMode = true; if(renderViewFn) renderViewFn(); }, kaioBtnStyle);
+
+        const tagMgrBtnStyle = "background-color: #9b59b6; color: white; padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);";
+        createMainBtn("🏷️ 标签管理", () => { window.gtdTagManagerMode = true; if(renderViewFn) renderViewFn(); }, tagMgrBtnStyle);
+
+        const rightBtns = controlContainer.createEl("div", { attr: { style: "display:flex; flex-direction:column; align-items:flex-end; gap:8px;" } });
+        
+        const mainFilterRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:8px;" } });
+        const toggleFirstBtn = mainFilterRow.createEl("button", { text: window.gtdShowOnlyFirstClass ? "⭐ 只看精选" : "👁️ 显示全部", attr: { style: `padding: 6px 12px; border-radius: 6px; border: 1px solid var(--text-muted); cursor: pointer; background: ${window.gtdShowOnlyFirstClass ? 'var(--background-modifier-active-hover)' : 'transparent'}; color: var(--text-normal);` } });
+        toggleFirstBtn.onclick = () => { window.gtdShowOnlyFirstClass = !window.gtdShowOnlyFirstClass; window.gtdRecentIds = []; if(renderViewFn) renderViewFn(); };
+        const toggleFocusBtn = mainFilterRow.createEl("button", { text: window.gtdShowOnlyFocus ? "🎯 本次执行" : "🎯 加入执行", attr: { style: `padding: 6px 12px; border-radius: 6px; border: 1px solid var(--text-muted); cursor: pointer; background: ${window.gtdShowOnlyFocus ? '#e91e63' : 'transparent'}; color: ${window.gtdShowOnlyFocus ? 'white' : 'var(--text-normal)'};` } });
+        toggleFocusBtn.onclick = (e) => { window.gtdShowOnlyFocus = !window.gtdShowOnlyFocus; window.gtdRecentIds = []; if(renderViewFn) renderViewFn(); };
+
+        const tagFilterRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; align-items:center;" } });
+
+        const allTagBtn = tagFilterRow.createEl("div", { cls: `tag-filter-btn ${(window.gtdTagFilters || []).length === 0 ? 'active' : ''}`, text: "All" });
+        if ((window.gtdTagFilters || []).length === 0) allTagBtn.style.background = "var(--interactive-normal)";
+        allTagBtn.onclick = () => { setTagFilters([]); if(renderViewFn) renderViewFn(); };
+
+        const toggleTagFilter = (id) => {
+            const nextFilters = Array.isArray(window.gtdTagFilters) ? [...window.gtdTagFilters] : [];
+            if (nextFilters.includes(id)) {
+                setTagFilters(nextFilters.filter(t => t !== id));
+            } else {
+                nextFilters.push(id);
+                setTagFilters(nextFilters);
+            }
+            if(renderViewFn) renderViewFn();
+        };
+
+        // [优化] 嵌套层级标签筛选器：有子标签的都展开到下一行显示
+        const renderNestedTagFilter = (parentId, container) => {
+            const children = getChildTags(parentId).sort((a, b) => (TAG_DEFINITIONS[a].order || 0) - (TAG_DEFINITIONS[b].order || 0));
+            if (children.length === 0) return;
+
+            children.forEach(key => {
+                const def = TAG_DEFINITIONS[key];
+                const isActive = (window.gtdTagFilters || []).includes(key);
+                const subChildren = getChildTags(key);
+                const hasSubChildren = subChildren.length > 0;
+
+                if (hasSubChildren) {
+                    // [统一处理] 有子标签的：无论是分类还是普通标签，都采用垂直布局
+                    const groupWrapper = container.createEl("div", { cls: "tag-category-group" });
+                    groupWrapper.style.borderColor = def.color;
+
+                    // 父标签/分类标题行
+                    const headerRow = groupWrapper.createEl("div", { cls: "tag-category-header" });
+                    const parentLabel = headerRow.createEl("span", {
+                        text: `${def.icon} ${def.label}`,
+                        cls: `tag-category-label ${isActive ? 'active' : ''}`,
+                        attr: { title: def.isCategory
+                            ? `📁 分类：点击筛选「${def.label}」下所有子标签`
+                            : `🏷️ 标签：点击筛选「${def.label}」及其子标签` }
+                    });
+                    if (isActive) parentLabel.style.backgroundColor = def.color;
+                    parentLabel.onclick = () => toggleTagFilter(key);
+
+                    // 子标签容器（新行显示，带左边线表示层级关系）
+                    const childContainer = groupWrapper.createEl("div", { cls: "tag-children-group" });
+                    childContainer.style.borderColor = def.color + "80";
+
+                    // 递归渲染子标签
+                    renderNestedTagFilter(key, childContainer);
+                } else {
+                    // 叶子标签（无子级）：渲染为普通按钮
+                    const btn = container.createEl("div", { cls: `tag-filter-btn ${isActive ? 'active' : ''}` });
+                    btn.innerHTML = `<span>${def.icon}</span> ${def.label}`;
+                    if (isActive) btn.style.backgroundColor = def.color;
+                    btn.onclick = () => toggleTagFilter(key);
+                }
+            });
+        };
+        renderNestedTagFilter(null, tagFilterRow);
+
+        const activeTagChipRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;" } });
+        if (!window.gtdTagFilters || window.gtdTagFilters.length === 0) {
+            activeTagChipRow.createEl("span", { text: "✓ 显示全部标签", attr: { style: "color:var(--text-muted); font-size:12px;" } });
+        } else {
+            const clearBtn = activeTagChipRow.createEl("button", {
+                text: "清空标签",
+                attr: { style: "padding:2px 8px; border-radius:10px; border:1px solid var(--background-modifier-border); cursor:pointer; background:transparent; color:var(--text-normal); font-size:11px;" }
+            });
+            clearBtn.onclick = () => { setTagFilters([]); if(renderViewFn) renderViewFn(); };
+            window.gtdTagFilters.forEach(id => {
+                const def = TAG_DEFINITIONS[id];
+                const chip = activeTagChipRow.createEl("span", { text: def ? `${def.icon} ${def.label}` : id, attr: { style: `padding:2px 8px; border-radius:10px; color:white; background:${def?.color || "var(--background-modifier-border)"}; font-size:11px; cursor:pointer;` } });
+                chip.onclick = () => toggleTagFilter(id);
+            });
+        }
+
+        const tagPresetToolbar = rightBtns.createEl("div", { cls: "tag-preset-toolbar" });
+        const currentPreset = (window.gtdTagFilterPresets || []).find((preset) => isSameFilterSet(preset.filters, window.gtdTagFilters || []));
+        const savePresetBtn = tagPresetToolbar.createEl("button", { cls: "tag-preset-btn", text: "💾 保存筛选" });
+        savePresetBtn.onclick = async () => {
+            const currentFilters = normalizeTagFilterList(window.gtdTagFilters || []);
+            if (currentFilters.length === 0) {
+                new Notice("⚠️ 请先选择至少一个标签再保存预设");
+                return;
+            }
+            const defaultName = currentPreset?.name || `筛选-${moment().format("MMDD-HHmm")}`;
+            const inputName = await prompt("保存标签筛选预设", "请输入预设名称", defaultName);
+            const name = normalizeTagPresetName(inputName);
+            if (!name) {
+                new Notice("⚠️ 请输入有效名称");
+                return;
+            }
+            const nextPresets = Array.isArray(window.gtdTagFilterPresets) ? [...window.gtdTagFilterPresets] : [];
+            const existingIndex = nextPresets.findIndex((preset) => preset.name === name);
+            const now = moment().format("YYYY-MM-DD HH:mm:ss");
+            const payload = {
+                name,
+                filters: currentFilters,
+                createdAt: existingIndex >= 0
+                    ? nextPresets[existingIndex]?.createdAt || nextPresets[existingIndex]?.updatedAt || now
+                    : now,
+                updatedAt: now
+            };
+            if (existingIndex >= 0) {
+                nextPresets[existingIndex] = payload;
+                new Notice(`♻️ 已更新筛选预设：${name}`);
+            } else {
+                nextPresets.push(payload);
+                new Notice(`✅ 已保存筛选预设：${name}`);
+            }
+            setTagFilterPresets(nextPresets);
+            if (renderViewFn) renderViewFn();
+        };
+        const applyPresetBtn = tagPresetToolbar.createEl("button", { cls: "tag-preset-btn", text: "📚 读取预设" });
+        applyPresetBtn.onclick = async () => {
+            const presets = Array.isArray(window.gtdTagFilterPresets) ? window.gtdTagFilterPresets : [];
+            if (presets.length === 0) {
+                new Notice("ℹ️ 还没有标签筛选预设");
+                return;
+            }
+            const options = presets.map((preset, idx) => `${idx + 1}. ${preset.name} ｜ ${getTagPresetSummaryText(preset.filters)}`);
+            const picked = await suggester(options);
+            if (!picked) return;
+            const match = picked.match(/^(\d+)\./);
+            const idx = match ? Number(match[1]) - 1 : -1;
+            const selected = idx >= 0 && idx < presets.length ? presets[idx] : null;
+            if (!selected) return;
+            setTagFilters(selected.filters);
+            window.gtdRecentIds = [];
+            new Notice(`🎯 已应用预设：${selected.name}`);
+            if (renderViewFn) renderViewFn();
+        };
+        const deletePresetBtn = tagPresetToolbar.createEl("button", { cls: "tag-preset-btn", text: "🗑️ 删除预设" });
+        deletePresetBtn.onclick = async () => {
+            const presets = Array.isArray(window.gtdTagFilterPresets) ? window.gtdTagFilterPresets : [];
+            if (presets.length === 0) {
+                new Notice("ℹ️ 没有可删除的预设");
+                return;
+            }
+            const options = presets.map((preset, idx) => `${idx + 1}. ${preset.name}`);
+            const picked = await suggester(options);
+            if (!picked) return;
+            const match = picked.match(/^(\d+)\./);
+            const idx = match ? Number(match[1]) - 1 : -1;
+            const selected = idx >= 0 && idx < presets.length ? presets[idx] : null;
+            if (!selected) return;
+            setTagFilterPresets(presets.filter((preset) => preset.name !== selected.name));
+            new Notice(`🗑️ 已删除预设：${selected.name}`);
+            if (renderViewFn) renderViewFn();
+        };
+
+        const tagPresetRow = rightBtns.createEl("div", { attr: { style: "display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;" } });
+        if (!window.gtdTagFilterPresets || window.gtdTagFilterPresets.length === 0) {
+            tagPresetRow.createEl("span", { text: "暂无筛选预设", attr: { style: "color:var(--text-muted); font-size:12px;" } });
+        } else {
+            window.gtdTagFilterPresets.forEach((preset) => {
+                const chip = tagPresetRow.createEl("button", {
+                    cls: `tag-preset-chip ${isSameFilterSet(preset.filters, window.gtdTagFilters || []) ? 'active' : ''}`,
+                    text: `📌 ${preset.name}`
+                });
+                chip.title = getTagPresetSummaryText(preset.filters);
+                chip.onclick = () => {
+                    setTagFilters(preset.filters);
+                    window.gtdRecentIds = [];
+                    if (renderViewFn) renderViewFn();
+                };
+            });
+        }
+
+        const filterFn = (item) => {
+            let visible = true;
+            if (window.gtdShowOnlyFirstClass && item.isFirstClass !== true && !window.gtdRecentIds.includes(item.id)) visible = false;
+            return visible;
+        };
+
+        const renderCommentDrawer = () => {
+            const state = window.gtdCommentDrawerState || {};
+            if (!state.isOpen || !state.itemId) return;
+
+            const item = getItemById(state.itemId);
+            if (!item) {
+                window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
+                disposeCommentPreviewComponent();
+                return;
+            }
+
+            let mode = normalizeCommentDrawerMode(state.mode);
+            let draft = typeof state.draft === "string" ? state.draft : getItemCommentText(item);
+
+            const syncDrawerState = () => {
+                window.gtdCommentDrawerState = { isOpen: true, itemId: item.id, mode, draft };
+            };
+            syncDrawerState();
+
+            const mask = dv.container.createEl("div", { cls: "gtd-comment-mask" });
+            const drawer = dv.container.createEl("aside", { cls: "gtd-comment-drawer" });
+            mask.onclick = async () => { await closeCommentDrawer(true); };
+            drawer.addEventListener("click", (e) => e.stopPropagation());
+
+            const header = drawer.createEl("div", { cls: "gtd-comment-drawer-header" });
+            const titleWrap = header.createEl("div");
+            titleWrap.createEl("h3", { cls: "gtd-comment-drawer-title", text: `🗒️ 条目评论：${getDisplayName(item)}` });
+            titleWrap.createEl("div", { cls: "gtd-comment-drawer-sub", text: "默认先预览；支持 ((blockId))，会自动按当前笔记解析并跳转编辑。" });
+            const closeBtn = header.createEl("button", { cls: "gtd-comment-drawer-close", text: "关闭" });
+            closeBtn.onclick = async () => { await closeCommentDrawer(true); };
+
+            const tabs = drawer.createEl("div", { cls: "gtd-comment-tabs" });
+            const previewTabBtn = tabs.createEl("button", { cls: "gtd-comment-tab-btn", text: "预览" });
+            const outlinerTabBtn = tabs.createEl("button", { cls: "gtd-comment-tab-btn", text: "引用块编辑" });
+            const rawTabBtn = tabs.createEl("button", { cls: "gtd-comment-tab-btn", text: "源码兜底" });
+
+            const body = drawer.createEl("div", { cls: "gtd-comment-drawer-body" });
+            const outlinerPanel = body.createEl("div", { cls: "gtd-comment-outliner-panel" });
+            outlinerPanel.createEl("div", {
+                text: "识别 ![[文件|o-id]] / ![[#^...]] / ((blockId)) / %%id%%...%%id%%，点击后跳转到原块。",
+                attr: { style: "color:var(--text-muted);font-size:12px;line-height:1.6;" }
+            });
+            const outlinerRow = outlinerPanel.createEl("div", { cls: "gtd-comment-outliner-row" });
+            const outlinerEmbedBtn = outlinerRow.createEl("button", { cls: "gtd-comment-drawer-btn", text: "跳转编辑引用块" });
+
+            const editor = body.createEl("textarea", { cls: "gtd-comment-editor", text: draft });
+            editor.placeholder = "记录想法、上下文；支持 ![[文件|o-id]]、![[文件#^块]]、((块ID))、%%id%%...%%id%%";
+            const counter = body.createEl("div", { cls: "gtd-comment-counter", text: `${draft.length} 字` });
+            const previewWrap = body.createEl("div", { cls: "gtd-comment-preview-wrap" });
+
+            const refreshPreview = async () => {
+                await renderMarkdownInContainer(draft, previewWrap);
+            };
+
+            const refreshModeUI = async () => {
+                outlinerTabBtn.classList.toggle("active", mode === "embed");
+                rawTabBtn.classList.toggle("active", mode === "raw");
+                previewTabBtn.classList.toggle("active", mode === "preview");
+                outlinerPanel.style.display = mode === "embed" ? "flex" : "none";
+                editor.style.display = mode === "raw" ? "block" : "none";
+                counter.style.display = mode === "raw" ? "block" : "none";
+                previewWrap.style.display = mode === "preview" ? "block" : "none";
+                if (mode === "preview") await refreshPreview();
+                else disposeCommentPreviewComponent();
+            };
+
+            editor.addEventListener("input", () => {
+                draft = editor.value;
+                counter.textContent = `${draft.length} 字`;
+                syncDrawerState();
+            });
+            outlinerEmbedBtn.onclick = async () => {
+                const targets = extractEmbedTargets(draft);
+                if (targets.length === 0) {
+                    new Notice("ℹ️ 当前评论未检测到可跳转引用（![[...]] / ((...)) / %%...%%）");
+                    return;
+                }
+                let selected = targets[0];
+                if (targets.length > 1) {
+                    const options = targets.map((t, idx) => `${idx + 1}. ${t}`);
+                    const picked = await suggester(options);
+                    if (!picked) return;
+                    const m = picked.match(/^\d+\.\s*(.+)$/);
+                    selected = m ? m[1].trim() : picked.trim();
+                }
+                if (!selected) return;
+                await openLinkForEditing(selected);
+            };
+            outlinerTabBtn.onclick = async () => {
+                mode = "embed";
+                syncDrawerState();
+                await refreshModeUI();
+            };
+            rawTabBtn.onclick = async () => {
+                mode = "raw";
+                syncDrawerState();
+                await refreshModeUI();
+                editor.focus();
+            };
+            previewTabBtn.onclick = async () => {
+                mode = "preview";
+                syncDrawerState();
+                await refreshModeUI();
+            };
+
+            const actions = drawer.createEl("div", { cls: "gtd-comment-drawer-actions" });
+            const clearBtn = actions.createEl("button", { cls: "gtd-comment-drawer-btn", text: "清空" });
+            clearBtn.onclick = async () => {
+                draft = "";
+                editor.value = "";
+                counter.textContent = "0 字";
+                syncDrawerState();
+                if (mode === "preview") await refreshPreview();
+                await saveItemCommentById(item.id, "");
+                new Notice("🧹 评论已清空");
+            };
+            const saveBtn = actions.createEl("button", { cls: "gtd-comment-drawer-btn save", text: "保存评论" });
+            saveBtn.onclick = async () => {
+                await saveItemCommentById(item.id, draft);
+                new Notice(draft.trim() ? "💾 评论已保存" : "🧹 评论为空，已清空");
+            };
+
+            if (mode === "raw") {
+                editor.focus();
+                editor.selectionStart = editor.value.length;
+                editor.selectionEnd = editor.value.length;
+            }
+            refreshModeUI();
+        };
+
+        const getProjectLevelBackground = (level) => {
+            const palette = [
+                "rgba(52, 152, 219, 0.06)",
+                "rgba(46, 204, 113, 0.08)",
+                "rgba(241, 196, 15, 0.09)",
+                "rgba(230, 126, 34, 0.09)",
+                "rgba(231, 76, 60, 0.08)",
+                "rgba(155, 89, 182, 0.08)"
+            ];
+            if (!Number.isFinite(level) || level < 0) return palette[0];
+            return palette[level % palette.length];
+        };
+
+        const renderItemLine = (container, item, originalIndex, isCompleted = false, showProjectContext = false, level = 0, draggable = false, isGhost = false, levelBgOverride = "") => {
+            const marginLeft = level * 30 + "px";
+            const isChild = level > 0;
+            const borderStyle = isChild ? (isGhost ? `2px dashed rgba(var(--text-muted-rgb), 0.3)` : `2px solid rgba(var(--interactive-accent-rgb), 0.5)`) : 'none';
+            const normalizedLevelBg = String(levelBgOverride || "").trim();
+            const bgStyle = isGhost
+                ? `background-color: transparent;`
+                : (normalizedLevelBg
+                    ? `background-color: ${normalizedLevelBg};`
+                    : (isChild ? `background-color: rgba(var(--mono-rgb-100), 0.03);` : ''));
+            const fontStyle = isChild ? `font-size: 0.95em;` : `font-weight: 500;`; 
+            const completedClass = isCompleted ? "completed-line" : (isGhost ? "ghost-line" : "");
+            const commentText = getItemCommentText(item);
+            const commentSummary = summarizeComment(commentText, 26);
+
+            const isFocusSession = !isCompleted && !isGhost && item.isFocusSession === true;
+            const isFirstClass = !isCompleted && !isGhost && item.isFirstClass === true;
+            const lineClass = `gtd-item-line ${completedClass} ${isFirstClass ? "is-first-class" : ""} ${isFocusSession ? "is-focus-session" : ""}`.trim();
+            const line = container.createEl("div", { 
+                cls: lineClass, 
+                attr: { 
+                    style: `display: flex; align-items: center; margin-bottom: 4px; padding: 6px 0; margin-left: ${marginLeft}; border-left: ${borderStyle}; padding-left: ${isChild?'10px':'0'}; border-radius: 4px; transition: background 0.2s; ${bgStyle} ${fontStyle}` 
+                } 
+            });
+            if (item?.id) line.dataset.gtdAnchorId = String(item.id);
+            const sectionHost = container?.closest?.("[id^='gtd-section-']");
+            if (sectionHost?.id) line.dataset.gtdSectionId = sectionHost.id;
+            line.addEventListener("pointerdown", () => {
+                const projectDetails = line.closest("details[data-gtd-anchor-id]");
+                rememberAnchorTarget(item?.id, sectionHost?.id || null, projectDetails?.dataset?.gtdAnchorId || null, { immediate: true });
+            }, { passive: true });
+            if (isFocusSession) line.setAttribute("data-focus-badge", "🎯 执行中");
+
+            const canDrag = draggable && !isCompleted && !isGhost && (item.type === 'next_action' || item.type === 'inbox');
+            const beginDrag = (e) => {
+                e.stopPropagation();
+                window.gtdCurrentDragId = item.id;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", item.id);
+                setTimeout(() => line.classList.add("is-dragging"), 0);
+            };
+            const endDrag = (e) => {
+                e.stopPropagation();
+                window.gtdCurrentDragId = null;
+                line.classList.remove("is-dragging");
+                line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+            };
+            if (canDrag) {
+                line.addEventListener("dragover", (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (window.gtdCurrentDragId === item.id) return;
+                    const rect = line.getBoundingClientRect();
+                    line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    if ((e.clientX - rect.left) > 40) line.classList.add("drag-over-child");
+                    else if ((e.clientY - rect.top) < rect.height / 2) line.classList.add("drag-over-top");
+                    else line.classList.add("drag-over-bottom");
+                });
+                line.addEventListener("dragleave", (e) => { e.stopPropagation(); line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child"); });
+                line.addEventListener("drop", async (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    line.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    const draggedId = window.gtdCurrentDragId;
+                    const rect = line.getBoundingClientRect();
+                    let position = 'after';
+                    if ((e.clientX - rect.left) > 40) position = 'child';
+                    else if ((e.clientY - rect.top) < rect.height / 2) position = 'before';
+                    await handleDrop(draggedId, item.id, position, 'task');
+                });
+            }
+
+            const actionContainer = line.createEl("span", { attr: { style: "display: inline-flex; align-items: center; gap: 8px; margin-right: 10px; min-width: 100px;" } });
+            if (canDrag) {
+                const dragHandle = actionContainer.createEl("span", { text: "⋮⋮", cls: "gtd-drag-handle", attr: { title: "拖拽调整位置（前/后/子）" } });
+                dragHandle.draggable = true;
+                dragHandle.onmousedown = (e) => { e.stopPropagation(); };
+                dragHandle.addEventListener("dragstart", beginDrag);
+                dragHandle.addEventListener("dragend", endDrag);
+            }
+            
+            const hasActiveChildren = checkSubtasks(item.id);
+            const isCollapsed = isItemEffectivelyCollapsed(item);
+            if (!isGhost && hasActiveChildren) {
+                const arrowBtn = actionContainer.createEl("span", { 
+                    text: isCollapsed ? "▶" : "▼", 
+                    attr: { style: "cursor: pointer; font-size: 12px; width: 14px; color: var(--text-muted);" } 
+                });
+                arrowBtn.onclick = (e) => { e.stopPropagation(); toggleCollapse(originalIndex); };
+            }
+
+            if (isChild) {
+                actionContainer.createEl("span", { text: "└─", attr: { style: `color: ${isGhost ? 'var(--text-faint)' : 'var(--text-faint)'}; font-family: monospace; font-size: 1.1em; line-height: 1; margin-right: -4px;` } });
+            }
+
+            const displayText = getDisplayName(item);
+            const targetFile = app.metadataCache.getFirstLinkpathDest(displayText, dv.current().file.path);
+            const fileExists = targetFile !== null;
+
+            if (isGhost) {
+                actionContainer.createEl("span", { text: "⚰️", attr: { title: "未完成的父级容器" } });
+            } else if (isCompleted) {
+                const reactivateBtn = actionContainer.createEl("span", { text: "↩️", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-warning);" }, title: "回退" });
+                if(originalIndex !== -1) reactivateBtn.onclick = (e) => { e.stopPropagation(); item.type === 'project' ? reactivateProject(originalIndex, item.project) : reactivateItem(originalIndex); };
+                actionContainer.createEl("span", { text: "✅", attr: { style: "margin-left:4px; color: var(--interactive-success);" } });
+                const commentBtn = actionContainer.createEl("span", {
+                    text: commentText.trim() ? "💬" : "🗒️",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px;", title: commentText.trim() ? "编辑评论（已填写）" : "添加评论" }
+                });
+                if(originalIndex !== -1) commentBtn.onclick = (e) => { e.stopPropagation(); openCommentDrawer(item.id); };
+                const renameBtn = actionContainer.createEl("span", { text: "✏️", attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px; color:var(--text-muted);" }, title: "重命名 (同步更新子级)" });
+                if(originalIndex !== -1) renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(originalIndex, item.type, displayText); };
+                const deleteBtn = actionContainer.createEl("span", { text: "✖", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-muted); margin-left: 6px;" }, title: "彻底删除" });
+                if(originalIndex !== -1) deleteBtn.onclick = (e) => { e.stopPropagation(); deleteItem(originalIndex); };
+            } else {
+                const dimCheckbox = actionContainer.createEl("input", { type: "checkbox", attr: { style: "margin-right: 6px; cursor: pointer;" } });
+                dimCheckbox.checked = item.isDimmed || false;
+                dimCheckbox.onclick = (e) => { e.stopPropagation(); toggleDimmed(originalIndex); };
+
+                if (hasActiveChildren) {
+                    actionContainer.createEl("span", { text: "🔒", attr: { title: "请先完成子任务", style: "cursor: not-allowed; font-size: 14px; color: var(--text-muted); opacity: 0.5;" } });
+                } else {
+                    const completeBtn = actionContainer.createEl("span", { text: "⭕", attr: { style: "cursor: pointer; font-size: 14px; color: var(--interactive-accent);" }, title: "标记完成" });
+                    completeBtn.onclick = (e) => { e.stopPropagation(); completeItem(originalIndex); };
+                }
+
+                const renameBtn = actionContainer.createEl("span", { text: "✏️", attr: { style: "cursor: pointer; font-size: 14px;" }, title: "重命名" });
+                renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(originalIndex, item.type, displayText); };
+                const commentBtn = actionContainer.createEl("span", {
+                    text: commentText.trim() ? "💬" : "🗒️",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-left:2px;", title: commentText.trim() ? "编辑评论（已填写）" : "添加评论" }
+                });
+                commentBtn.onclick = (e) => { e.stopPropagation(); openCommentDrawer(item.id); };
+
+                // [升级] 标签按钮：如果条目有标签则显示第一个标签的图标，否则显示默认🏷️
+                const firstTagDef = (item.tags && item.tags.length > 0) ? TAG_DEFINITIONS[item.tags[0]] : null;
+                const tagBtnIcon = firstTagDef ? firstTagDef.icon : "🏷️";
+                const tagBtnColor = firstTagDef ? firstTagDef.color : "var(--text-muted)";
+                const tagBtnTitle = firstTagDef ? `已设置: ${firstTagDef.label} (点击修改)` : "设置类型标签";
+                const tagBtn = actionContainer.createEl("span", {
+                    text: tagBtnIcon,
+                    attr: { style: `cursor: pointer; font-size: 14px; margin-left:2px; ${firstTagDef ? 'filter: drop-shadow(0 0 2px ' + tagBtnColor + ');' : ''}`, title: tagBtnTitle }
+                });
+                tagBtn.onclick = (e) => { e.stopPropagation(); modifyTag(originalIndex); };
+
+                if (item.type === 'next_action') {
+                    const addSiblingBtn = actionContainer.createEl("span", { text: "＋", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-accent); font-weight: bold;", title: "在后面添加同级任务" } });
+                    addSiblingBtn.onclick = (e) => { e.stopPropagation(); addNewItem('next_action', item.parentId || null, item.project, item.id); };
+                    const addSubBtn = actionContainer.createEl("span", { text: "↳", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-accent); font-weight: bold;" }, title: "添加子任务" });
+                    addSubBtn.onclick = (e) => { e.stopPropagation(); addNewItem('next_action', item.id, item.project); };
+                }
+                if (item.type === 'inbox') {
+                    const moveBtn = actionContainer.createEl("span", { text: "➡️", attr: { style: "cursor: pointer; font-size: 14px;" }, title: "整理" });
+                    moveBtn.onclick = (e) => { e.stopPropagation(); moveInboxItem(originalIndex); };
+                }
+                const starBtn = actionContainer.createEl("span", { text: item.isFirstClass ? "⭐" : "☆", attr: { style: `cursor: pointer; font-size: 14px; color: ${item.isFirstClass ? '#f1c40f' : 'var(--text-muted)'};` } });
+                starBtn.onclick = (e) => { e.stopPropagation(); toggleFirstClass(originalIndex); };
+                const focusBtn = actionContainer.createEl("span", { text: item.isFocusSession ? "🎯" : "◎", attr: { style: `cursor: pointer; font-size: 14px; margin-left:2px; color: ${item.isFocusSession ? '#e91e63' : 'var(--text-muted)'};` } });
+                focusBtn.onclick = (e) => { e.stopPropagation(); toggleFocusSession(originalIndex); };
+                const schedBtn = actionContainer.createEl("span", { text: "📅", attr: { style: "cursor: pointer; font-size: 14px;" }, title: "计划日程" });
+                schedBtn.onclick = (e) => { e.stopPropagation(); setItemSchedule(originalIndex, item.scheduled); };
+                const deadlineBtn = actionContainer.createEl("span", { text: "🏁", attr: { style: "cursor: pointer; font-size: 14px; color: #e67e22;" }, title: "截止日期" });
+                deadlineBtn.onclick = (e) => { e.stopPropagation(); setItemDeadline(originalIndex, item.deadline); };
+            }
+
+            const contentSpan = line.createEl("span", { attr: { style: "flex: 1; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center;" } });
+            
+            const textEl = contentSpan.createEl("span");
+            if (item.isDimmed) {
+                textEl.style.textDecoration = "line-through";
+                textEl.style.opacity = "0.5";
+                textEl.style.color = "var(--text-muted)";
+            }
+
+            // 如果 showProjectContext 为 true 且条目有项目，则在前面显示 [项目名称]
+            if (showProjectContext && item.project && item.type !== 'project') {
+                textEl.createEl("span", {
+                    text: `[${item.project}] `,
+                    attr: { style: "color: var(--text-accent); font-weight: 500; opacity: 0.8;" }
+                });
+            }
+
+            const link = textEl.createEl("a", { text: displayText, cls: "internal-link", attr: { "data-href": displayText, "href": displayText, "target": "_blank", "rel": "noopener" } });
+            if (!isGhost && commentSummary) {
+                const commentChip = contentSpan.createEl("span", {
+                    cls: "gtd-comment-chip",
+                    text: `💬 ${commentSummary}`,
+                    attr: { title: commentText }
+                });
+                commentChip.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openCommentDrawer(item.id);
+                };
+            }
+            
+            if (!isGhost && item.tags && item.tags.length > 0) {
+                item.tags.forEach(t => {
+                    const def = TAG_DEFINITIONS[t];
+                    if (def) {
+                        const pill = contentSpan.createEl("span", { cls: "tag-pill", title: def.label });
+                        pill.style.backgroundColor = def.color;
+                        pill.innerHTML = `${def.icon} ${def.label}`;
+                    }
+                });
+            }
+
+            if (!isGhost && window.gtdRecentIds.includes(item.id)) {
+                contentSpan.createEl("span", {
+                    text: " [新]",
+                    attr: { style: "color: #ff5252; font-weight: bold; font-size: 0.8em; margin-left: 4px; vertical-align: text-top;" }
+                });
+            }
+
+            if (isGhost) {
+                link.style.color = "var(--text-faint)";
+                link.style.opacity = "0.7";
+                link.style.fontStyle = "italic";
+            } else if (isCompleted) {
+                if (fileExists) {
+                    link.style.color = "#5F9EA0"; 
+                    link.style.textDecoration = "underline";
+                    link.style.opacity = "1"; 
+                    link.style.fontWeight = "bold";
+                } else {
+                    link.style.color = "var(--text-muted)";
+                    link.style.textDecoration = "none";
+                    link.style.opacity = "0.8"; 
+                }
+            } else {
+                if (fileExists) {
+                    link.style.color = "var(--text-accent)";
+                    link.style.fontWeight = "bold";
+                } else {
+                    link.style.color = "var(--text-muted)";
+                    link.style.fontStyle = "italic";
+                }
+            }
+            
+            if (item.isDimmed) {
+                link.style.color = "inherit"; 
+            }
+
+            if (!isGhost && item.scheduled) {
+                const today = moment().format("YYYY-MM-DD");
+                let dateColor = "var(--text-muted)";
+                if (item.scheduled < today && !isCompleted) dateColor = "var(--text-error)"; else if (item.scheduled === today) dateColor = "var(--text-success)";
+                contentSpan.createEl("span", { text: ` 📅 ${item.scheduled}`, attr: { style: `font-size: 0.8em; color: ${dateColor}; margin-left: 8px; background: var(--background-secondary); padding: 2px 6px; border-radius: 4px;` } });
+            }
+            if (!isGhost && item.deadline) {
+                const today = moment().format("YYYY-MM-DD");
+                let dlColor = "#e67e22";
+                if (item.deadline < today && !isCompleted) dlColor = "#c0392b"; 
+                contentSpan.createEl("span", { text: ` 🏁 ${item.deadline}`, attr: { style: `font-size: 0.8em; color: ${dlColor}; margin-left: 4px; font-weight:bold;` } });
+            }
+        };
+
+        const renderTaskTree = (container, tasks, parentId = null, level = 0, ancestorMatchedTag = false) => {
+            const currentLevelTasks = tasks.filter(wrap => { return (wrap.item.parentId || null) === parentId; });
+            currentLevelTasks.sort((a, b) => compareByOrderThenName(a.item, b.item));
+            currentLevelTasks.forEach(wrap => {
+                // [筛选逻辑]
+                // - 标签筛选：匹配标签的条目，其所有子层级都显示（向下继承）
+                // - Focus/FirstClass：必须当前节点或子孙满足条件（不变）
+
+                // 递归检查：当前节点或其任意子孙是否满足特定条件
+                const checkTreeCondition = (id, checker) => {
+                    const me = gtdList.find(i => i.id === id);
+                    if (me && checker(me)) return true;
+                    const children = gtdList.filter(i => i.parentId === id && i.status === 'active');
+                    return children.some(c => checkTreeCondition(c.id, checker));
+                };
+
+                // 检查当前条目是否匹配标签
+                const currentMatchesTag = tagMatchesFilter(wrap.item.tags, window.gtdTagFilters);
+                // 标签向下继承：祖先匹配则子孙都通过
+                const tagInherited = ancestorMatchedTag || currentMatchesTag;
+
+                let passFocus = true;
+                let passFirstClass = true;
+                let passTag = true;
+
+                // Focus 模式检查（不变）
+                if (window.gtdShowOnlyFocus) {
+                    passFocus = checkTreeCondition(wrap.item.id, (item) =>
+                        item.isFocusSession || window.gtdRecentIds.includes(item.id)
+                    );
+                }
+
+                // FirstClass 模式检查（不变）
+                if (window.gtdShowOnlyFirstClass) {
+                    passFirstClass = checkTreeCondition(wrap.item.id, (item) =>
+                        item.isFirstClass || window.gtdRecentIds.includes(item.id)
+                    );
+                }
+
+                // 标签模式检查：祖先匹配(向下继承) 或 当前匹配 或 子孙匹配(向上冒泡) 或 新添加的条目
+                if (window.gtdTagFilters && window.gtdTagFilters.length > 0) {
+                    passTag = tagInherited || checkTreeCondition(wrap.item.id, (item) =>
+                        tagMatchesFilter(item.tags, window.gtdTagFilters) || window.gtdRecentIds.includes(item.id)
+                    );
+                }
+
+                // 所有启用的条件都必须通过
+                const shouldRender = passFocus && passFirstClass && passTag;
+
+                if (shouldRender) {
+                    renderItemLine(container, wrap.item, wrap.index, false, false, level, true, false, getProjectLevelBackground(level));
+                    if (!isItemEffectivelyCollapsed(wrap.item)) {
+                        // 传递标签继承状态给子节点
+                        renderTaskTree(container, tasks, wrap.item.id, level + 1, tagInherited);
+                    }
+                }
+            });
+        };
+
+        const renderCompletedTree = (container) => {
+            const completedItemsRaw = gtdList.map((item, index) => ({ item, index })).filter(({ item }) => item.status === 'completed');
+            if (completedItemsRaw.length === 0) {
+                container.createEl("div", { text: "_暂无数据_", attr: { style: "color:var(--text-faint);font-style:italic;" } });
+                return;
+            }
+            const allItemsMap = new Map(gtdList.map((item, index) => [item.id, { item, index }]));
+            const displayNodes = new Map();
+            completedItemsRaw.forEach(wrap => {
+                displayNodes.set(wrap.item.id, { ...wrap, isGhost: false, isCompleted: true });
+                let currentParentId = wrap.item.parentId;
+                while (currentParentId) {
+                    if (displayNodes.has(currentParentId)) break; 
+                    const parentWrap = allItemsMap.get(currentParentId);
+                    if (parentWrap) {
+                        if (parentWrap.item.status !== 'completed') {
+                            displayNodes.set(currentParentId, { ...parentWrap, isGhost: true, isCompleted: false });
+                        }
+                    } else break; 
+                    currentParentId = parentWrap ? parentWrap.item.parentId : null;
+                }
+            });
+            const treeNodes = Array.from(displayNodes.values());
+            const nodesByProject = {};
+            treeNodes.forEach(node => {
+                const projName = node.item.project || "未分类";
+                if (!nodesByProject[projName]) nodesByProject[projName] = [];
+                nodesByProject[projName].push(node);
+            });
+            const renderGhostTree = (container, tasks, parentId = null, level = 0) => {
+                const currentLevelTasks = tasks.filter(node => (node.item.parentId || null) === parentId);
+                currentLevelTasks.sort((a, b) => getDisplayName(a.item).localeCompare(getDisplayName(b.item), "zh"));
+                currentLevelTasks.forEach(node => {
+                    renderItemLine(container, node.item, node.index, node.isCompleted, false, level, false, node.isGhost);
+                    renderGhostTree(container, tasks, node.item.id, level + 1);
+                });
+            };
+            Object.keys(nodesByProject).sort().forEach(projName => {
+                const projDiv = container.createEl("div", { attr: { style: "margin-bottom: 10px;" } });
+                projDiv.createEl("div", { text: `📂 ${projName}`, attr: { style: "font-weight: bold; color: var(--text-muted); margin-bottom: 5px; font-size: 0.9em;" } });
+                renderGhostTree(projDiv, nodesByProject[projName], null, 0);
+            });
+            container.createEl("div", { text: `共 ${completedItemsRaw.length} 条已完成记录`, attr: { style: "color:var(--text-muted);font-size:0.8em;margin-top:15px;text-align:right;border-top:1px dashed var(--background-modifier-border);padding-top:5px;" } });
+        };
+
+        // --- 核心修复：按顺序构建DOM，最后再挂载 ---
+        
+        // 1. 工作篮模块
+        const inboxDiv = dv.el("div", "", { attr: { id: "gtd-section-inbox", style: containerStyle } });
+        inboxDiv.createEl("div", { text: "📥 工作篮 (Inbox)", attr: { style: headerStyle } });
+        const inboxIndices = gtdList.map((item, index) => ({ item, index }))
+            .filter(({ item }) => item.type === 'inbox' && item.status === 'active' && filterFn(item))
+            .filter(({ item }) => !window.gtdShowOnlyFocus || item.isFocusSession || window.gtdRecentIds.includes(item.id))
+            // [升级] 工作篮标签筛选：使用tagMatchesFilter支持层级匹配，新添加的条目临时显示
+            .filter(({ item }) => {
+                if (!tagMatchesFilter(item.tags, window.gtdTagFilters) && !window.gtdRecentIds.includes(item.id)) return false;
+                return true;
+            })
+            .sort((a, b) => compareByOrderThenName(a.item, b.item));
+        if (inboxIndices.length === 0) inboxDiv.createEl("div", { text: "_空空如也_", attr: { style: "color:var(--text-faint);font-style:italic;" } });
+        else inboxIndices.forEach(({ item, index }) => renderItemLine(inboxDiv, item, index, false, false, 0, true));
+
+        // 2. 导航模块 (现在只是创建Div，不挂载点击事件里的逻辑，因为目标还没生成)
+        const navDiv = dv.el("div", "", { attr: { id: "gtd-section-quick-nav", style: containerStyle + "background-color: var(--background-secondary);" } });
+        navDiv.createEl("div", { text: "⚡ 项目快速导航 (Quick Nav)", attr: { style: headerStyle + "border-color: var(--text-muted);" } });
+        const navContainer = navDiv.createEl("div", { attr: { style: "display:flex; flex-direction:column; gap:2px;" } });
+
+        // 3. 日程模块
+        const scheduleDiv = dv.el("div", "", { attr: { id: "gtd-section-schedule", style: containerStyle + "border-color: var(--interactive-accent);" } });
+        scheduleDiv.createEl("div", { text: "📅 日程安排 (Schedule)", attr: { style: headerStyle } });
+        const scheduledIndices = gtdList.map((item, index) => ({ item, index })).filter(({ item }) => item.status === 'active' && item.scheduled && filterFn(item)).sort(scheduleSort);
+        if (scheduledIndices.length === 0) scheduleDiv.createEl("div", { text: "_暂无日程安排_", attr: { style: "color:var(--text-faint);font-style:italic;" } });
+        else scheduledIndices.forEach(({ item, index }) => renderItemLine(scheduleDiv, item, index, false, true));
+
+        // 4. 项目清单模块
+        const projectDiv = dv.el("div", "", { attr: { id: "gtd-section-projects", style: containerStyle } });
+        projectDiv.createEl("div", { text: "📂 项目清单 (Projects)", attr: { style: headerStyle } });
+
+        const activeProjectsForNav = gtdList.map((item, index) => ({ item, index }))
+            .filter(({ item }) => item.type === 'project' && item.status === 'active')
+            .sort(nameSort)
+            .filter(({ item }) => {
+                // 无任何筛选条件时显示所有项目
+                if (!window.gtdShowOnlyFirstClass && !window.gtdShowOnlyFocus && (!window.gtdTagFilters || window.gtdTagFilters.length === 0)) return true;
+
+                const projName = item.project;
+                const subs = gtdList.filter(s => s.type === 'next_action' && s.project === projName && s.status === 'active');
+
+                // 递归检查：当前节点或其任意子孙是否满足特定条件
+                const checkTreeCondition = (id, checker) => {
+                    const me = gtdList.find(i => i.id === id);
+                    if (me && checker(me)) return true;
+                    const children = gtdList.filter(i => i.parentId === id && i.status === 'active');
+                    return children.some(c => checkTreeCondition(c.id, checker));
+                };
+
+                let passFocus = true;
+                let passFirstClass = true;
+                let passTag = true;
+
+                // Focus 模式检查：项目或子任务有焦点标记
+                if (window.gtdShowOnlyFocus) {
+                    passFocus = item.isFocusSession || subs.some(s => checkTreeCondition(s.id, (i) =>
+                        i.isFocusSession || window.gtdRecentIds.includes(i.id)
+                    ));
+                }
+
+                // FirstClass 模式检查：项目或子任务有星标
+                if (window.gtdShowOnlyFirstClass) {
+                    passFirstClass = item.isFirstClass || subs.some(s => checkTreeCondition(s.id, (i) =>
+                        i.isFirstClass || window.gtdRecentIds.includes(i.id)
+                    ));
+                }
+
+                // 标签模式检查：项目本身或任意子任务匹配标签即可，新添加的条目临时通过
+                if (window.gtdTagFilters && window.gtdTagFilters.length > 0) {
+                    passTag = tagMatchesFilter(item.tags, window.gtdTagFilters) ||
+                        window.gtdRecentIds.includes(item.id) ||
+                        subs.some(s => checkTreeCondition(s.id, (i) =>
+                            tagMatchesFilter(i.tags, window.gtdTagFilters) || window.gtdRecentIds.includes(i.id)
+                        ));
+                }
+
+                // 所有启用的条件都必须通过
+                return passFocus && passFirstClass && passTag;
+            });
+
+        // 填充 Quick Nav：树状项目导航（支持拖拽改父子、折叠、同级名称排序）
+        if (activeProjectsForNav.length > 0) {
+            const visibleProjectIdSet = new Set(activeProjectsForNav.map(({ item }) => item.id));
+
+            const getVisibleChildren = (parentId) => {
+                return activeProjectsForNav
+                    .filter(({ item }) => (item.parentId || null) === parentId)
+                    .sort((a, b) => (a.item.project || "").localeCompare((b.item.project || ""), "zh"));
+            };
+
+            const rootDropZone = navContainer.createEl("div", { cls: "proj-nav-drop-root", text: "↥ 拖拽到这里设为顶层项目" });
+            rootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                if (!window.gtdCurrentDragProjectId) return;
+                rootDropZone.classList.add("drag-over");
+            });
+            rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
+            rootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                rootDropZone.classList.remove("drag-over");
+                if (!window.gtdCurrentDragProjectId) return;
+                await moveProjectUnderParent(window.gtdCurrentDragProjectId, null);
+            });
+
+            const jumpToProject = (projectId) => {
+                const targetId = `proj-${projectId}`;
+                setTimeout(() => {
+                    const targetElement = document.getElementById(targetId);
+                    if (targetElement) {
+                        targetElement.open = true;
+                        setTimeout(() => {
+                            targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                            targetElement.classList.add("highlight-target");
+                            setTimeout(() => targetElement.classList.remove("highlight-target"), 1500);
+                        }, 50);
+                    } else {
+                        new Notice("定位失败：目标项目当前不可见（可能被筛选隐藏）");
+                    }
+                }, 10);
+            };
+
+            const createQuickNavTagEditor = (row, item, index) => {
+                const firstTagDef = (item.tags && item.tags.length > 0) ? TAG_DEFINITIONS[item.tags[0]] : null;
+                const icon = firstTagDef ? firstTagDef.icon : "🏷️";
+                const title = firstTagDef ? `修改标签（当前: ${firstTagDef.label}）` : "添加标签";
+                const editBtn = row.createEl("span", { cls: "proj-nav-tag-edit", text: icon, attr: { title } });
+                editBtn.draggable = false;
+                editBtn.onmousedown = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                };
+                editBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await modifyTag(index);
+                };
+                editBtn.addEventListener("dragstart", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+            };
+
+            const renderNavTree = (parentId, level = 0, chain = new Set()) => {
+                const children = getVisibleChildren(parentId);
+                children.forEach(({ item, index }) => {
+                    // 防御：若数据中已有循环引用，直接跳过该分支
+                    if (chain.has(item.id)) return;
+                    const nextChain = new Set(chain);
+                    nextChain.add(item.id);
+
+                    const hasChildren = getVisibleChildren(item.id).length > 0;
+                    const isCollapsed = !!window.gtdQuickNavCollapsed[item.id];
+
+                    const row = navContainer.createEl("div", { cls: "proj-nav-row", attr: { style: `margin-left:${level * 18}px;` } });
+                    row.draggable = true;
+                    row.addEventListener("dragstart", (e) => {
+                        window.gtdCurrentDragProjectId = item.id;
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", item.id);
+                        setTimeout(() => row.classList.add("is-dragging"), 0);
+                    });
+                    row.addEventListener("dragend", () => {
+                        window.gtdCurrentDragProjectId = null;
+                        row.classList.remove("is-dragging");
+                    });
+                    row.addEventListener("dragover", (e) => {
+                        e.preventDefault();
+                        const draggedId = window.gtdCurrentDragProjectId;
+                        if (!draggedId || draggedId === item.id) return;
+                        row.classList.add("drag-over");
+                    });
+                    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+                    row.addEventListener("drop", async (e) => {
+                        e.preventDefault();
+                        row.classList.remove("drag-over");
+                        const draggedId = window.gtdCurrentDragProjectId;
+                        if (!draggedId || draggedId === item.id) return;
+                        await moveProjectUnderParent(draggedId, item.id);
+                    });
+
+                    if (hasChildren) {
+                        const toggle = row.createEl("span", { cls: "proj-nav-toggle", text: isCollapsed ? "▶" : "▼" });
+                        toggle.onclick = (e) => {
+                            e.stopPropagation();
+                            window.gtdQuickNavCollapsed[item.id] = !isCollapsed;
+                            if (renderViewFn) renderViewFn();
+                        };
+                    } else {
+                        row.createEl("span", { cls: "proj-nav-toggle spacer", text: "•" });
+                    }
+
+                    const navTag = row.createEl("span", { cls: "proj-nav-tag" });
+                    navTag.createEl("span", { text: `📂 ${item.project}`, cls: "proj-nav-main" });
+                    if (item.tags && item.tags.length > 0) {
+                        const navTags = navTag.createEl("span", { cls: "proj-nav-tags" });
+                        item.tags.forEach(t => {
+                            const def = TAG_DEFINITIONS[t];
+                            if (!def) return;
+                            const pill = navTags.createEl("span", { cls: "proj-nav-pill", text: `${def.icon} ${def.label}` });
+                            pill.style.borderColor = def.color;
+                            pill.style.color = def.color;
+                        });
+                    }
+                    navTag.onclick = () => jumpToProject(item.id);
+                    createQuickNavTagEditor(row, item, index);
+
+                    if (hasChildren && !isCollapsed) renderNavTree(item.id, level + 1, nextChain);
+                });
+            };
+
+            // 根节点：parentId为空，或父节点被筛选隐藏时也提升为根显示
+            const rootProjects = activeProjectsForNav
+                .filter(({ item }) => {
+                    const p = item.parentId || null;
+                    return p === null || !visibleProjectIdSet.has(p);
+                })
+                .sort((a, b) => (a.item.project || "").localeCompare((b.item.project || ""), "zh"));
+
+            rootProjects.forEach(({ item, index }) => {
+                const hasChildren = getVisibleChildren(item.id).length > 0;
+                const isCollapsed = !!window.gtdQuickNavCollapsed[item.id];
+
+                const row = navContainer.createEl("div", { cls: "proj-nav-row", attr: { style: "margin-left:0px;" } });
+                row.draggable = true;
+                row.addEventListener("dragstart", (e) => {
+                    window.gtdCurrentDragProjectId = item.id;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", item.id);
+                    setTimeout(() => row.classList.add("is-dragging"), 0);
+                });
+                row.addEventListener("dragend", () => {
+                    window.gtdCurrentDragProjectId = null;
+                    row.classList.remove("is-dragging");
+                });
+                row.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    const draggedId = window.gtdCurrentDragProjectId;
+                    if (!draggedId || draggedId === item.id) return;
+                    row.classList.add("drag-over");
+                });
+                row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+                row.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    row.classList.remove("drag-over");
+                    const draggedId = window.gtdCurrentDragProjectId;
+                    if (!draggedId || draggedId === item.id) return;
+                    await moveProjectUnderParent(draggedId, item.id);
+                });
+
+                if (hasChildren) {
+                    const toggle = row.createEl("span", { cls: "proj-nav-toggle", text: isCollapsed ? "▶" : "▼" });
+                    toggle.onclick = (e) => {
+                        e.stopPropagation();
+                        window.gtdQuickNavCollapsed[item.id] = !isCollapsed;
+                        if (renderViewFn) renderViewFn();
+                    };
+                } else {
+                    row.createEl("span", { cls: "proj-nav-toggle spacer", text: "•" });
+                }
+
+                const navTag = row.createEl("span", { cls: "proj-nav-tag" });
+                navTag.createEl("span", { text: `📂 ${item.project}`, cls: "proj-nav-main" });
+                if (item.tags && item.tags.length > 0) {
+                    const navTags = navTag.createEl("span", { cls: "proj-nav-tags" });
+                    item.tags.forEach(t => {
+                        const def = TAG_DEFINITIONS[t];
+                        if (!def) return;
+                        const pill = navTags.createEl("span", { cls: "proj-nav-pill", text: `${def.icon} ${def.label}` });
+                        pill.style.borderColor = def.color;
+                        pill.style.color = def.color;
+                    });
+                }
+                navTag.onclick = () => jumpToProject(item.id);
+                createQuickNavTagEditor(row, item, index);
+
+                if (hasChildren && !isCollapsed) renderNavTree(item.id, 1, new Set([item.id]));
+            });
+        } else {
+            navDiv.style.display = 'none'; // 没有项目时隐藏导航栏
+        }
+
+        if (activeProjectsForNav.length === 0) projectDiv.createEl("div", { text: "_暂无活跃项目_", attr: { style: "color:var(--text-faint);font-style:italic;" } });
+        else {
+            activeProjectsForNav.forEach(({ item: projItem, index: projIndex }) => {
+                const projName = projItem.project;
+                const projCommentText = getItemCommentText(projItem);
+                const projCommentSummary = summarizeComment(projCommentText, 30);
+                const details = projectDiv.createEl("details", { attr: { id: `proj-${projItem.id}`, style: "margin-bottom:8px;border-bottom:1px dashed var(--background-modifier-border);padding-bottom:8px;" } });
+                details.dataset.gtdAnchorId = String(projItem.id);
+                details.dataset.gtdSectionId = "gtd-section-projects";
+                details.open = !isProjectEffectivelyCollapsed(projItem);
+                details.addEventListener("pointerdown", () => {
+                    rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
+                }, { passive: true });
+                details.addEventListener("toggle", async () => {
+                    const nextCollapsed = !details.open;
+                    if (nextCollapsed === !!projItem.isCollapsed) return;
+                    rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
+                    await updateGTD((list) => {
+                        if (!list[projIndex]) return;
+                        list[projIndex].isCollapsed = nextCollapsed;
+                    });
+                });
+                const summary = details.createEl("summary", { attr: { style: "cursor:pointer;margin-bottom:5px;font-weight:600;color:var(--text-normal);" } });
+                summary.dataset.gtdAnchorId = String(projItem.id);
+                summary.dataset.gtdSectionId = "gtd-section-projects";
+                summary.addEventListener("pointerdown", () => {
+                    rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
+                }, { passive: true });
+                if (projItem.isFocusSession) summary.classList.add("gtd-focus-project");
+                
+                summary.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!window.gtdCurrentDragId) return; summary.classList.add("drag-over-project"); });
+                summary.addEventListener("dragleave", (e) => { e.stopPropagation(); summary.classList.remove("drag-over-project"); });
+                summary.addEventListener("drop", async (e) => { e.preventDefault(); e.stopPropagation(); summary.classList.remove("drag-over-project"); await handleDrop(window.gtdCurrentDragId, projName, null, 'project'); });
+
+                const summaryContent = summary.createEl("span");
+                const projDoneBtn = summaryContent.createEl("span", { text: "⭕", attr: { style: "margin-right:6px;cursor:pointer;color:var(--interactive-accent);" }, title: "归档项目" });
+                projDoneBtn.onclick = (e) => { e.preventDefault(); completeProject(projIndex, projName); };
+                const projRenameBtn = summaryContent.createEl("span", { text: "✏️", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;" }, title: "重命名项目" });
+                projRenameBtn.onclick = (e) => { e.preventDefault(); renameItem(projIndex, 'project', projName); };
+                const projAddActionBtn = summaryContent.createEl("span", { text: "↳", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;color:var(--text-accent);font-weight:bold;" }, title: "新增下属下一步待办事项" });
+                projAddActionBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    addNewItem('next_action', null, projName);
+                };
+                const projFocusBtn = summaryContent.createEl("span", { text: projItem.isFocusSession ? "🎯" : "◎", attr: { style: `margin-right:6px;cursor:pointer;color: ${projItem.isFocusSession ? '#e91e63' : 'var(--text-muted)'};` }, title: "加入本次执行" });
+                projFocusBtn.onclick = (e) => { e.preventDefault(); toggleFocusSession(projIndex); };
+                const projSchedBtn = summaryContent.createEl("span", { text: "📅", attr: { style: "margin-right:4px;cursor:pointer;font-size:14px;" }, title: "设置计划" });
+                projSchedBtn.onclick = (e) => { e.preventDefault(); setItemSchedule(projIndex, projItem.scheduled); };
+                const projDlBtn = summaryContent.createEl("span", { text: "🏁", attr: { style: "margin-right:8px;cursor:pointer;font-size:14px;color:#e67e22;" }, title: "设置死线" });
+                projDlBtn.onclick = (e) => { e.preventDefault(); setItemDeadline(projIndex, projItem.deadline); };
+                
+                // [修复] 标签设置按钮（项目也可以打标签了！）
+                const projTagBtn = summaryContent.createEl("span", { text: "🏷️", attr: { style: "cursor: pointer; font-size: 14px; margin-right:6px;", title: "设置项目类型" } });
+                projTagBtn.onclick = (e) => { e.preventDefault(); modifyTag(projIndex); };
+                const projCommentBtn = summaryContent.createEl("span", {
+                    text: projCommentText.trim() ? "💬" : "🗒️",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-right:6px;", title: projCommentText.trim() ? "编辑项目评论（已填写）" : "添加项目评论" }
+                });
+                projCommentBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openCommentDrawer(projItem.id);
+                };
+
+                summaryContent.createEl("a", { text: projName, cls: "internal-link", attr: { "data-href": projName, "href": projName, "target": "_blank", "rel": "noopener" } });
+                if (projCommentSummary) {
+                    const projCommentChip = summaryContent.createEl("span", {
+                        cls: "gtd-comment-chip",
+                        text: `💬 ${projCommentSummary}`,
+                        attr: { title: projCommentText }
+                    });
+                    projCommentChip.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openCommentDrawer(projItem.id);
+                    };
+                }
+                
+                // [新增] 渲染项目的标签
+                if (projItem.tags && projItem.tags.length > 0) {
+                    projItem.tags.forEach(t => {
+                        const def = TAG_DEFINITIONS[t];
+                        if (def) {
+                            const pill = summaryContent.createEl("span", { cls: "tag-pill", title: def.label });
+                            pill.style.backgroundColor = def.color;
+                            pill.innerHTML = `${def.icon} ${def.label}`;
+                        }
+                    });
+                }
+
+                if (projItem.scheduled) summaryContent.createEl("span", { text: ` 📅 ${projItem.scheduled}`, attr: { style: "font-size:0.8em;color:var(--text-muted);margin-left:8px;" } });
+                if (projItem.deadline) {
+                    const dColor = (projItem.deadline < moment().format("YYYY-MM-DD")) ? "#c0392b" : "#e67e22";
+                    summaryContent.createEl("span", { text: ` 🏁 ${projItem.deadline}`, attr: { style: `font-size:0.8em;color:${dColor};margin-left:4px;font-weight:bold;` } });
+                }
+
+                const subActionsRaw = gtdList.map((item, index) => ({ item, index }))
+                    .filter(({ item }) => item.type === 'next_action' && item.project === projName && item.status === 'active');
+
+                summaryContent.createEl("span", { text: ` (${subActionsRaw.length})`, attr: { style: "font-size:0.8em;color:var(--text-muted);" } });
+
+                const subList = details.createEl("div", { attr: { style: "margin-left:24px;padding-left:10px;border-left:2px solid var(--background-modifier-border);" } });
+                if (subActionsRaw.length === 0) subList.createEl("div", { text: "👉 暂无下一步行动", attr: { style: "color:var(--text-muted);font-size:0.9em;padding:4px 0;" } });
+                else {
+                    // [核心修复] 项目标签向下继承：如果项目匹配标签筛选，则其所有子任务都显示
+                    const projectMatchesTag = tagMatchesFilter(projItem.tags, window.gtdTagFilters);
+                    renderTaskTree(subList, subActionsRaw, null, 0, projectMatchesTag);
+                }
+            });
+        }
+        
+        const doneDiv = dv.el("div", "", { attr: { id: "gtd-section-archive", style: containerStyle } }); 
+        doneDiv.createEl("div", { text: "✅ 归档博物馆 (Archive)", attr: { style: headerStyle } });
+        renderCompletedTree(doneDiv);
+        renderCommentDrawer();
+
+        // 最终挂载顺序：工作篮 -> 导航 -> 日程 -> 项目 -> 归档
+        // 注意：dv.el 是直接 append 到 container 的，所以上面的代码顺序就是渲染顺序
+    };
+
+    renderViewFn = () => {
+        const hasExistingAnchors = !!dv.container.querySelector("[data-gtd-anchor-id]");
+        const queuedContext = window.gtdRenderRestoreState.nextContextOverride
+            ? normalizeViewContext(window.gtdRenderRestoreState.nextContextOverride)
+            : null;
+        const savedViewContext = queuedContext || (hasExistingAnchors ? captureViewContext() : getSavedViewContext());
+        const hasMeaningfulSavedContext = Boolean(
+            savedViewContext?.anchorItemId ||
+            savedViewContext?.anchorProjectId ||
+            savedViewContext?.anchorSectionId ||
+            Number(savedViewContext?.scroll?.top || 0) > 24
+        );
+        const shouldMaskDuringRestore = !hasExistingAnchors && hasMeaningfulSavedContext;
+        const restoreDelays = queuedContext ? [0, 70, 180] : [0, 120, 360, 900, 1800];
+        window.gtdRenderRestoreState.pendingContext = savedViewContext;
+        window.gtdRenderRestoreState.nextContextOverride = null;
+        disposeCommentPreviewComponent();
+        if (window.gtdTagManagerMode) {
+            renderTagManagerView(dv.container);
+        } else if (window.gtdKaioKenMode) {
+            renderKaioKenView(dv.container);
+        } else {
+            renderNormalView();
+        }
+        clearPendingRenderRestoreState();
+        restoreViewContext(savedViewContext, { maskDuringRestore: shouldMaskDuringRestore, delays: restoreDelays });
+    };
+    if(renderViewFn) renderViewFn();
+})();
+
+```
