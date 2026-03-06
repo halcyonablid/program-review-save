@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0",
-  "updated": "2026-03-06T15:23:12.567Z",
+  "updated": "2026-03-06T16:21:16.342Z",
   "vault_name": "SINA O KAMA WAWA",
   "notes": {
     "ATOM@121.001.007.002.058": {
@@ -8,8 +8,8 @@
       "title": "说明书",
       "file_path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md",
       "file_name": "ATOM@121.001.007.002.058- 说明书.md",
-      "created": "2026-03-06T14:41:59.840Z",
-      "modified": "2026-03-06T15:23:11.719Z",
+      "created": "2026-03-06T15:34:20.779Z",
+      "modified": "2026-03-06T16:21:15.526Z",
       "yaml": {
         "qishiriqidate": "2025-01-06",
         "atomle": true,
@@ -32,7 +32,7 @@
           "siblings": [],
           "children": []
         },
-        "word_count": 78,
+        "word_count": 107,
         "has_content": true,
         "mermaid": {
           "is_start": false,
@@ -2081,7 +2081,7 @@
       "indexes.by_mermaid_start",
       "indexes.by_tree_visible"
     ],
-    "added_at": "2026-03-06T15:23:12.567Z"
+    "added_at": "2026-03-06T16:21:16.342Z"
   },
   "indexes": {
     "by_keyword": {
