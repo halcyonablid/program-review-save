@@ -905,6 +905,330 @@ function getFiles() {
   }
 }
 
+function extractBodyForReferenceScan(content) {
+  return String(content || "")
+    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/m, "")
+    .trim();
+}
+
+function extractAtomIdFromText(text) {
+  const match = String(text || "").match(/ATOM@[\d\.A-Z\+]+/i);
+  return match ? match[0].toUpperCase() : null;
+}
+
+function extractBodyReferenceTargets(content, sourceNodeId, validNodeIds) {
+  const body = extractBodyForReferenceScan(content);
+  const targets = new Set();
+  const wikiTargets = new Set();
+
+  const wikiRegex = /\[\[([^\]]+)\]\]/g;
+  let match;
+  while ((match = wikiRegex.exec(body)) !== null) {
+    let rawTarget = match[1].trim();
+    const pipeIndex = rawTarget.indexOf("|");
+    if (pipeIndex > -1) rawTarget = rawTarget.slice(0, pipeIndex).trim();
+    const hashIndex = rawTarget.indexOf("#");
+    if (hashIndex > -1) rawTarget = rawTarget.slice(0, hashIndex).trim();
+
+    const targetId = extractAtomIdFromText(rawTarget);
+    if (!targetId || targetId === sourceNodeId || !validNodeIds.has(targetId)) continue;
+    targets.add(targetId);
+    wikiTargets.add(targetId);
+  }
+
+  const atomRegex = /ATOM@[\d\.A-Z\+]+/gi;
+  while ((match = atomRegex.exec(body)) !== null) {
+    const targetId = String(match[0] || "").toUpperCase();
+    if (!targetId || targetId === sourceNodeId || wikiTargets.has(targetId) || !validNodeIds.has(targetId)) continue;
+    targets.add(targetId);
+  }
+
+  return Array.from(targets);
+}
+
+function hslToRgb(h, s, l) {
+  const hue = ((h % 360) + 360) % 360;
+  const sat = Math.max(0, Math.min(100, s)) / 100;
+  const light = Math.max(0, Math.min(100, l)) / 100;
+  const chroma = (1 - Math.abs(2 * light - 1)) * sat;
+  const x = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const m = light - chroma / 2;
+
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+
+  if (hue < 60) {
+    r1 = chroma; g1 = x; b1 = 0;
+  } else if (hue < 120) {
+    r1 = x; g1 = chroma; b1 = 0;
+  } else if (hue < 180) {
+    r1 = 0; g1 = chroma; b1 = x;
+  } else if (hue < 240) {
+    r1 = 0; g1 = x; b1 = chroma;
+  } else if (hue < 300) {
+    r1 = x; g1 = 0; b1 = chroma;
+  } else {
+    r1 = chroma; g1 = 0; b1 = x;
+  }
+
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+
+function rgbToHex(rgb) {
+  const toHex = (value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0");
+  return `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+}
+
+function hexToRgb(hex) {
+  const raw = String(hex || "").replace("#", "").trim();
+  if (raw.length === 3) {
+    return {
+      r: parseInt(raw[0] + raw[0], 16),
+      g: parseInt(raw[1] + raw[1], 16),
+      b: parseInt(raw[2] + raw[2], 16)
+    };
+  }
+  if (raw.length === 6) {
+    return {
+      r: parseInt(raw.slice(0, 2), 16),
+      g: parseInt(raw.slice(2, 4), 16),
+      b: parseInt(raw.slice(4, 6), 16)
+    };
+  }
+  return { r: 0, g: 0, b: 0 };
+}
+
+function rgbDistance(a, b) {
+  const dr = (a.r || 0) - (b.r || 0);
+  const dg = (a.g || 0) - (b.g || 0);
+  const db = (a.b || 0) - (b.b || 0);
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function rgbaFromHex(hex, alpha = 1) {
+  const rgb = hexToRgb(hex);
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+}
+
+function buildReferenceColorCandidates() {
+  // 包豪斯倾向: 控制纯度, 保留明确色相差异, 避免荧光感
+  const palette = [
+    "#B84A3A", // muted vermilion
+    "#C58B2B", // ochre
+    "#2F5D8A", // cobalt
+    "#4B6B50", // olive green
+    "#7A3F48", // oxblood
+    "#3F6B6A", // teal
+    "#A9683A", // burnt orange
+    "#6A5E8E", // dusty violet
+    "#8B6F47", // umber
+    "#4C5866", // slate blue gray
+    "#A14E5D", // rose brick
+    "#587D91", // muted cyan blue
+    "#6E7446", // moss
+    "#8C5B34", // sienna
+    "#51627A", // steel blue
+    "#9A7A3C", // brass
+    "#6C4B57", // wine
+    "#3F5252", // deep gray teal
+    "#A35A45", // clay red
+    "#7B6A55"  // warm stone
+  ];
+
+  return palette.map((hex) => ({
+    hex,
+    rgb: hexToRgb(hex)
+  }));
+}
+
+function pickMaxContrastColors(count) {
+  if (!count || count <= 0) return [];
+
+  const candidates = buildReferenceColorCandidates();
+  const existingNodeColors = [
+    "#ddffdd",
+    "#ffeb99",
+    "#ddddff",
+    "#F37021",
+    "#008000",
+    "#8B5CF6",
+    "#5383AA",
+    "#002FA7",
+    "#E34234",
+    "#e9ecef"
+  ].map(hexToRgb);
+
+  const selected = [];
+  const usedHex = new Set();
+
+  while (selected.length < count && selected.length < candidates.length) {
+    let bestCandidate = null;
+    let bestScore = -Infinity;
+
+    candidates.forEach((candidate) => {
+      if (usedHex.has(candidate.hex)) return;
+
+      const distanceToSelected = selected.length > 0
+        ? Math.min(...selected.map(item => rgbDistance(candidate.rgb, item.rgb)))
+        : 0;
+      const distanceToExisting = Math.min(...existingNodeColors.map(color => rgbDistance(candidate.rgb, color)));
+      const score = selected.length > 0
+        ? distanceToSelected * 0.72 + distanceToExisting * 0.28
+        : distanceToExisting;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestCandidate = candidate;
+      }
+    });
+
+    if (!bestCandidate) break;
+    selected.push(bestCandidate);
+    usedHex.add(bestCandidate.hex);
+  }
+
+  return selected.map(item => item.hex);
+}
+
+async function buildBodyReferenceGroups(nodes) {
+  const nodeList = Array.isArray(nodes) ? nodes.filter(Boolean) : [];
+  const validNodeIds = new Set(nodeList.map(node => String(node.id || "").toUpperCase()).filter(Boolean));
+  const adjacency = new Map();
+  const edgeKeys = new Set();
+
+  nodeList.forEach((node) => {
+    adjacency.set(node.id, new Set());
+  });
+
+  await Promise.all(nodeList.map(async (node) => {
+    if (!node?.path) return;
+    const file = app.vault.getAbstractFileByPath(node.path);
+    if (!file || typeof app.vault.cachedRead !== "function") return;
+
+    try {
+      const content = await app.vault.cachedRead(file);
+      const targets = extractBodyReferenceTargets(content, String(node.id || "").toUpperCase(), validNodeIds);
+      targets.forEach((targetId) => {
+        if (!adjacency.has(node.id) || !adjacency.has(targetId)) return;
+        const edgeKey = [node.id, targetId].sort().join("::");
+        adjacency.get(node.id).add(targetId);
+        adjacency.get(targetId).add(node.id);
+        edgeKeys.add(edgeKey);
+      });
+    } catch (error) {
+      console.warn("[Mermaid 引用着色] 读取文件失败:", node.path, error);
+    }
+  }));
+
+  const components = [];
+  const visited = new Set();
+
+  adjacency.forEach((neighbors, nodeId) => {
+    if (visited.has(nodeId) || !neighbors || neighbors.size === 0) return;
+
+    const queue = [nodeId];
+    const componentNodes = [];
+    visited.add(nodeId);
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      componentNodes.push(current);
+
+      (adjacency.get(current) || []).forEach((neighbor) => {
+        if (visited.has(neighbor)) return;
+        visited.add(neighbor);
+        queue.push(neighbor);
+      });
+    }
+
+    componentNodes.sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    const componentNodeSet = new Set(componentNodes);
+    const componentEdgeCount = componentNodes.reduce((sum, current) => {
+      const currentNeighbors = adjacency.get(current) || new Set();
+      let localCount = 0;
+      currentNeighbors.forEach((neighbor) => {
+        if (componentNodeSet.has(neighbor) && current < neighbor) localCount += 1;
+      });
+      return sum + localCount;
+    }, 0);
+
+    components.push({
+      nodes: componentNodes,
+      edgeCount: componentEdgeCount
+    });
+  });
+
+  components.sort((a, b) => {
+    if (b.nodes.length !== a.nodes.length) return b.nodes.length - a.nodes.length;
+    return a.nodes[0].localeCompare(b.nodes[0], "zh-Hans-CN");
+  });
+
+  const colors = pickMaxContrastColors(components.length);
+  const nodeToGroup = new Map();
+  components.forEach((component, index) => {
+    component.color = colors[index] || "#00bcd4";
+    component.groupId = index;
+    component.nodes.forEach((nodeId) => {
+      nodeToGroup.set(nodeId, {
+        groupId: index,
+        color: component.color
+      });
+    });
+  });
+
+  return {
+    components,
+    nodeToGroup,
+    edgeCount: edgeKeys.size
+  };
+}
+
+function applyBodyReferenceGroupStyling(diagramContainer, graphNodes, referenceGroups) {
+  if (!diagramContainer || !referenceGroups?.components?.length) {
+    return { styledNodeCount: 0, componentCount: 0, edgeCount: 0 };
+  }
+
+  const nodeIndex = new Map((graphNodes || []).map(node => [node.id, node]));
+  let styledNodeCount = 0;
+
+  referenceGroups.components.forEach((component) => {
+    component.nodes.forEach((nodeId) => {
+      const nodeObject = nodeIndex.get(nodeId);
+      if (!nodeObject) return;
+
+      const nodeElement = findRenderedNodeElement(nodeObject, diagramContainer);
+      if (!nodeElement) return;
+
+      const shapes = nodeElement.querySelectorAll("rect, circle, polygon, ellipse, path");
+      if (!shapes || shapes.length === 0) return;
+
+      shapes.forEach((shape) => {
+        shape.style.setProperty("stroke", component.color, "important");
+        shape.style.setProperty("stroke-width", isLeaderNode(nodeObject.id) ? "3.25px" : "2.5px", "important");
+        shape.style.setProperty("stroke-opacity", "0.78", "important");
+        shape.style.setProperty("stroke-linejoin", "round", "important");
+        shape.style.setProperty("stroke-dasharray", "none", "important");
+        shape.style.setProperty("vector-effect", "non-scaling-stroke", "important");
+        shape.style.setProperty("filter", "none", "important");
+      });
+
+      nodeElement.dataset.referenceGroupColor = component.color;
+      styledNodeCount += 1;
+    });
+  });
+
+  return {
+    styledNodeCount,
+    componentCount: referenceGroups.components.length,
+    edgeCount: referenceGroups.edgeCount || 0
+  };
+}
+
 
 
 // 获取直接状态转移节点
@@ -2882,6 +3206,8 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
 
     statusDiv.textContent = "正在构建状态转移关系图...";
     const graph = buildStateTransitionGraph(targetNode, nodes, CONFIG.maxDepth);
+    statusDiv.textContent = "正在分析正文引用关系...";
+    const bodyReferenceGroups = await buildBodyReferenceGroups(graph.nodes);
 
     // --- 新增: 创建折叠前缀列表 ---
     const foldedPrefixes = nodes
@@ -2939,12 +3265,16 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
       
       // 渲染调用保持不变
       await window.mermaid.init(undefined, diagramContainer.querySelector(".mermaid"));
+      const referenceStyleSummary = applyBodyReferenceGroupStyling(diagramContainer, graph.nodes, bodyReferenceGroups);
       
       // 渲染后更新状态文本
       const foldedRootCount = foldedPrefixes.length;
       const hoverHint = foldedRootCount > 0 ? `，${foldedRootCount} 个折叠根节点可悬停展开` : "";
+      const referenceHint = referenceStyleSummary.componentCount > 0
+        ? `，正文引用分组 ${referenceStyleSummary.componentCount} 组 / ${referenceStyleSummary.edgeCount} 条`
+        : "";
       const expandedHint = activeExpandedPrefix ? `，当前已展开 ${activeExpandedPrefix}` : "";
-      statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记${hoverHint}）`;
+      statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记${hoverHint}${referenceHint}）`;
 
       // **增强版: 恢复视图状态 + 无跳动呈现**
       const finalizeView = () => {
@@ -3007,7 +3337,7 @@ async function renderDiagram(container, statusDiv, diagramContainer, codeContain
           diagramContainer.style.opacity = "1";
 
           if (expandedHint) {
-              statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记${hoverHint}${expandedHint}）`;
+              statusDiv.textContent = `图表已生成，显示 ${graph.nodes.length} 个节点, ${graph.subgraphs.length} 个子图（可点击节点导航到对应笔记${hoverHint}${referenceHint}${expandedHint}）`;
           }
 
           console.log('[状态恢复] 已恢复视图状态:', savedState);
