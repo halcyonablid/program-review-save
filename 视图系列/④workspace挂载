@@ -7,7 +7,7 @@
         const TASK_COMMENTS_FILENAME = "Workspace_TaskComments.json";
         const TASK_COMMENTS_SCHEMA_VERSION = "1.0";
         const ATTACHMENTS_FOLDER = "attachments";
-        const WORKSPACE_SCHEMA_VERSION = "2.0";
+        const WORKSPACE_SCHEMA_VERSION = "2.2";
         const ROOT_KEY = "__root__";
         const DEFAULT_TAB_ID = "tab_default";
         const EVA_NOTES_CANDIDATE_PATHS = [
@@ -30,6 +30,7 @@
         const parentKey = (parentId) => (parentId === null || parentId === undefined || String(parentId).trim() === "") ? ROOT_KEY : String(parentId).trim();
         const tabParentKey = (tabId, parentId) => `${String(tabId || "").trim()}::${parentKey(parentId)}`;
         const paradigmParentKey = (paradigmId, parentId) => `${String(paradigmId || "").trim()}::${parentKey(parentId)}`;
+        const paradigmTreeKey = (parentParadigmId) => parentKey(parentParadigmId);
         const splitScopedKey = (scoped, fallbackId = "") => {
             const text = String(scoped || "").trim();
             if (!text) return { ownerId: fallbackId, parent: ROOT_KEY };
@@ -73,6 +74,9 @@
         if (window.workspaceSelectedSnapshotId === undefined) window.workspaceSelectedSnapshotId = null;
         if (window.workspaceParadigmCurrentDragId === undefined) window.workspaceParadigmCurrentDragId = null;
         if (window.workspaceParadigmDragParadigmId === undefined) window.workspaceParadigmDragParadigmId = null;
+        if (window.workspaceParadigmNodeDragId === undefined) window.workspaceParadigmNodeDragId = null;
+        if (window.workspaceCollapsedParadigmTreeIds === undefined) window.workspaceCollapsedParadigmTreeIds = {};
+        if (window.workspaceTabCurrentDragId === undefined) window.workspaceTabCurrentDragId = null;
 
         const defaultWorkspaceData = () => ({
             schemaVersion: WORKSPACE_SCHEMA_VERSION,
@@ -83,15 +87,20 @@
                     id: DEFAULT_TAB_ID,
                     name: "默认工作区",
                     kind: "project",
+                    parentTabId: null,
+                    boundParadigmIds: [],
+                    boundParadigmItemKeys: [],
                     boundParadigmId: null,
                     createdAt: nowString(),
                     updatedAt: nowString()
                 }
             },
             tabOrder: [DEFAULT_TAB_ID],
+            tabChildrenByParent: { [ROOT_KEY]: [DEFAULT_TAB_ID] },
             itemsById: {},
             childrenByParentByTab: { [tabParentKey(DEFAULT_TAB_ID, null)]: [] },
             paradigmsById: {},
+            childParadigmIdsByParent: { [ROOT_KEY]: [] },
             paradigmItemsById: {},
             paradigmChildrenByParent: {},
             paradigmToTabItemMapByTab: {},
@@ -114,6 +123,53 @@
             return out;
         };
 
+        const normalizeBoundParadigmIds = (tabLike) => {
+            const fromArray = Array.isArray(tabLike?.boundParadigmIds) ? tabLike.boundParadigmIds : [];
+            const legacy = (tabLike?.boundParadigmId === null || tabLike?.boundParadigmId === undefined || String(tabLike?.boundParadigmId).trim() === "")
+                ? []
+                : [String(tabLike.boundParadigmId).trim()];
+            return ensureUniqueIds([].concat(fromArray, legacy).map((x) => String(x || "").trim()).filter(Boolean));
+        };
+
+        const setTabBoundParadigmIds = (tabObj, idsLike) => {
+            const ids = ensureUniqueIds((Array.isArray(idsLike) ? idsLike : [])
+                .map((x) => String(x || "").trim())
+                .filter(Boolean));
+            tabObj.boundParadigmIds = ids;
+            // 兼容旧读取方：保留首个绑定
+            tabObj.boundParadigmId = ids[0] || null;
+            return ids;
+        };
+
+        const normalizeBoundParadigmItemKeys = (tabLike) => ensureUniqueIds(
+            (Array.isArray(tabLike?.boundParadigmItemKeys) ? tabLike.boundParadigmItemKeys : [])
+                .map((x) => String(x || "").trim())
+                .filter((key) => {
+                    const parsed = splitScopedKey(key);
+                    return !!parsed.ownerId && parsed.parent !== ROOT_KEY;
+                })
+        );
+
+        const setTabBoundParadigmItemKeys = (tabObj, keysLike) => {
+            const keys = normalizeBoundParadigmItemKeys({ boundParadigmItemKeys: keysLike });
+            tabObj.boundParadigmItemKeys = keys;
+            return keys;
+        };
+
+        const flattenTabTree = (childrenMap, parentId = null, chain = new Set()) => {
+            const key = parentKey(parentId);
+            const ids = ensureUniqueIds(childrenMap?.[key] || []);
+            const ordered = [];
+            ids.forEach((id) => {
+                if (!id || chain.has(id)) return;
+                ordered.push(id);
+                const next = new Set(chain);
+                next.add(id);
+                ordered.push(...flattenTabTree(childrenMap, id, next));
+            });
+            return ordered;
+        };
+
         const sanitizeWorkspaceData = (raw) => {
             const base = defaultWorkspaceData();
             const src = (raw && typeof raw === "object" && !Array.isArray(raw)) ? clone(raw) : {};
@@ -122,6 +178,9 @@
             const incomingItems = src.itemsById && typeof src.itemsById === "object" ? src.itemsById : {};
             const incomingChildrenByTab = src.childrenByParentByTab && typeof src.childrenByParentByTab === "object"
                 ? src.childrenByParentByTab
+                : {};
+            const incomingTabChildren = src.tabChildrenByParent && typeof src.tabChildrenByParent === "object"
+                ? src.tabChildrenByParent
                 : {};
             const incomingChildrenLegacy = src.childrenByParent && typeof src.childrenByParent === "object"
                 ? src.childrenByParent
@@ -134,13 +193,18 @@
                 if (!id) return;
                 const tab = incomingTabs[rawId] || {};
                 const name = normalizeText(tab.name || tab.title || `Tab-${id.slice(-4)}`);
+                const boundParadigmIds = normalizeBoundParadigmIds(tab);
+                const boundParadigmItemKeys = normalizeBoundParadigmItemKeys(tab);
                 tabsById[id] = {
                     id,
                     name: name || `Tab-${id.slice(-4)}`,
                     kind: ["project", "task", "object"].includes(tab.kind) ? tab.kind : "project",
-                    boundParadigmId: (tab.boundParadigmId === null || tab.boundParadigmId === undefined || String(tab.boundParadigmId).trim() === "")
-                        ? null
-                        : String(tab.boundParadigmId).trim(),
+                    parentTabId: (tab.parentTabId !== undefined && tab.parentTabId !== null && String(tab.parentTabId).trim() !== "")
+                        ? String(tab.parentTabId).trim()
+                        : null,
+                    boundParadigmIds,
+                    boundParadigmItemKeys,
+                    boundParadigmId: boundParadigmIds[0] || null,
                     createdAt: tab.createdAt || nowString(),
                     updatedAt: tab.updatedAt || nowString()
                 };
@@ -170,6 +234,12 @@
                 const sourceParadigmItemId = sourceType === "paradigm" && item.sourceParadigmItemId
                     ? String(item.sourceParadigmItemId).trim()
                     : null;
+                const sourceParadigmBindingRootId = sourceType === "paradigm" && item.sourceParadigmBindingRootId
+                    ? String(item.sourceParadigmBindingRootId).trim()
+                    : null;
+                const sourceParadigmMountMode = sourceType === "paradigm" && item.sourceParadigmMountMode === "inherited"
+                    ? "inherited"
+                    : "direct";
                 itemsById[id] = {
                     id,
                     title,
@@ -178,6 +248,8 @@
                     sourceType: sourceType === "paradigm" && sourceParadigmId && sourceParadigmItemId ? "paradigm" : "tab",
                     sourceParadigmId: sourceType === "paradigm" ? sourceParadigmId : null,
                     sourceParadigmItemId: sourceType === "paradigm" ? sourceParadigmItemId : null,
+                    sourceParadigmBindingRootId: sourceType === "paradigm" ? sourceParadigmBindingRootId : null,
+                    sourceParadigmMountMode: sourceType === "paradigm" ? sourceParadigmMountMode : "direct",
                     isCollapsed: hasItemCollapsed ? !!item.isCollapsed : collapsedFromMap,
                     imageRef: sanitizeImageInput(item.imageRef || item.image || ""),
                     comment: typeof item.comment === "string" ? item.comment : "",
@@ -191,6 +263,9 @@
                         id: tabId,
                         name: `Tab-${tabId.slice(-4) || "new"}`,
                         kind: "project",
+                        parentTabId: null,
+                        boundParadigmIds: [],
+                        boundParadigmItemKeys: [],
                         boundParadigmId: null,
                         createdAt: nowString(),
                         updatedAt: nowString()
@@ -203,6 +278,49 @@
             }
             let tabOrder = ensureUniqueIds(incomingTabOrder).filter((id) => !!tabsById[id]);
             if (tabOrder.length === 0) tabOrder = Object.keys(tabsById);
+            Object.keys(tabsById).forEach((id) => {
+                if (!tabOrder.includes(id)) tabOrder.push(id);
+            });
+            const tabChildrenByParent = { [ROOT_KEY]: [] };
+            const tabChildAssigned = new Set();
+            Object.keys(tabsById).forEach((id) => {
+                if (!tabsById[id] || tabsById[id].parentTabId === id) tabsById[id].parentTabId = null;
+            });
+            Object.keys(incomingTabChildren || {}).forEach((rawParentKey) => {
+                const normalizedParent = rawParentKey === ROOT_KEY ? null : String(rawParentKey || "").trim();
+                if (normalizedParent && !tabsById[normalizedParent]) return;
+                const list = ensureUniqueIds(incomingTabChildren[rawParentKey]).filter((id) => !!tabsById[id]);
+                const targetKey = parentKey(normalizedParent);
+                if (!tabChildrenByParent[targetKey]) tabChildrenByParent[targetKey] = [];
+                list.forEach((id) => {
+                    if (id === normalizedParent || tabChildAssigned.has(id)) return;
+                    tabsById[id].parentTabId = normalizedParent;
+                    tabChildrenByParent[targetKey].push(id);
+                    tabChildAssigned.add(id);
+                });
+            });
+            const tabWouldCreateCycle = (tabId, nextParentId) => {
+                let cursor = nextParentId;
+                const seen = new Set([tabId]);
+                while (cursor) {
+                    if (seen.has(cursor)) return true;
+                    seen.add(cursor);
+                    const parent = tabsById[cursor]?.parentTabId || null;
+                    cursor = parent;
+                }
+                return false;
+            };
+            tabOrder.forEach((id) => {
+                const tab = tabsById[id];
+                if (!tab) return;
+                if (tab.parentTabId && (!tabsById[tab.parentTabId] || tabWouldCreateCycle(id, tab.parentTabId))) {
+                    tab.parentTabId = null;
+                }
+                const targetKey = parentKey(tab.parentTabId);
+                if (!tabChildrenByParent[targetKey]) tabChildrenByParent[targetKey] = [];
+                if (!tabChildrenByParent[targetKey].includes(id)) tabChildrenByParent[targetKey].push(id);
+            });
+            tabOrder = flattenTabTree(tabChildrenByParent, null);
             Object.keys(tabsById).forEach((id) => {
                 if (!tabOrder.includes(id)) tabOrder.push(id);
             });
@@ -277,9 +395,54 @@
                 paradigmsById[id] = {
                     id,
                     name: name || `范式-${id.slice(-4)}`,
+                    parentParadigmId: (pg.parentParadigmId !== undefined && pg.parentParadigmId !== null && String(pg.parentParadigmId).trim() !== "")
+                        ? String(pg.parentParadigmId).trim()
+                        : null,
                     createdAt: pg.createdAt || nowString(),
                     updatedAt: pg.updatedAt || nowString()
                 };
+            });
+
+            const childParadigmIdsByParent = { [ROOT_KEY]: [] };
+            const incomingParadigmTree = src.childParadigmIdsByParent && typeof src.childParadigmIdsByParent === "object"
+                ? src.childParadigmIdsByParent
+                : {};
+            const assignedParadigms = new Set();
+            Object.keys(paradigmsById).forEach((id) => {
+                if (!paradigmsById[id] || paradigmsById[id].parentParadigmId === id) paradigmsById[id].parentParadigmId = null;
+            });
+            Object.keys(incomingParadigmTree).forEach((rawParentKey) => {
+                const normalizedParent = rawParentKey === ROOT_KEY ? null : String(rawParentKey || "").trim();
+                if (normalizedParent && !paradigmsById[normalizedParent]) return;
+                const list = ensureUniqueIds(incomingParadigmTree[rawParentKey]).filter((id) => !!paradigmsById[id]);
+                const scopedKey = paradigmTreeKey(normalizedParent);
+                if (!childParadigmIdsByParent[scopedKey]) childParadigmIdsByParent[scopedKey] = [];
+                list.forEach((id) => {
+                    if (id === normalizedParent || assignedParadigms.has(id)) return;
+                    paradigmsById[id].parentParadigmId = normalizedParent;
+                    childParadigmIdsByParent[scopedKey].push(id);
+                    assignedParadigms.add(id);
+                });
+            });
+            const paradigmWouldCreateCycle = (paradigmId, nextParentId) => {
+                let cursor = nextParentId;
+                const seen = new Set([paradigmId]);
+                while (cursor) {
+                    if (seen.has(cursor)) return true;
+                    seen.add(cursor);
+                    cursor = paradigmsById[cursor]?.parentParadigmId || null;
+                }
+                return false;
+            };
+            Object.keys(paradigmsById).forEach((id) => {
+                const paradigm = paradigmsById[id];
+                if (!paradigm) return;
+                if (paradigm.parentParadigmId && (!paradigmsById[paradigm.parentParadigmId] || paradigmWouldCreateCycle(id, paradigm.parentParadigmId))) {
+                    paradigm.parentParadigmId = null;
+                }
+                const scopedKey = paradigmTreeKey(paradigm.parentParadigmId);
+                if (!childParadigmIdsByParent[scopedKey]) childParadigmIdsByParent[scopedKey] = [];
+                if (!childParadigmIdsByParent[scopedKey].includes(id)) childParadigmIdsByParent[scopedKey].push(id);
             });
 
             const paradigmItemsById = {};
@@ -294,6 +457,7 @@
                     paradigmsById[paradigmId] = {
                         id: paradigmId,
                         name: `范式-${paradigmId.slice(-4)}`,
+                        parentParadigmId: null,
                         createdAt: nowString(),
                         updatedAt: nowString()
                     };
@@ -389,8 +553,15 @@
             });
 
             Object.keys(tabsById).forEach((tabId) => {
-                const boundPg = tabsById[tabId].boundParadigmId;
-                if (boundPg && !paradigmsById[boundPg]) tabsById[tabId].boundParadigmId = null;
+                const validBoundIds = normalizeBoundParadigmIds(tabsById[tabId]).filter((pgId) => !!paradigmsById[pgId]);
+                setTabBoundParadigmIds(tabsById[tabId], validBoundIds);
+                const validBoundItemKeys = normalizeBoundParadigmItemKeys(tabsById[tabId]).filter((key) => {
+                    const parsed = splitScopedKey(key);
+                    const paradigmId = String(parsed.ownerId || "").trim();
+                    const paradigmItemId = parsed.parent === ROOT_KEY ? "" : String(parsed.parent || "").trim();
+                    return !!paradigmId && !!paradigmItemId && !!paradigmItemsById[paradigmItemId] && paradigmItemsById[paradigmItemId].paradigmId === paradigmId;
+                });
+                setTabBoundParadigmItemKeys(tabsById[tabId], validBoundItemKeys);
             });
 
             return {
@@ -400,9 +571,11 @@
                 activeTabId,
                 tabsById,
                 tabOrder,
+                tabChildrenByParent,
                 itemsById,
                 childrenByParentByTab,
                 paradigmsById,
+                childParadigmIdsByParent,
                 paradigmItemsById,
                 paradigmChildrenByParent,
                 paradigmToTabItemMapByTab,
@@ -772,7 +945,7 @@
                 this.contentEl.style.gap = "10px";
 
                 this.contentEl.createEl("h3", { text: this.titleStr });
-                this.contentEl.createEl("div", { text: "可写长评论，列表中展示前 20 字摘要。", attr: { style: "color:var(--text-muted);font-size:12px;" } });
+                this.contentEl.createEl("div", { text: "可写长评论，列表中展示前 100 字摘要。", attr: { style: "color:var(--text-muted);font-size:12px;" } });
                 const textarea = this.contentEl.createEl("textarea", {
                     text: this.defaultValue,
                     attr: { style: "width:100%;flex:1;min-height:420px;resize:none;padding:12px;line-height:1.6;border-radius:8px;border:1px solid var(--background-modifier-border);background:var(--background-primary);color:var(--text-normal);" }
@@ -1117,6 +1290,36 @@
         };
         const getActiveTab = () => WORKSPACE_DATA.tabsById?.[getActiveTabId()] || null;
         const getTabById = (id) => WORKSPACE_DATA.tabsById?.[String(id || "").trim()] || null;
+        const getTabChildrenIds = (parentTabId = null) => (WORKSPACE_DATA.tabChildrenByParent?.[parentKey(parentTabId)] || []).slice();
+        const getTabDepth = (tabId) => {
+            let depth = 0;
+            let cursor = getTabById(tabId)?.parentTabId || null;
+            const seen = new Set([String(tabId || "").trim()]);
+            while (cursor && !seen.has(cursor)) {
+                seen.add(cursor);
+                depth += 1;
+                cursor = getTabById(cursor)?.parentTabId || null;
+            }
+            return depth;
+        };
+        const getTabDescendantIds = (tabId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getTabChildrenIds(tabId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !getTabById(current)) continue;
+                seen.add(current);
+                out.push(current);
+                getTabChildrenIds(current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+        const getVisibleTabIds = (tabId = getActiveTabId()) => {
+            const activeId = String(tabId || "").trim();
+            if (!activeId || !getTabById(activeId)) return [];
+            return [activeId].concat(getTabDescendantIds(activeId));
+        };
         const getItemById = (id) => WORKSPACE_DATA.itemsById[String(id || "").trim()] || null;
         const getChildrenIds = (parentId, tabId = getActiveTabId()) => {
             const key = tabParentKey(tabId, parentId);
@@ -1124,6 +1327,56 @@
         };
         const hasChildren = (id, tabId = getActiveTabId()) => getChildrenIds(id, tabId).length > 0;
         const getParadigmById = (id) => WORKSPACE_DATA.paradigmsById?.[String(id || "").trim()] || null;
+        const getChildParadigmIds = (parentParadigmId = null) => (WORKSPACE_DATA.childParadigmIdsByParent?.[paradigmTreeKey(parentParadigmId)] || []).slice();
+        const getParadigmDescendantIds = (paradigmId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getChildParadigmIds(paradigmId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !getParadigmById(current)) continue;
+                seen.add(current);
+                out.push(current);
+                getChildParadigmIds(current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+        const getParadigmScopeIds = (paradigmId) => {
+            const id = String(paradigmId || "").trim();
+            if (!id || !getParadigmById(id)) return [];
+            return [id].concat(getParadigmDescendantIds(id));
+        };
+        const getBoundParadigmRootMap = (tabLike = getActiveTab()) => {
+            const explicitBoundIds = normalizeBoundParadigmIds(tabLike || {}).filter((id) => !!getParadigmById(id));
+            const explicitSet = new Set(explicitBoundIds);
+            const includedIds = new Set();
+            explicitBoundIds.forEach((paradigmId) => {
+                includedIds.add(paradigmId);
+                getParadigmDescendantIds(paradigmId).forEach((childId) => includedIds.add(childId));
+            });
+            const rootMap = new Map();
+            includedIds.forEach((paradigmId) => {
+                let cursor = paradigmId;
+                while (cursor) {
+                    if (explicitSet.has(cursor)) {
+                        rootMap.set(paradigmId, cursor);
+                        break;
+                    }
+                    cursor = getParadigmById(cursor)?.parentParadigmId || null;
+                }
+            });
+            return { explicitBoundIds, rootMap };
+        };
+        const isParadigmTreeCollapsed = (paradigmId) => !!window.workspaceCollapsedParadigmTreeIds?.[String(paradigmId || "").trim()];
+        const toggleParadigmTreeCollapsed = (paradigmId) => {
+            const id = String(paradigmId || "").trim();
+            if (!id) return;
+            if (!window.workspaceCollapsedParadigmTreeIds || typeof window.workspaceCollapsedParadigmTreeIds !== "object") {
+                window.workspaceCollapsedParadigmTreeIds = {};
+            }
+            window.workspaceCollapsedParadigmTreeIds[id] = !window.workspaceCollapsedParadigmTreeIds[id];
+            renderViewFn?.();
+        };
         const getParadigmItemById = (id) => WORKSPACE_DATA.paradigmItemsById?.[String(id || "").trim()] || null;
         const getParadigmChildrenIds = (paradigmId, parentId = null) => {
             const key = paradigmParentKey(paradigmId, parentId);
@@ -1148,7 +1401,7 @@
             const local = getItemById(id)?.comment;
             return typeof local === "string" ? local : "";
         };
-        const summarizeComment = (text, maxLen = 20) => {
+        const summarizeComment = (text, maxLen = 100) => {
             const clean = String(text || "").replace(/\s+/g, " ").trim();
             if (!clean) return "";
             return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen)}...`;
@@ -1203,6 +1456,47 @@
             });
         };
 
+        const removeIdFromSimpleChildrenMap = (childrenMap, id) => {
+            Object.keys(childrenMap || {}).forEach((key) => {
+                const list = Array.isArray(childrenMap[key]) ? childrenMap[key] : [];
+                childrenMap[key] = list.filter((x) => x !== id);
+            });
+        };
+
+        const rebuildTabOrderFromData = (data) => {
+            const nextOrder = flattenTabTree(data.tabChildrenByParent || {}, null);
+            Object.keys(data.tabsById || {}).forEach((id) => {
+                if (!nextOrder.includes(id)) nextOrder.push(id);
+            });
+            data.tabOrder = nextOrder;
+        };
+
+        const ensureTabHierarchyState = (data) => {
+            if (!data.tabChildrenByParent || typeof data.tabChildrenByParent !== "object") data.tabChildrenByParent = {};
+            if (!Array.isArray(data.tabChildrenByParent[ROOT_KEY])) data.tabChildrenByParent[ROOT_KEY] = [];
+            Object.keys(data.tabsById || {}).forEach((tabId) => {
+                const tab = data.tabsById[tabId];
+                if (!tab) return;
+                if (tab.parentTabId && !data.tabsById[tab.parentTabId]) tab.parentTabId = null;
+                const key = parentKey(tab.parentTabId);
+                if (!Array.isArray(data.tabChildrenByParent[key])) data.tabChildrenByParent[key] = [];
+                if (!data.tabChildrenByParent[key].includes(tabId)) data.tabChildrenByParent[key].push(tabId);
+            });
+            rebuildTabOrderFromData(data);
+        };
+
+        const wouldCreateTabCycleInData = (data, draggedId, nextParentId) => {
+            let cursor = nextParentId;
+            const seen = new Set([draggedId]);
+            while (cursor) {
+                if (seen.has(cursor)) return true;
+                seen.add(cursor);
+                const parent = data.tabsById?.[cursor]?.parentTabId || null;
+                cursor = parent;
+            }
+            return false;
+        };
+
         const collectSubtreeIds = (data, startId, tabId) => {
             const ids = [];
             const seen = new Set();
@@ -1235,15 +1529,21 @@
             if (data.tabsById?.[tabId]) return;
             if (!data.tabsById || typeof data.tabsById !== "object") data.tabsById = {};
             if (!Array.isArray(data.tabOrder)) data.tabOrder = [];
+            if (!data.tabChildrenByParent || typeof data.tabChildrenByParent !== "object") data.tabChildrenByParent = {};
+            if (!Array.isArray(data.tabChildrenByParent[ROOT_KEY])) data.tabChildrenByParent[ROOT_KEY] = [];
             data.tabsById[tabId] = {
                 id: tabId,
                 name: name || `Tab-${tabId.slice(-4)}`,
                 kind: "project",
+                parentTabId: null,
+                boundParadigmIds: [],
+                boundParadigmItemKeys: [],
                 boundParadigmId: null,
                 createdAt: nowString(),
                 updatedAt: nowString()
             };
             if (!data.tabOrder.includes(tabId)) data.tabOrder.push(tabId);
+            if (!data.tabChildrenByParent[ROOT_KEY].includes(tabId)) data.tabChildrenByParent[ROOT_KEY].push(tabId);
             const rootK = tabParentKey(tabId, null);
             if (!data.childrenByParentByTab || typeof data.childrenByParentByTab !== "object") data.childrenByParentByTab = {};
             if (!data.childrenByParentByTab[rootK]) data.childrenByParentByTab[rootK] = [];
@@ -1251,14 +1551,60 @@
             if (!Array.isArray(data.snapshotOrderByTab[tabId])) data.snapshotOrderByTab[tabId] = [];
         };
 
-        const convertBoundParadigmItemsToLocal = (data, tabId, paradigmId) => {
+        const getChildParadigmIdsFromData = (data, parentParadigmId = null) => {
+            const key = paradigmTreeKey(parentParadigmId);
+            return ensureUniqueIds(data.childParadigmIdsByParent?.[key] || []).filter((id) => !!data.paradigmsById?.[id]);
+        };
+
+        const getParadigmDescendantIdsInData = (data, paradigmId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getChildParadigmIdsFromData(data, paradigmId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !data.paradigmsById?.[current]) continue;
+                seen.add(current);
+                out.push(current);
+                getChildParadigmIdsFromData(data, current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+
+        const ensureParadigmHierarchyState = (data) => {
+            if (!data.childParadigmIdsByParent || typeof data.childParadigmIdsByParent !== "object") data.childParadigmIdsByParent = {};
+            if (!Array.isArray(data.childParadigmIdsByParent[ROOT_KEY])) data.childParadigmIdsByParent[ROOT_KEY] = [];
+            Object.keys(data.paradigmsById || {}).forEach((paradigmId) => {
+                const paradigm = data.paradigmsById[paradigmId];
+                if (!paradigm) return;
+                if (paradigm.parentParadigmId && !data.paradigmsById[paradigm.parentParadigmId]) paradigm.parentParadigmId = null;
+                const key = paradigmTreeKey(paradigm.parentParadigmId);
+                if (!Array.isArray(data.childParadigmIdsByParent[key])) data.childParadigmIdsByParent[key] = [];
+                if (!data.childParadigmIdsByParent[key].includes(paradigmId)) data.childParadigmIdsByParent[key].push(paradigmId);
+            });
+        };
+
+        const wouldCreateParadigmTreeCycleInData = (data, draggedParadigmId, nextParentParadigmId) => {
+            let cursor = nextParentParadigmId;
+            const seen = new Set([draggedParadigmId]);
+            while (cursor) {
+                if (seen.has(cursor)) return true;
+                seen.add(cursor);
+                cursor = data.paradigmsById?.[cursor]?.parentParadigmId || null;
+            }
+            return false;
+        };
+
+        const convertBoundParadigmItemsToLocal = (data, tabId, paradigmId = null) => {
             Object.values(data.itemsById || {}).forEach((item) => {
                 if (!item || item.tabId !== tabId) return;
-                if (item.sourceType === "paradigm" && item.sourceParadigmId === paradigmId) {
+                if (item.sourceType === "paradigm" && (!paradigmId || item.sourceParadigmId === paradigmId)) {
                     item.sourceType = "tab";
                     item.sourceParadigmId = null;
                     item.sourceParadigmItemId = null;
-                    item.orphaned = false;
+                    item.sourceParadigmBindingRootId = null;
+                    item.sourceParadigmMountMode = "direct";
+                    // 解绑后保留显式标注，避免与普通条目混淆
+                    item.orphaned = true;
                     item.updatedAt = nowString();
                 }
             });
@@ -1266,28 +1612,55 @@
                 const parsed = splitScopedKey(scoped);
                 if (parsed.ownerId !== tabId) return;
                 const pgItem = data.paradigmItemsById?.[parsed.parent];
-                if (pgItem && pgItem.paradigmId !== paradigmId) return;
+                if (paradigmId && pgItem && pgItem.paradigmId !== paradigmId) return;
                 delete data.paradigmToTabItemMapByTab[scoped];
             });
         };
 
-        const syncParadigmToTabInData = (data, tabId, paradigmId) => {
-            if (!data.tabsById?.[tabId] || !data.paradigmsById?.[paradigmId]) return;
+        const collectBoundParadigmRootMapForTab = (data, tabId) => {
+            const tab = data.tabsById?.[tabId];
+            if (!tab) return { explicitBoundIds: [], rootMap: new Map() };
+            ensureParadigmHierarchyState(data);
+            const explicitBoundIds = normalizeBoundParadigmIds(tab).filter((paradigmId) => !!data.paradigmsById?.[paradigmId]);
+            const explicitSet = new Set(explicitBoundIds);
+            const includedIds = new Set();
+            explicitBoundIds.forEach((paradigmId) => {
+                includedIds.add(paradigmId);
+                getParadigmDescendantIdsInData(data, paradigmId).forEach((childId) => includedIds.add(childId));
+            });
+            const rootMap = new Map();
+            includedIds.forEach((paradigmId) => {
+                let cursor = paradigmId;
+                while (cursor) {
+                    if (explicitSet.has(cursor)) {
+                        rootMap.set(paradigmId, cursor);
+                        break;
+                    }
+                    cursor = data.paradigmsById?.[cursor]?.parentParadigmId || null;
+                }
+            });
+            return { explicitBoundIds, rootMap };
+        };
+
+        const syncParadigmToTabInData = (data, tabId, _paradigmId = null) => {
+            if (!data.tabsById?.[tabId]) return;
             if (!data.paradigmToTabItemMapByTab || typeof data.paradigmToTabItemMapByTab !== "object") data.paradigmToTabItemMapByTab = {};
             if (!data.childrenByParentByTab || typeof data.childrenByParentByTab !== "object") data.childrenByParentByTab = {};
             const map = data.paradigmToTabItemMapByTab;
             const now = nowString();
-
-            const paradigmItems = Object.values(data.paradigmItemsById || {}).filter((it) => it.paradigmId === paradigmId);
+            const { explicitBoundIds, rootMap } = collectBoundParadigmRootMapForTab(data, tabId);
+            const paradigmItems = Object.values(data.paradigmItemsById || {}).filter((it) => rootMap.has(it.paradigmId));
             const paradigmItemIdSet = new Set(paradigmItems.map((it) => it.id));
 
             Object.values(data.itemsById || {}).forEach((item) => {
                 if (!item || item.tabId !== tabId) return;
-                if (item.sourceType !== "paradigm" || item.sourceParadigmId !== paradigmId) return;
+                if (item.sourceType !== "paradigm") return;
                 if (!item.sourceParadigmItemId || !paradigmItemIdSet.has(item.sourceParadigmItemId)) {
                     item.sourceType = "tab";
                     item.sourceParadigmId = null;
                     item.sourceParadigmItemId = null;
+                    item.sourceParadigmBindingRootId = null;
+                    item.sourceParadigmMountMode = "direct";
                     item.orphaned = true;
                     item.updatedAt = now;
                 }
@@ -1297,13 +1670,14 @@
                 const parsed = splitScopedKey(scoped);
                 if (parsed.ownerId !== tabId) return;
                 const pgItem = data.paradigmItemsById?.[parsed.parent];
-                if (!pgItem || pgItem.paradigmId !== paradigmId) delete map[scoped];
+                if (!pgItem || !rootMap.has(pgItem.paradigmId)) delete map[scoped];
             });
 
             paradigmItems.forEach((pgItem) => {
                 const scoped = `${tabId}::${pgItem.id}`;
                 let itemId = map[scoped];
                 let mounted = itemId ? data.itemsById[itemId] : null;
+                const bindingRootParadigmId = rootMap.get(pgItem.paradigmId) || pgItem.paradigmId;
                 if (!mounted || mounted.tabId !== tabId) {
                     itemId = generateId();
                     while (data.itemsById[itemId]) itemId = generateId();
@@ -1313,8 +1687,10 @@
                         parentId: null,
                         tabId,
                         sourceType: "paradigm",
-                        sourceParadigmId: paradigmId,
+                        sourceParadigmId: pgItem.paradigmId,
                         sourceParadigmItemId: pgItem.id,
+                        sourceParadigmBindingRootId: bindingRootParadigmId,
+                        sourceParadigmMountMode: bindingRootParadigmId === pgItem.paradigmId ? "direct" : "inherited",
                         isCollapsed: false,
                         imageRef: sanitizeImageInput(pgItem.imageRef || ""),
                         comment: typeof pgItem.comment === "string" ? pgItem.comment : "",
@@ -1329,8 +1705,10 @@
                 mounted.title = pgItem.title;
                 mounted.tabId = tabId;
                 mounted.sourceType = "paradigm";
-                mounted.sourceParadigmId = paradigmId;
+                mounted.sourceParadigmId = pgItem.paradigmId;
                 mounted.sourceParadigmItemId = pgItem.id;
+                mounted.sourceParadigmBindingRootId = bindingRootParadigmId;
+                mounted.sourceParadigmMountMode = bindingRootParadigmId === pgItem.paradigmId ? "direct" : "inherited";
                 mounted.imageRef = sanitizeImageInput(pgItem.imageRef || "");
                 mounted.comment = typeof pgItem.comment === "string" ? pgItem.comment : "";
                 mounted.noteBinding = normalizeBindingValue(pgItem.noteBinding);
@@ -1347,26 +1725,40 @@
             validInstanceIds.forEach((id) => removeIdFromChildrenMap(data.childrenByParentByTab, id, tabId));
 
             const desiredByParent = new Map();
-            const walk = (parentPgId = null) => {
-                const pgChildren = (data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, parentPgId)] || []).slice();
-                const parentTabItemId = parentPgId ? map[`${tabId}::${parentPgId}`] || null : null;
-                const desired = [];
-                pgChildren.forEach((pgChildId) => {
-                    const tabItemId = map[`${tabId}::${pgChildId}`];
-                    if (!tabItemId || !data.itemsById[tabItemId]) return;
-                    data.itemsById[tabItemId].parentId = parentTabItemId;
-                    desired.push(tabItemId);
-                    walk(pgChildId);
-                });
-                desiredByParent.set(parentTabItemId || null, desired);
+            const pushDesired = (parentTabItemId, childTabItemId) => {
+                const key = parentTabItemId || null;
+                if (!desiredByParent.has(key)) desiredByParent.set(key, []);
+                desiredByParent.get(key).push(childTabItemId);
             };
-            walk(null);
+            const placeParadigmItemBranch = (paradigmId, pgItemId, parentTabItemId = null) => {
+                const tabItemId = map[`${tabId}::${pgItemId}`];
+                if (!tabItemId || !data.itemsById[tabItemId]) return;
+                data.itemsById[tabItemId].parentId = parentTabItemId;
+                pushDesired(parentTabItemId, tabItemId);
+                const childPgItems = (data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, pgItemId)] || []).slice();
+                childPgItems.forEach((childPgItemId) => placeParadigmItemBranch(paradigmId, childPgItemId, tabItemId));
+            };
+            const placedParadigms = new Set();
+            const placeParadigmScope = (paradigmId) => {
+                if (!rootMap.has(paradigmId) || placedParadigms.has(paradigmId)) return;
+                placedParadigms.add(paradigmId);
+                const rootPgItems = (data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, null)] || []).slice();
+                rootPgItems.forEach((pgItemId) => placeParadigmItemBranch(paradigmId, pgItemId, null));
+                getChildParadigmIdsFromData(data, paradigmId).forEach((childParadigmId) => {
+                    if (rootMap.has(childParadigmId)) placeParadigmScope(childParadigmId);
+                });
+            };
+            explicitBoundIds.forEach((paradigmId) => placeParadigmScope(paradigmId));
 
             desiredByParent.forEach((desiredIds, parentTabItemId) => {
                 const scoped = tabParentKey(tabId, parentTabItemId);
                 const existing = Array.isArray(data.childrenByParentByTab[scoped]) ? data.childrenByParentByTab[scoped] : [];
                 const withoutParadigm = existing.filter((id) => !validInstanceIds.has(id));
-                data.childrenByParentByTab[scoped] = ensureUniqueIds([].concat(desiredIds, withoutParadigm));
+                const parentTabItem = parentTabItemId ? data.itemsById?.[parentTabItemId] : null;
+                const mergedOrder = parentTabItem && parentTabItem.sourceType === "paradigm"
+                    ? [].concat(withoutParadigm, desiredIds)
+                    : [].concat(desiredIds, withoutParadigm);
+                data.childrenByParentByTab[scoped] = ensureUniqueIds(mergedOrder);
             });
 
             const rootKey = tabParentKey(tabId, null);
@@ -1377,9 +1769,9 @@
             }
         };
 
-        const syncParadigmAcrossTabsInData = (data, paradigmId) => {
+        const syncParadigmAcrossTabsInData = (data, _paradigmId = null) => {
             Object.values(data.tabsById || {}).forEach((tab) => {
-                if (tab.boundParadigmId === paradigmId) syncParadigmToTabInData(data, tab.id, paradigmId);
+                syncParadigmToTabInData(data, tab.id);
             });
         };
 
@@ -1417,6 +1809,43 @@
             });
         };
 
+        const moveTabOrder = async (draggedIdRaw, targetIdRaw, position = "after") => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            if (!getTabById(draggedId) || !getTabById(targetId)) return;
+            const targetTab = getTabById(targetId);
+            const nextParentId = position === "child" ? targetId : (targetTab?.parentTabId || null);
+            if (wouldCreateTabCycleInData(WORKSPACE_DATA, draggedId, nextParentId)) {
+                new Notice("⚠️ 不能把 Tab 拖到自己的子级下面");
+                return;
+            }
+            await updateWorkspaceData((data) => {
+                ensureTabHierarchyState(data);
+                const dragged = data.tabsById?.[draggedId];
+                const target = data.tabsById?.[targetId];
+                if (!dragged || !target) return;
+                const parentId = position === "child" ? target.id : (target.parentTabId || null);
+                if (wouldCreateTabCycleInData(data, dragged.id, parentId)) return;
+
+                removeIdFromSimpleChildrenMap(data.tabChildrenByParent, dragged.id);
+                dragged.parentTabId = parentId;
+                dragged.updatedAt = nowString();
+
+                const key = parentKey(parentId);
+                if (!Array.isArray(data.tabChildrenByParent[key])) data.tabChildrenByParent[key] = [];
+                const siblings = data.tabChildrenByParent[key];
+                if (position === "child") {
+                    siblings.unshift(dragged.id);
+                } else {
+                    const targetIndex = siblings.indexOf(target.id);
+                    if (targetIndex < 0) siblings.push(dragged.id);
+                    else siblings.splice(position === "before" ? targetIndex : targetIndex + 1, 0, dragged.id);
+                }
+                rebuildTabOrderFromData(data);
+            });
+        };
+
         const closeCurrentTab = async () => {
             const tab = getActiveTab();
             if (!tab) return;
@@ -1432,6 +1861,12 @@
                 .map((item) => item.id);
             await updateWorkspaceData((data) => {
                 const tabId = tab.id;
+                ensureTabHierarchyState(data);
+                const closingTab = data.tabsById?.[tabId];
+                const parentTabId = closingTab?.parentTabId || null;
+                const childTabIds = Array.isArray(data.tabChildrenByParent?.[parentKey(tabId)])
+                    ? data.tabChildrenByParent[parentKey(tabId)].slice()
+                    : [];
                 idsToDelete.forEach((id) => {
                     removeIdFromChildrenMap(data.childrenByParentByTab, id, tabId);
                     delete data.itemsById[id];
@@ -1444,8 +1879,17 @@
                     const parsed = splitScopedKey(scoped);
                     if (parsed.ownerId === tabId) delete data.paradigmToTabItemMapByTab[scoped];
                 });
+                removeIdFromSimpleChildrenMap(data.tabChildrenByParent, tabId);
+                const nextParentKey = parentKey(parentTabId);
+                if (!Array.isArray(data.tabChildrenByParent[nextParentKey])) data.tabChildrenByParent[nextParentKey] = [];
+                childTabIds.forEach((childId) => {
+                    if (!data.tabsById?.[childId]) return;
+                    data.tabsById[childId].parentTabId = parentTabId;
+                    if (!data.tabChildrenByParent[nextParentKey].includes(childId)) data.tabChildrenByParent[nextParentKey].push(childId);
+                });
+                delete data.tabChildrenByParent[parentKey(tabId)];
                 delete data.tabsById[tabId];
-                data.tabOrder = (data.tabOrder || []).filter((id) => id !== tabId);
+                rebuildTabOrderFromData(data);
                 const removedSnapIds = (data.snapshotOrderByTab?.[tabId] || []).slice();
                 removedSnapIds.forEach((sid) => { delete data.snapshotsById?.[sid]; });
                 if (data.snapshotOrderByTab && typeof data.snapshotOrderByTab === "object") delete data.snapshotOrderByTab[tabId];
@@ -1466,12 +1910,16 @@
             const paradigmId = `pg_${generateId()}`;
             await updateWorkspaceData((data) => {
                 if (!data.paradigmsById || typeof data.paradigmsById !== "object") data.paradigmsById = {};
+                if (!data.childParadigmIdsByParent || typeof data.childParadigmIdsByParent !== "object") data.childParadigmIdsByParent = {};
+                if (!Array.isArray(data.childParadigmIdsByParent[ROOT_KEY])) data.childParadigmIdsByParent[ROOT_KEY] = [];
                 data.paradigmsById[paradigmId] = {
                     id: paradigmId,
                     name,
+                    parentParadigmId: null,
                     createdAt: nowString(),
                     updatedAt: nowString()
                 };
+                data.childParadigmIdsByParent[ROOT_KEY].push(paradigmId);
                 if (!data.paradigmChildrenByParent || typeof data.paradigmChildrenByParent !== "object") data.paradigmChildrenByParent = {};
                 if (!data.paradigmChildrenByParent[paradigmParentKey(paradigmId, null)]) data.paradigmChildrenByParent[paradigmParentKey(paradigmId, null)] = [];
             });
@@ -1488,6 +1936,44 @@
                 if (!pg) return;
                 pg.name = name;
                 pg.updatedAt = nowString();
+                syncParadigmAcrossTabsInData(data);
+            });
+        };
+
+        const moveParadigmOrder = async (draggedIdRaw, targetIdRaw, position = "after") => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            if (!getParadigmById(draggedId) || !getParadigmById(targetId)) return;
+            const targetParadigm = getParadigmById(targetId);
+            const nextParentId = position === "child" ? targetId : (targetParadigm?.parentParadigmId || null);
+            if (wouldCreateParadigmTreeCycleInData(WORKSPACE_DATA, draggedId, nextParentId)) {
+                new Notice("⚠️ 不能把范式拖到自己的子级下面");
+                return;
+            }
+            await updateWorkspaceData((data) => {
+                ensureParadigmHierarchyState(data);
+                const dragged = data.paradigmsById?.[draggedId];
+                const target = data.paradigmsById?.[targetId];
+                if (!dragged || !target) return;
+                const parentId = position === "child" ? target.id : (target.parentParadigmId || null);
+                if (wouldCreateParadigmTreeCycleInData(data, dragged.id, parentId)) return;
+
+                removeIdFromSimpleChildrenMap(data.childParadigmIdsByParent, dragged.id);
+                dragged.parentParadigmId = parentId;
+                dragged.updatedAt = nowString();
+
+                const key = paradigmTreeKey(parentId);
+                if (!Array.isArray(data.childParadigmIdsByParent[key])) data.childParadigmIdsByParent[key] = [];
+                const siblings = data.childParadigmIdsByParent[key];
+                if (position === "child") {
+                    siblings.unshift(dragged.id);
+                } else {
+                    const targetIndex = siblings.indexOf(target.id);
+                    if (targetIndex < 0) siblings.push(dragged.id);
+                    else siblings.splice(position === "before" ? targetIndex : targetIndex + 1, 0, dragged.id);
+                }
+                syncParadigmAcrossTabsInData(data);
             });
         };
 
@@ -1497,11 +1983,17 @@
             const ok = await confirm("删除范式", `确定删除范式 <b>${paradigm.name}</b> 吗？已挂载实例会转为普通条目。`);
             if (!ok) return;
             await updateWorkspaceData((data) => {
+                ensureParadigmHierarchyState(data);
+                const targetParadigm = data.paradigmsById?.[paradigmId];
+                const parentParadigmId = targetParadigm?.parentParadigmId || null;
+                const childParadigmIds = Array.isArray(data.childParadigmIdsByParent?.[paradigmTreeKey(paradigmId)])
+                    ? data.childParadigmIdsByParent[paradigmTreeKey(paradigmId)].slice()
+                    : [];
                 Object.values(data.tabsById || {}).forEach((tab) => {
-                    if (tab.boundParadigmId !== paradigmId) return;
-                    convertBoundParadigmItemsToLocal(data, tab.id, paradigmId);
-                    tab.boundParadigmId = null;
+                    const boundIds = normalizeBoundParadigmIds(tab);
+                    setTabBoundParadigmIds(tab, boundIds.filter((id) => id !== paradigmId));
                     tab.updatedAt = nowString();
+                    convertBoundParadigmItemsToLocal(data, tab.id, paradigmId);
                 });
                 Object.keys(data.paradigmItemsById || {}).forEach((id) => {
                     if (data.paradigmItemsById[id]?.paradigmId === paradigmId) delete data.paradigmItemsById[id];
@@ -1510,7 +2002,17 @@
                     const parsed = splitScopedKey(scoped);
                     if (parsed.ownerId === paradigmId) delete data.paradigmChildrenByParent[scoped];
                 });
+                removeIdFromSimpleChildrenMap(data.childParadigmIdsByParent, paradigmId);
+                const nextParentKey = paradigmTreeKey(parentParadigmId);
+                if (!Array.isArray(data.childParadigmIdsByParent[nextParentKey])) data.childParadigmIdsByParent[nextParentKey] = [];
+                childParadigmIds.forEach((childId) => {
+                    if (!data.paradigmsById?.[childId]) return;
+                    data.paradigmsById[childId].parentParadigmId = parentParadigmId;
+                    if (!data.childParadigmIdsByParent[nextParentKey].includes(childId)) data.childParadigmIdsByParent[nextParentKey].push(childId);
+                });
+                delete data.childParadigmIdsByParent[paradigmTreeKey(paradigmId)];
                 delete data.paradigmsById[paradigmId];
+                syncParadigmAcrossTabsInData(data);
             });
         };
 
@@ -1518,30 +2020,40 @@
             const tab = getActiveTab();
             const paradigm = getParadigmById(paradigmId);
             if (!tab || !paradigm) return;
+            const beforeIds = normalizeBoundParadigmIds(tab);
+            const alreadyBound = beforeIds.includes(paradigmId);
             await updateWorkspaceData((data) => {
                 const t = data.tabsById?.[tab.id];
                 if (!t) return;
-                if (t.boundParadigmId && t.boundParadigmId !== paradigmId) {
-                    convertBoundParadigmItemsToLocal(data, tab.id, t.boundParadigmId);
-                }
-                t.boundParadigmId = paradigmId;
+                const nextIds = normalizeBoundParadigmIds(t);
+                if (!nextIds.includes(paradigmId)) nextIds.push(paradigmId);
+                setTabBoundParadigmIds(t, nextIds);
                 t.updatedAt = nowString();
-                syncParadigmToTabInData(data, tab.id, paradigmId);
+                syncParadigmToTabInData(data, tab.id);
             });
-            new Notice(`📐 已绑定范式：${paradigm.name}`);
+            const scopeCount = getParadigmScopeIds(paradigmId).length;
+            new Notice(alreadyBound ? `ℹ️ 已绑定范式：${paradigm.name}` : `📐 已绑定范式：${paradigm.name}（含 ${scopeCount} 个范式层级）`);
         };
 
-        const unbindParadigmFromCurrentTab = async () => {
+        const unbindParadigmFromCurrentTab = async (paradigmId = null) => {
             const tab = getActiveTab();
-            if (!tab || !tab.boundParadigmId) return;
+            if (!tab) return;
+            const currentIds = normalizeBoundParadigmIds(tab);
+            if (currentIds.length === 0) return;
+            const targetId = paradigmId ? String(paradigmId).trim() : null;
+            const idsToRemove = targetId ? currentIds.filter((id) => id === targetId) : currentIds.slice();
+            if (idsToRemove.length === 0) return;
             await updateWorkspaceData((data) => {
                 const t = data.tabsById?.[tab.id];
-                if (!t?.boundParadigmId) return;
-                convertBoundParadigmItemsToLocal(data, tab.id, t.boundParadigmId);
-                t.boundParadigmId = null;
+                if (!t) return;
+                const boundIds = normalizeBoundParadigmIds(t);
+                setTabBoundParadigmIds(t, boundIds.filter((id) => !idsToRemove.includes(id)));
                 t.updatedAt = nowString();
+                syncParadigmToTabInData(data, tab.id);
             });
-            new Notice("🔓 已解绑范式，原范式实例已转为普通条目");
+            new Notice(targetId
+                ? "🔓 已解绑该范式，相关实例已转为普通条目"
+                : "🔓 已解绑当前 Tab 全部范式，相关实例已转为普通条目");
         };
 
         const addParadigmItem = async (paradigmId, parentParadigmItemId = null) => {
@@ -1569,7 +2081,7 @@
                 };
                 const scoped = paradigmParentKey(paradigmId, parentParadigmItemId);
                 if (!data.paradigmChildrenByParent[scoped]) data.paradigmChildrenByParent[scoped] = [];
-                data.paradigmChildrenByParent[scoped].push(itemId);
+                data.paradigmChildrenByParent[scoped].unshift(itemId);
                 pg.updatedAt = nowString();
                 syncParadigmAcrossTabsInData(data, paradigmId);
             });
@@ -1760,7 +2272,7 @@
                 const siblings = data.paradigmChildrenByParent[scoped];
 
                 if (position === "child") {
-                    siblings.push(dragged.id);
+                    siblings.unshift(dragged.id);
                 } else {
                     const targetIdx = siblings.indexOf(target.id);
                     if (targetIdx < 0) siblings.push(dragged.id);
@@ -1839,12 +2351,15 @@
                 if (!data.snapshotsById || typeof data.snapshotsById !== "object") data.snapshotsById = {};
                 if (!data.snapshotOrderByTab || typeof data.snapshotOrderByTab !== "object") data.snapshotOrderByTab = {};
                 if (!Array.isArray(data.snapshotOrderByTab[tabId])) data.snapshotOrderByTab[tabId] = [];
+                const tabBoundParadigmIds = normalizeBoundParadigmIds(tab);
                 data.snapshotsById[snapshotId] = {
                     id: snapshotId,
                     tabId,
                     name,
                     createdAt: nowString(),
-                    boundParadigmId: tab.boundParadigmId || null,
+                    boundParadigmIds: tabBoundParadigmIds,
+                    // 兼容旧读取方
+                    boundParadigmId: tabBoundParadigmIds[0] || null,
                     itemsById: snapItems,
                     childrenByParentByTab: snapChildrenByTab,
                     collapsedById: snapCollapsed
@@ -1926,18 +2441,18 @@
             });
         };
 
-        const addItem = async (parentId = null) => {
-            const activeTabId = getActiveTabId();
+        const addItem = async (parentId = null, tabId = null) => {
+            const targetTabId = String(tabId || getActiveTabId()).trim() || getActiveTabId();
             const title = await runWithPromptLock(() => prompt(parentId ? "添加子条目" : "添加根条目", "输入条目名称"));
             if (!title) return;
             const id = generateId();
             await updateWorkspaceData((data) => {
-                ensureTabExists(data, activeTabId);
+                ensureTabExists(data, targetTabId);
                 data.itemsById[id] = {
                     id,
                     title,
                     parentId,
-                    tabId: activeTabId,
+                    tabId: targetTabId,
                     sourceType: "tab",
                     sourceParadigmId: null,
                     sourceParadigmItemId: null,
@@ -1949,16 +2464,15 @@
                     createdAt: nowString(),
                     updatedAt: nowString()
                 };
-                const pKey = tabParentKey(activeTabId, parentId);
+                const pKey = tabParentKey(targetTabId, parentId);
                 if (!data.childrenByParentByTab[pKey]) data.childrenByParentByTab[pKey] = [];
-                data.childrenByParentByTab[pKey].push(id);
+                data.childrenByParentByTab[pKey].unshift(id);
             });
         };
 
         const renameItem = async (id) => {
             const item = getItemById(id);
             if (!item) return;
-            if (item.tabId !== getActiveTabId()) return;
             if (isParadigmMountedItem(item)) {
                 new Notice("📐 该条目来自范式，请到范式面板中重命名");
                 return;
@@ -1977,16 +2491,17 @@
         const deleteItem = async (id) => {
             const item = getItemById(id);
             if (!item) return;
-            if (item.tabId !== getActiveTabId()) return;
             if (isParadigmMountedItem(item)) {
                 new Notice("📐 该条目来自范式，请到范式面板中删除");
                 return;
             }
-            const idsToDelete = collectSubtreeIds(WORKSPACE_DATA, id, getActiveTabId());
-            if (idsToDelete.length === 0) return;
-            const msg = idsToDelete.length > 1
-                ? `确定删除 <b>${item.title}</b> 及其 <b>${idsToDelete.length - 1}</b> 个子条目吗？`
-                : `确定删除 <b>${item.title}</b> 吗？`;
+            const directChildIds = getChildrenIds(item.id, item.tabId);
+            if (directChildIds.length > 0) {
+                new Notice(`⚠️ 不能直接删除父条目：${item.title}。请先处理完它下面的 ${directChildIds.length} 个子条目。`);
+                return;
+            }
+            const idsToDelete = [item.id];
+            const msg = `确定删除 <b>${item.title}</b> 吗？`;
             const ok = await confirm("确认删除", msg);
             if (!ok) return;
             await updateWorkspaceData((data) => {
@@ -2012,7 +2527,6 @@
             await updateWorkspaceData((data) => {
                 const target = data.itemsById[id];
                 if (!target) return;
-                if (target.tabId !== getActiveTabId()) return;
                 target.isCollapsed = !target.isCollapsed;
                 if (!data.collapsedById || typeof data.collapsedById !== "object") data.collapsedById = {};
                 data.collapsedById[id] = !!target.isCollapsed;
@@ -2163,7 +2677,6 @@
         const editItemImage = async (id) => {
             const item = getItemById(id);
             if (!item) return;
-            if (item.tabId !== getActiveTabId()) return;
             if (isParadigmMountedItem(item)) {
                 window.workspaceShowParadigmPanel = true;
                 window.workspaceEditingParadigmId = item.sourceParadigmId || null;
@@ -2212,8 +2725,8 @@
             const dragged = getItemById(draggedId);
             const target = getItemById(targetId);
             if (!dragged || !target) return;
-            const activeTabId = getActiveTabId();
-            if (dragged.tabId !== activeTabId || target.tabId !== activeTabId) return;
+            const activeTabId = dragged.tabId;
+            if (dragged.tabId !== target.tabId) return;
             if (isParadigmMountedItem(dragged)) {
                 new Notice("📐 范式条目请在范式面板中移动");
                 return;
@@ -2242,7 +2755,7 @@
                 const siblings = data.childrenByParentByTab[pKey];
 
                 if (position === "child") {
-                    siblings.push(dragged.id);
+                    siblings.unshift(dragged.id);
                     return;
                 }
 
@@ -2262,7 +2775,7 @@
             if (!draggedId) return;
             const dragged = getItemById(draggedId);
             if (!dragged) return;
-            const activeTabId = getActiveTabId();
+            const activeTabId = dragged.tabId;
             if (dragged.tabId !== activeTabId) return;
             if (isParadigmMountedItem(dragged)) {
                 new Notice("📐 范式条目请在范式面板中移动");
@@ -2295,26 +2808,64 @@
             return palette[level % palette.length];
         };
 
+        const getParadigmVisual = (paradigmId) => {
+            const seed = String(paradigmId || "default");
+            let hash = 0;
+            for (let i = 0; i < seed.length; i++) {
+                hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+                hash |= 0;
+            }
+            const palette = [
+                { accent: "#3498db", bg: "rgba(52, 152, 219, 0.10)" },
+                { accent: "#16a085", bg: "rgba(22, 160, 133, 0.10)" },
+                { accent: "#d35400", bg: "rgba(211, 84, 0, 0.10)" },
+                { accent: "#8e44ad", bg: "rgba(142, 68, 173, 0.10)" },
+                { accent: "#2c7a3f", bg: "rgba(44, 122, 63, 0.10)" },
+                { accent: "#c0392b", bg: "rgba(192, 57, 43, 0.10)" }
+            ];
+            return palette[Math.abs(hash) % palette.length];
+        };
+
         const renderItemLine = (container, item, level, chain, tabId) => {
             const hasKids = hasChildren(item.id, tabId);
+            const sourceTab = getTabById(item.tabId);
             const boundPath = getBoundNotePathById(item.id);
             const boundFile = boundPath ? resolveExistingNoteFile(boundPath) : null;
             const commentText = getTaskCommentById(item.id);
-            const commentSummary = summarizeComment(commentText, 20);
+            const commentSummary = summarizeComment(commentText, 100);
             const levelBg = getLevelBackground(level);
             const imageRef = sanitizeImageInput(item.imageRef || "");
             const imageSrc = resolveImageSrc(imageRef);
             const isParadigm = isParadigmMountedItem(item);
+            const paradigm = isParadigm ? getParadigmById(item.sourceParadigmId) : null;
+            const paradigmName = paradigm?.name || item.sourceParadigmId || "范式";
+            const bindingRootParadigm = isParadigm ? getParadigmById(item.sourceParadigmBindingRootId) : null;
+            const bindingRootParadigmName = bindingRootParadigm?.name || item.sourceParadigmBindingRootId || paradigmName;
+            const paradigmVisual = isParadigm ? getParadigmVisual(item.sourceParadigmId) : null;
+            const branchParadigmVisual = isParadigm ? getParadigmVisual(item.sourceParadigmBindingRootId || item.sourceParadigmId) : null;
 
-            const line = container.createEl("div", {
+            const branch = container.createEl("div", {
+                cls: `workspace-item-branch ${isParadigm && hasKids ? "is-paradigm-group" : ""}`,
+                attr: { style: `margin-left:${level * 26}px;` }
+            });
+            if (isParadigm && hasKids && branchParadigmVisual) {
+                branch.style.borderColor = `${branchParadigmVisual.accent}55`;
+                branch.style.background = `linear-gradient(180deg, ${branchParadigmVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
+                branch.style.boxShadow = `inset 0 0 0 1px ${branchParadigmVisual.accent}18`;
+            }
+            const line = branch.createEl("div", {
                 cls: "workspace-item-line",
                 attr: {
-                    style: `margin-left:${level * 26}px; background:${levelBg};`
+                    style: `background:${levelBg};`
                 }
             });
             let content = null;
             line.draggable = !isParadigm;
             if (isParadigm) line.classList.add("is-paradigm");
+            if (isParadigm && paradigmVisual) {
+                line.style.borderLeft = `4px solid ${paradigmVisual.accent}`;
+                line.style.background = `linear-gradient(90deg, ${paradigmVisual.bg} 0%, ${levelBg} 56%)`;
+            }
 
             line.addEventListener("dragstart", (e) => {
                 if (isParadigm) return;
@@ -2407,11 +2958,29 @@
                 await openBoundNote(item.id);
             };
             if (isParadigm) {
-                content.createEl("span", { text: "📐 范式条目", cls: "workspace-origin-badge" });
+                content.createEl("span", {
+                    text: `📐 ${paradigmName}`,
+                    cls: "workspace-origin-badge",
+                    attr: paradigmVisual
+                        ? { style: `border-color:${paradigmVisual.accent}66;color:${paradigmVisual.accent};background:${paradigmVisual.bg};` }
+                        : {}
+                });
+                content.createEl("span", {
+                    text: item.sourceParadigmMountMode === "inherited"
+                        ? `↳ 上级范式挂入: ${bindingRootParadigmName}`
+                        : "● 直接绑定范式",
+                    cls: "workspace-origin-badge"
+                });
             }
             if (item.orphaned) {
-                content.createEl("span", { text: "⚠️ 已脱离范式", cls: "workspace-origin-badge orphaned" });
+                content.createEl("span", { text: "🔓 原范式条目", cls: "workspace-origin-badge orphaned" });
             }
+            content.createEl("span", {
+                text: item.tabId === getActiveTabId()
+                    ? `📁 当前Tab: ${sourceTab?.name || item.tabId}`
+                    : `📁 下级Tab: ${sourceTab?.name || item.tabId}`,
+                cls: "workspace-origin-badge"
+            });
             if (commentSummary) {
                 content.createEl("span", {
                     text: `💬 ${commentSummary}`,
@@ -2430,7 +2999,7 @@
 
             const actions = line.createEl("div", { cls: "workspace-line-actions" });
             const addChildBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: "添加子条目" } });
-            addChildBtn.onclick = (e) => { e.stopPropagation(); addItem(item.id); };
+            addChildBtn.onclick = (e) => { e.stopPropagation(); addItem(item.id, item.tabId); };
             const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: isParadigm ? "范式条目请在范式面板重命名" : "重命名" } });
             renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(item.id); };
             const imageBtn = actions.createEl("span", {
@@ -2455,22 +3024,48 @@
             deleteBtn.onclick = async (e) => { e.stopPropagation(); await deleteItem(item.id); };
 
             if (hasKids && !item.isCollapsed) {
+                const childContainer = branch.createEl("div", { cls: "workspace-item-branch-children" });
                 if (chain.has(item.id)) {
-                    const loopWarn = container.createEl("div", { text: "⚠️ 检测到循环引用，已停止渲染该分支", cls: "workspace-loop-warn", attr: { style: `margin-left:${(level + 1) * 26}px;` } });
+                    const loopWarn = childContainer.createEl("div", { text: "⚠️ 检测到循环引用，已停止渲染该分支", cls: "workspace-loop-warn" });
                     loopWarn.style.marginBottom = "4px";
                 } else {
                     const nextChain = new Set(chain);
                     nextChain.add(item.id);
-                    renderTree(container, item.id, level + 1, nextChain, tabId);
+                    renderTree(childContainer, item.id, level + 1, nextChain, tabId);
                 }
             }
         };
 
         const renderTree = (container, parentId = null, level = 0, chain = new Set(), tabId = getActiveTabId()) => {
             const ids = getChildrenIds(parentId, tabId);
+            const parentItem = parentId ? getItemById(parentId) : null;
+            const hasLocalChildren = !!parentItem && ids.some((id) => {
+                const item = getItemById(id);
+                return !!item && item.tabId === tabId && !isParadigmMountedItem(item);
+            });
+            const hasParadigmChildren = !!parentItem && ids.some((id) => {
+                const item = getItemById(id);
+                return !!item && item.tabId === tabId && isParadigmMountedItem(item);
+            });
+            let paradigmSeparatorRendered = false;
             ids.forEach((id) => {
                 const item = getItemById(id);
                 if (!item || item.tabId !== tabId) return;
+                if (
+                    parentItem
+                    && isParadigmMountedItem(parentItem)
+                    && hasLocalChildren
+                    && hasParadigmChildren
+                    && isParadigmMountedItem(item)
+                    && !paradigmSeparatorRendered
+                ) {
+                    container.createEl("div", {
+                        cls: "workspace-branch-separator",
+                        text: "↓ 以下为范式预设子节点",
+                        attr: { style: `margin-left:${level * 26}px;` }
+                    });
+                    paradigmSeparatorRendered = true;
+                }
                 renderItemLine(container, item, level, chain, tabId);
             });
         };
@@ -2482,7 +3077,7 @@
                 if (!item) return;
                 const imageRef = sanitizeImageInput(item.imageRef || "");
                 const commentText = typeof item.comment === "string" ? item.comment : "";
-                const commentSummary = summarizeComment(commentText, 20);
+                const commentSummary = summarizeComment(commentText, 100);
                 const binding = normalizeTaskBinding(item.noteBinding);
                 const boundPath = binding?.path || null;
                 const boundFile = boundPath ? resolveExistingNoteFile(boundPath) : null;
@@ -2600,14 +3195,85 @@
             });
         };
 
+        const renderWorkspaceSection = (container, tabId, level = 0, rootActiveTabId = getActiveTabId()) => {
+            const tab = getTabById(tabId);
+            if (!tab) return;
+            const section = container.createEl("div", {
+                cls: `workspace-tab-section ${tabId === rootActiveTabId ? "is-current" : "is-child"}`,
+                attr: { style: `margin-left:${level * 18}px;` }
+            });
+            const head = section.createEl("div", { cls: "workspace-tab-section-head" });
+            const titleWrap = head.createEl("div");
+            titleWrap.createEl("div", {
+                cls: "workspace-tab-section-title",
+                text: `${tabId === rootActiveTabId ? "●" : "◦"} ${tab.name}`
+            });
+            const childCount = getTabChildrenIds(tabId).length;
+            const subtitle = [
+                `Tab ID: ${tab.id}`,
+                tabId === rootActiveTabId ? "当前激活视图" : `来自上级 ${getTabById(tab.parentTabId)?.name || "根层"}`,
+                `下级Tab: ${childCount}`
+            ].join(" · ");
+            titleWrap.createEl("div", { cls: "workspace-tab-section-subtitle", text: subtitle });
+
+            const actions = head.createEl("div", { cls: "workspace-main-actions" });
+            const addRootBtn = actions.createEl("button", { text: "＋ 本Tab根条目", cls: "workspace-sub-btn" });
+            addRootBtn.onclick = () => addItem(null, tab.id);
+
+            const rootDropZone = section.createEl("div", {
+                cls: "workspace-root-drop-zone workspace-tab-local-root-drop-zone",
+                text: `↥ 拖到这里设为「${tab.name}」的根条目`
+            });
+            rootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                const dragged = getItemById(window.workspaceTreeCurrentDragId);
+                if (!dragged || dragged.tabId !== tab.id) return;
+                rootDropZone.classList.add("drag-over");
+            });
+            rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
+            rootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                rootDropZone.classList.remove("drag-over");
+                const dragged = getItemById(window.workspaceTreeCurrentDragId);
+                if (!dragged || dragged.tabId !== tab.id) return;
+                await moveItemToRoot(dragged.id);
+            });
+
+            const treeWrap = section.createEl("div", { cls: "workspace-tab-section-tree" });
+            const roots = getChildrenIds(null, tab.id);
+            if (roots.length === 0) {
+                treeWrap.createEl("div", { text: "_这个 Tab 暂无条目_", cls: "workspace-empty" });
+            } else {
+                renderTree(treeWrap, null, 0, new Set(), tab.id);
+            }
+
+            const childTabs = getTabChildrenIds(tab.id);
+            if (childTabs.length > 0) {
+                const childWrap = section.createEl("div", { cls: "workspace-tab-section-children" });
+                childTabs.forEach((childTabId) => renderWorkspaceSection(childWrap, childTabId, level + 1, rootActiveTabId));
+            }
+        };
+
         const renderView = () => {
             dv.container.innerHTML = "";
             dv.container.createEl("style", {
                 text: `
                 .workspace-wrap { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 14px; background: var(--background-primary-alt); }
-                .workspace-tabbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
-                .workspace-tab-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:999px; padding:4px 10px; cursor:pointer; font-size:12px; }
+                .workspace-tabbar { display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
+                .workspace-tab-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:10px; padding:8px 12px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
+                .workspace-tab-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.12); color:var(--text-normal); }
+                .workspace-tab-capsule-group { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start; }
+                .workspace-tab-capsule { display:inline-flex; flex-direction:column; gap:10px; padding:10px 12px; border:2px solid rgba(52,152,219,.24); border-radius:16px; background:linear-gradient(135deg, rgba(52,152,219,.10) 0%, rgba(52,152,219,.04) 100%); min-width:220px; transition:box-shadow .15s,border-color .15s,transform .15s; }
+                .workspace-tab-capsule:hover { border-color:rgba(52,152,219,.45); box-shadow:0 4px 14px rgba(52,152,219,.12); }
+                .workspace-tab-capsule.is-current { border-color:rgba(46,204,113,.55); background:linear-gradient(135deg, rgba(46,204,113,.12) 0%, rgba(46,204,113,.05) 100%); }
+                .workspace-tab-capsule.is-dragging { opacity:.45; transform:scale(.98); }
+                .workspace-tab-capsule.drag-over-before { box-shadow:inset 4px 0 0 #2ecc71; }
+                .workspace-tab-capsule.drag-over-after { box-shadow:inset -4px 0 0 #2ecc71; }
+                .workspace-tab-capsule.drag-over-child { border-color:#2ecc71; background:linear-gradient(135deg, rgba(46,204,113,.16) 0%, rgba(46,204,113,.06) 100%); }
+                .workspace-tab-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:999px; padding:6px 12px; cursor:pointer; font-size:12px; user-select:none; transition:filter .15s,border-color .15s,transform .15s; text-align:left; display:flex; align-items:center; justify-content:space-between; gap:8px; }
                 .workspace-tab-btn.active { background:var(--interactive-accent); color:var(--text-on-accent); border-color:var(--interactive-accent); font-weight:700; }
+                .workspace-tab-badge { font-size:11px; border-radius:999px; padding:2px 7px; background:rgba(0,0,0,.08); }
+                .workspace-tab-children { display:flex; flex-wrap:wrap; gap:10px; margin-left:18px; }
                 .workspace-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
                 .workspace-title { margin:0; font-size:1.1em; font-weight:700; color:var(--text-normal); }
                 .workspace-subtitle { color:var(--text-muted); font-size:12px; }
@@ -2619,9 +3285,29 @@
                 .workspace-panel-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
                 .workspace-panel-title { font-weight:700; }
                 .workspace-panel-list { display:flex; flex-direction:column; gap:6px; }
-                .workspace-panel-row { display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--background-modifier-border); background:var(--background-primary); padding:6px 8px; border-radius:7px; }
+                .workspace-panel-row { display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--background-modifier-border); background:var(--background-primary); padding:6px 8px; border-radius:7px; transition:filter .15s,border-color .15s,transform .15s; user-select:none; }
+                .workspace-panel-row.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
+                .workspace-panel-row.drag-over-top { border-top:3px solid #2ecc71; }
+                .workspace-panel-row.drag-over-bottom { border-bottom:3px solid #2ecc71; }
+                .workspace-panel-row.drag-over-child { background:rgba(46,204,113,.15); border-left:3px solid #2ecc71; }
+                .workspace-panel-row-head { display:flex; align-items:flex-start; gap:8px; flex:1 1 auto; min-width:0; }
+                .workspace-paradigm-collapse { width:16px; text-align:center; color:var(--text-muted); user-select:none; flex:0 0 16px; }
+                .workspace-paradigm-collapse.clickable { cursor:pointer; }
+                .workspace-paradigm-collapse.dot { opacity:.35; }
+                .workspace-panel-row-left { min-width:0; flex:1 1 auto; }
+                .workspace-panel-row-hint { font-size:11px; color:var(--text-faint); margin-top:2px; }
+                .workspace-paradigm-tree-wrap { display:flex; flex-direction:column; gap:6px; }
+                .workspace-paradigm-branch { margin-bottom:8px; }
+                .workspace-paradigm-branch.has-children { border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:6px; }
+                .workspace-paradigm-branch-children { margin-top:6px; }
+                .workspace-paradigm-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; margin-bottom:8px; }
+                .workspace-paradigm-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
+                .workspace-paradigm-hint { font-size:12px; color:var(--text-muted); margin-bottom:8px; }
                 .workspace-root-drop-zone { margin-bottom:10px; border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
                 .workspace-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
+                .workspace-item-branch { position:relative; margin-bottom:4px; }
+                .workspace-item-branch.is-paradigm-group { border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:6px 6px 8px 6px; margin-bottom:8px; }
+                .workspace-item-branch-children { margin-top:6px; }
                 .workspace-item-line { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; margin-bottom:4px; border:1px solid var(--background-modifier-border); transition:filter .15s,border-color .15s; user-select:none; }
                 .workspace-item-line.is-paradigm { border-style:dashed; }
                 .workspace-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
@@ -2650,8 +3336,17 @@
                 .workspace-line-actions { display:flex; align-items:center; gap:7px; flex-shrink:0; align-self:flex-start; padding-top:2px; }
                 .workspace-action-btn { cursor:pointer; font-size:14px; opacity:.85; }
                 .workspace-action-btn:hover { opacity:1; transform:translateY(-1px); }
+                .workspace-branch-separator { font-size:11px; color:var(--text-muted); border-top:1px dashed var(--background-modifier-border); margin:4px 0 6px; padding-top:4px; }
                 .workspace-loop-warn { color:#c0392b; font-size:12px; padding:3px 6px; }
                 .workspace-empty { color:var(--text-faint); font-style:italic; padding:8px 4px; }
+                .workspace-tab-section { margin-top:12px; padding:12px; border:1px solid var(--background-modifier-border); border-radius:12px; background:var(--background-primary); }
+                .workspace-tab-section.is-current { border-color:rgba(46,204,113,.45); background:linear-gradient(180deg, rgba(46,204,113,.06) 0%, var(--background-primary) 100%); }
+                .workspace-tab-section-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+                .workspace-tab-section-title { font-weight:700; color:var(--text-normal); }
+                .workspace-tab-section-subtitle { font-size:12px; color:var(--text-muted); margin-top:3px; }
+                .workspace-tab-section-children { margin-top:10px; }
+                .workspace-tab-section-tree { margin-top:8px; }
+                .workspace-tab-local-root-drop-zone { margin-bottom:8px; }
                 .workspace-paradigm-item-line { display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--background-modifier-border); border-radius:7px; padding:6px 8px; margin-bottom:5px; background:var(--background-primary); transition:filter .15s,border-color .15s; user-select:none; }
                 .workspace-paradigm-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
                 .workspace-paradigm-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
@@ -2666,26 +3361,113 @@
 
             const activeTab = getActiveTab();
             const activeTabId = activeTab?.id || getActiveTabId();
-            const boundParadigm = activeTab?.boundParadigmId ? getParadigmById(activeTab.boundParadigmId) : null;
+            const { explicitBoundIds: boundParadigmIds, rootMap: includedParadigmRootMap } = getBoundParadigmRootMap(activeTab || {});
+            const boundParadigms = boundParadigmIds.map((id) => getParadigmById(id)).filter(Boolean);
+            const boundParadigmText = boundParadigms.length > 0 ? boundParadigms.map((pg) => pg.name).join("、") : "无";
+            const includedParadigmIds = Array.from(includedParadigmRootMap.keys());
 
             const wrap = dv.container.createEl("div", { cls: "workspace-wrap" });
 
             const tabBar = wrap.createEl("div", { cls: "workspace-tabbar" });
-            (WORKSPACE_DATA.tabOrder || []).forEach((tabId) => {
+            const tabRootDropZone = tabBar.createEl("div", {
+                cls: "workspace-tab-root-drop-zone",
+                text: "↥ 拖到这里设为顶层 Tab"
+            });
+            tabRootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                if (!window.workspaceTabCurrentDragId) return;
+                tabRootDropZone.classList.add("drag-over");
+            });
+            tabRootDropZone.addEventListener("dragleave", () => tabRootDropZone.classList.remove("drag-over"));
+            tabRootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                tabRootDropZone.classList.remove("drag-over");
+                const draggedId = String(window.workspaceTabCurrentDragId || "").trim();
+                if (!draggedId || !getTabById(draggedId)) return;
+                await updateWorkspaceData((data) => {
+                    ensureTabHierarchyState(data);
+                    const dragged = data.tabsById?.[draggedId];
+                    if (!dragged) return;
+                    removeIdFromSimpleChildrenMap(data.tabChildrenByParent, draggedId);
+                    dragged.parentTabId = null;
+                    if (!Array.isArray(data.tabChildrenByParent[ROOT_KEY])) data.tabChildrenByParent[ROOT_KEY] = [];
+                    data.tabChildrenByParent[ROOT_KEY].push(draggedId);
+                    rebuildTabOrderFromData(data);
+                });
+            });
+
+            const tabTree = tabBar.createEl("div", { cls: "workspace-tab-capsule-group" });
+            const renderTabCapsule = (container, tabId) => {
                 const tab = getTabById(tabId);
                 if (!tab) return;
-                const tabBtn = tabBar.createEl("button", {
-                    text: `${tab.id === activeTabId ? "● " : ""}${tab.name}`,
-                    cls: `workspace-tab-btn ${tab.id === activeTabId ? "active" : ""}`
+                const childIds = getTabChildrenIds(tab.id);
+                const capsule = container.createEl("div", {
+                    cls: `workspace-tab-capsule ${tab.id === activeTabId ? "is-current" : ""}`
+                });
+                capsule.draggable = true;
+                capsule.addEventListener("dragstart", (e) => {
+                    e.stopPropagation();
+                    window.workspaceTabCurrentDragId = tab.id;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", tab.id);
+                    setTimeout(() => capsule.classList.add("is-dragging"), 0);
+                });
+                capsule.addEventListener("dragend", (e) => {
+                    e.stopPropagation();
+                    window.workspaceTabCurrentDragId = null;
+                    capsule.classList.remove("is-dragging", "drag-over-before", "drag-over-after", "drag-over-child");
+                });
+                capsule.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = window.workspaceTabCurrentDragId;
+                    if (!draggedId || draggedId === tab.id) return;
+                    const rect = capsule.getBoundingClientRect();
+                    const ratio = (e.clientX - rect.left) / Math.max(rect.width, 1);
+                    capsule.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    if (ratio < 0.25) capsule.classList.add("drag-over-before");
+                    else if (ratio > 0.75) capsule.classList.add("drag-over-after");
+                    else capsule.classList.add("drag-over-child");
+                });
+                capsule.addEventListener("dragleave", (e) => {
+                    e.stopPropagation();
+                    capsule.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                });
+                capsule.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = window.workspaceTabCurrentDragId;
+                    capsule.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    if (!draggedId || draggedId === tab.id) return;
+                    const rect = capsule.getBoundingClientRect();
+                    const ratio = (e.clientX - rect.left) / Math.max(rect.width, 1);
+                    const position = ratio < 0.25 ? "before" : (ratio > 0.75 ? "after" : "child");
+                    await moveTabOrder(draggedId, tab.id, position);
+                });
+
+                const tabBtn = capsule.createEl("button", {
+                    cls: `workspace-tab-btn ${tab.id === activeTabId ? "active" : ""}`,
+                    attr: { title: "点击切换；拖拽可调整为前/后/子级" }
+                });
+                tabBtn.createEl("span", { text: `${tab.id === activeTabId ? "● " : ""}${tab.name}` });
+                tabBtn.createEl("span", {
+                    cls: "workspace-tab-badge",
+                    text: `${childIds.length} 子Tab`
                 });
                 tabBtn.onclick = async () => { await switchTab(tab.id); };
-            });
+
+                if (childIds.length > 0) {
+                    const childWrap = capsule.createEl("div", { cls: "workspace-tab-children" });
+                    childIds.forEach((childId) => renderTabCapsule(childWrap, childId));
+                }
+            };
+            getTabChildrenIds(null).forEach((tabId) => renderTabCapsule(tabTree, tabId));
 
             const header = wrap.createEl("div", { cls: "workspace-header" });
             const headerLeft = header.createEl("div");
             headerLeft.createEl("h3", { text: "🧩 Workspace（多 Tab / 范式 / 快照）", cls: "workspace-title" });
             headerLeft.createEl("div", {
-                text: `当前 Tab: ${activeTab?.name || "-"}；绑定范式: ${boundParadigm?.name || "无"}；数据文件: ${JSON_FILENAME}`,
+                text: `当前 Tab: ${activeTab?.name || "-"}；聚合显示: ${getVisibleTabIds(activeTabId).length} 个 Tab；直接绑定范式: ${boundParadigmText}；纳入视图范式: ${includedParadigmIds.length} 个；数据文件: ${JSON_FILENAME}`,
                 cls: "workspace-subtitle"
             });
             headerLeft.createEl("div", {
@@ -2721,28 +3503,158 @@
                 const panelActions = panelHead.createEl("div", { cls: "workspace-main-actions" });
                 const createBtn = panelActions.createEl("button", { text: "新建范式", cls: "workspace-sub-btn" });
                 createBtn.onclick = async () => { await createParadigm(); };
-                const unbindBtn = panelActions.createEl("button", { text: "解绑当前Tab", cls: "workspace-sub-btn" });
+                const unbindBtn = panelActions.createEl("button", { text: "解绑当前Tab全部范式", cls: "workspace-sub-btn" });
                 unbindBtn.onclick = async () => { await unbindParadigmFromCurrentTab(); };
-                if (boundParadigm) {
-                    const syncBtn = panelActions.createEl("button", { text: "同步当前范式", cls: "workspace-sub-btn" });
+                if (boundParadigmIds.length > 0) {
+                    const syncBtn = panelActions.createEl("button", { text: "同步当前Tab已绑定范式", cls: "workspace-sub-btn" });
                     syncBtn.onclick = async () => {
                         await updateWorkspaceData((data) => {
-                            syncParadigmToTabInData(data, activeTabId, boundParadigm.id);
+                            syncParadigmToTabInData(data, activeTabId);
                         });
-                        new Notice("✅ 当前 Tab 已同步范式");
+                        new Notice("✅ 当前 Tab 已同步已绑定范式");
                     };
                 }
 
-                const list = panel.createEl("div", { cls: "workspace-panel-list" });
-                Object.values(WORKSPACE_DATA.paradigmsById || {}).forEach((paradigm) => {
-                    const row = list.createEl("div", { cls: "workspace-panel-row" });
-                    const left = row.createEl("div");
+                const includedParadigmText = includedParadigmIds.length > 0
+                    ? includedParadigmIds.map((id) => getParadigmById(id)?.name || id).join("、")
+                    : "无";
+                panel.createEl("div", {
+                    cls: "workspace-paradigm-hint",
+                    text: `当前Tab直接绑定 ${boundParadigmIds.length} 个范式；实际纳入 ${includedParadigmIds.length} 个范式：${includedParadigmText}`
+                });
+                const paradigmRootDropZone = panel.createEl("div", {
+                    cls: "workspace-paradigm-root-drop-zone",
+                    text: "↥ 拖到这里设为顶层范式"
+                });
+                paradigmRootDropZone.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    if (!window.workspaceParadigmNodeDragId) return;
+                    paradigmRootDropZone.classList.add("drag-over");
+                });
+                paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
+                paradigmRootDropZone.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    paradigmRootDropZone.classList.remove("drag-over");
+                    const draggedId = String(window.workspaceParadigmNodeDragId || "").trim();
+                    if (!draggedId || !getParadigmById(draggedId)) return;
+                    await updateWorkspaceData((data) => {
+                        ensureParadigmHierarchyState(data);
+                        const dragged = data.paradigmsById?.[draggedId];
+                        if (!dragged) return;
+                        removeIdFromSimpleChildrenMap(data.childParadigmIdsByParent, draggedId);
+                        dragged.parentParadigmId = null;
+                        if (!Array.isArray(data.childParadigmIdsByParent[ROOT_KEY])) data.childParadigmIdsByParent[ROOT_KEY] = [];
+                        data.childParadigmIdsByParent[ROOT_KEY].push(draggedId);
+                        syncParadigmAcrossTabsInData(data);
+                    });
+                });
+
+                const list = panel.createEl("div", { cls: "workspace-panel-list workspace-paradigm-tree-wrap" });
+                const renderParadigmRow = (container, paradigmId, level = 0) => {
+                    const paradigm = getParadigmById(paradigmId);
+                    if (!paradigm) return;
+                    const childParadigmIds = getChildParadigmIds(paradigm.id);
+                    const isCollapsed = childParadigmIds.length > 0 ? isParadigmTreeCollapsed(paradigm.id) : false;
+                    const paradigmVisual = getParadigmVisual(paradigm.id);
+                    let left = null;
+                    const branch = container.createEl("div", {
+                        cls: `workspace-paradigm-branch ${childParadigmIds.length > 0 ? "has-children" : ""}`,
+                        attr: { style: `margin-left:${level * 18}px;` }
+                    });
+                    if (childParadigmIds.length > 0 && paradigmVisual) {
+                        branch.style.borderColor = `${paradigmVisual.accent}40`;
+                        branch.style.background = `linear-gradient(180deg, ${paradigmVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
+                        branch.style.boxShadow = `inset 0 0 0 1px ${paradigmVisual.accent}12`;
+                    }
+                    const row = branch.createEl("div", {
+                        cls: "workspace-panel-row"
+                    });
+                    const getParadigmRowDropPosition = (event) => {
+                        const rect = row.getBoundingClientRect();
+                        const offsetX = event.clientX - rect.left;
+                        const childThreshold = left
+                            ? Math.min(
+                                rect.width - 28,
+                                Math.max(rect.width * 0.42, left.getBoundingClientRect().right - rect.left + 14)
+                            )
+                            : rect.width * 0.5;
+                        if (offsetX >= childThreshold) return "child";
+                        return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+                    };
                     const itemCount = Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((x) => x.paradigmId === paradigm.id).length;
+                    const isBound = boundParadigmIds.includes(paradigm.id);
+                    const bindingRootId = includedParadigmRootMap.get(paradigm.id) || null;
+                    const isInherited = !!bindingRootId && bindingRootId !== paradigm.id;
+                    row.draggable = true;
+                    row.addEventListener("dragstart", (e) => {
+                        e.stopPropagation();
+                        window.workspaceParadigmNodeDragId = paradigm.id;
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", paradigm.id);
+                        setTimeout(() => row.classList.add("is-dragging"), 0);
+                    });
+                    row.addEventListener("dragend", (e) => {
+                        e.stopPropagation();
+                        window.workspaceParadigmNodeDragId = null;
+                        row.classList.remove("is-dragging", "drag-over-top", "drag-over-bottom", "drag-over-child");
+                    });
+                    row.addEventListener("dragover", (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const draggedId = window.workspaceParadigmNodeDragId;
+                        if (!draggedId || draggedId === paradigm.id) return;
+                        const position = getParadigmRowDropPosition(e);
+                        row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                        if (position === "child") row.classList.add("drag-over-child");
+                        else if (position === "before") row.classList.add("drag-over-top");
+                        else row.classList.add("drag-over-bottom");
+                    });
+                    row.addEventListener("dragleave", (e) => {
+                        e.stopPropagation();
+                        row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    });
+                    row.addEventListener("drop", async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const draggedId = window.workspaceParadigmNodeDragId;
+                        row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                        if (!draggedId || draggedId === paradigm.id) return;
+                        const position = getParadigmRowDropPosition(e);
+                        await moveParadigmOrder(draggedId, paradigm.id, position);
+                    });
+
+                    const head = row.createEl("div", { cls: "workspace-panel-row-head" });
+                    const collapseBtn = head.createEl("span", {
+                        text: childParadigmIds.length > 0 ? (isCollapsed ? "▶" : "▼") : "•",
+                        cls: `workspace-paradigm-collapse ${childParadigmIds.length > 0 ? "clickable" : "dot"}`
+                    });
+                    if (childParadigmIds.length > 0) {
+                        collapseBtn.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleParadigmTreeCollapsed(paradigm.id);
+                        };
+                    }
+                    left = head.createEl("div", { cls: "workspace-panel-row-left" });
                     left.createEl("div", { text: `${paradigm.name} (${itemCount})` });
-                    left.createEl("small", { text: paradigm.id, attr: { style: "color:var(--text-muted);" } });
+                    const scopeLabel = isBound
+                        ? "当前Tab直接绑定"
+                        : (isInherited ? `随上级范式 ${getParadigmById(bindingRootId)?.name || bindingRootId} 挂入` : "未绑定到当前Tab");
+                    left.createEl("small", {
+                        text: `${paradigm.id} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
+                        attr: { style: "color:var(--text-muted);" }
+                    });
+                    left.createEl("div", {
+                        cls: "workspace-panel-row-hint",
+                        text: "向右拖入可设为子范式"
+                    });
+
                     const actions = row.createEl("div", { cls: "workspace-main-actions" });
-                    const bindBtn = actions.createEl("button", { text: boundParadigm?.id === paradigm.id ? "已绑定" : "绑定到当前Tab", cls: "workspace-sub-btn" });
-                    bindBtn.onclick = async () => { await bindParadigmToCurrentTab(paradigm.id); };
+                    const bindBtn = actions.createEl("button", { text: isBound ? "解绑" : "绑定到当前Tab", cls: "workspace-sub-btn" });
+                    bindBtn.onclick = async () => {
+                        if (isBound) await unbindParadigmFromCurrentTab(paradigm.id);
+                        else await bindParadigmToCurrentTab(paradigm.id);
+                    };
                     const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === paradigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
                     editBtn.onclick = () => {
                         window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === paradigm.id ? null : paradigm.id;
@@ -2752,7 +3664,13 @@
                     renameBtn.onclick = async () => { await renameParadigm(paradigm.id); };
                     const deleteBtn = actions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
                     deleteBtn.onclick = async () => { await deleteParadigm(paradigm.id); };
-                });
+
+                    if (childParadigmIds.length > 0 && !isCollapsed) {
+                        const childWrap = branch.createEl("div", { cls: "workspace-paradigm-branch-children" });
+                        childParadigmIds.forEach((childId) => renderParadigmRow(childWrap, childId, level + 1));
+                    }
+                };
+                getChildParadigmIds(null).forEach((paradigmId) => renderParadigmRow(list, paradigmId, 0));
 
                 const editingParadigmId = window.workspaceEditingParadigmId;
                 const editingParadigm = editingParadigmId ? getParadigmById(editingParadigmId) : null;
@@ -2837,24 +3755,21 @@
             const rootDropZone = wrap.createEl("div", { cls: "workspace-root-drop-zone", text: "↥ 拖拽到这里设为当前 Tab 根条目（顶层）" });
             rootDropZone.addEventListener("dragover", (e) => {
                 e.preventDefault();
-                if (!window.workspaceTreeCurrentDragId) return;
+                const dragged = getItemById(window.workspaceTreeCurrentDragId);
+                if (!dragged || dragged.tabId !== activeTabId) return;
                 rootDropZone.classList.add("drag-over");
             });
             rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
             rootDropZone.addEventListener("drop", async (e) => {
                 e.preventDefault();
                 rootDropZone.classList.remove("drag-over");
-                if (!window.workspaceTreeCurrentDragId) return;
-                await moveItemToRoot(window.workspaceTreeCurrentDragId);
+                const dragged = getItemById(window.workspaceTreeCurrentDragId);
+                if (!dragged || dragged.tabId !== activeTabId) return;
+                await moveItemToRoot(dragged.id);
             });
 
             const list = wrap.createEl("div");
-            const roots = getChildrenIds(null, activeTabId);
-            if (roots.length === 0) {
-                list.createEl("div", { text: "_当前 Tab 暂无条目，点击上方按钮先创建一个_", cls: "workspace-empty" });
-            } else {
-                renderTree(list, null, 0, new Set(), activeTabId);
-            }
+            renderWorkspaceSection(list, activeTabId, 0, activeTabId);
         };
 
         let renderQueued = false;
@@ -2889,7 +3804,7 @@
 
 ```json
 {
-  "schemaVersion": "2.0",
+  "schemaVersion": "2.2",
   "lastModified": "2026-03-05 17:00:00",
   "activeTabId": "tab_xxx",
   "tabsById": {
@@ -2897,6 +3812,8 @@
       "id": "tab_xxx",
       "name": "项目A",
       "kind": "project",
+      "boundParadigmIds": ["pg_xxx", "pg_yyy"],
+      "boundParadigmItemKeys": [],
       "boundParadigmId": "pg_xxx",
       "createdAt": "2026-03-05 16:50:00",
       "updatedAt": "2026-03-05 17:00:00"
@@ -2927,6 +3844,8 @@
       "sourceType": "paradigm",
       "sourceParadigmId": "pg_xxx",
       "sourceParadigmItemId": "pgItem_p1",
+      "sourceParadigmBindingRootId": "pg_xxx",
+      "sourceParadigmMountMode": "direct",
       "isCollapsed": false,
       "imageRef": "",
       "comment": "",
@@ -2943,9 +3862,21 @@
     "pg_xxx": {
       "id": "pg_xxx",
       "name": "任务启动范式",
+      "parentParadigmId": null,
+      "createdAt": "2026-03-05 16:40:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    },
+    "pg_yyy": {
+      "id": "pg_yyy",
+      "name": "任务启动-复盘子范式",
+      "parentParadigmId": "pg_xxx",
       "createdAt": "2026-03-05 16:40:00",
       "updatedAt": "2026-03-05 17:00:00"
     }
+  },
+  "childParadigmIdsByParent": {
+    "__root__": ["pg_xxx"],
+    "pg_xxx": ["pg_yyy"]
   },
   "paradigmItemsById": {
     "pgItem_p1": {
@@ -2977,20 +3908,26 @@
 
 说明：
 - `childrenByParentByTab` 与 `paradigmChildrenByParent` 用 `tabId::parentId` / `paradigmId::parentId` 作为键，保持扁平字典。
+- `childParadigmIdsByParent` 用 `parentParadigmId -> 子范式列表` 记录范式之间的上下级，同样是扁平字典。
 - 范式挂载条目通过 `sourceType=paradigm` + `sourceParadigmItemId` 明确标注“这是范式条目”。
+- 当父范式被绑定到 Tab 时，子范式条目会一并进入视图，并通过 `sourceParadigmBindingRootId` / `sourceParadigmMountMode` 标识是“直接绑定”还是“由上级范式带入”。
 - 范式条目与挂载实例都支持 `imageRef`、`comment`、`noteBinding`，并按范式同步到各 Tab。
 - Tab 可表示项目/任务/对象，建议 `kind` 支持 `project | task | object`。
 
 ### 2) Tab 系统规则
 
 - 多开界面：顶部 `tabOrder` 渲染 Tab 条；`activeTabId` 决定当前树。
+- Tab 条支持拖拽重排，直接更新 `tabOrder`（按前后插入）。
+- Tab 条支持自动换行（Tab 很多时折行显示）。
 - Tab 操作：新增、重命名、关闭（关闭前确认是否保留快照）。
 - 每个 Tab 独立树：渲染和拖拽只读写当前 `tabId` 对应的 `childrenByParentByTab` 关系。
 
 ### 3) 范式系统规则
 
 - 范式是独立父子树：`paradigmsById + paradigmItemsById + paradigmChildrenByParent`。
-- Tab 绑定范式：在 Tab 上保存 `boundParadigmId`，并建立 `paradigmToTabItemMapByTab`。
+- 范式与范式之间也可形成层级：`parentParadigmId + childParadigmIdsByParent`。
+- Tab 可绑定多个“根范式”：在 Tab 上保存 `boundParadigmIds`（兼容保留 `boundParadigmId` 首项），并建立 `paradigmToTabItemMapByTab`。
+- 当根范式被绑定后，它的子范式、孙范式会自动纳入当前 Tab 视图。
 - 挂载时创建实例条目：
   - 每个范式条目在 Tab 内有一个实例 `itemId`（可编辑显示状态，但核心标题/结构受范式驱动）。
   - 实例条目保留 `sourceParadigmItemId`，用于后续同步定位。
