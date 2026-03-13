@@ -33,6 +33,19 @@
         const paradigmParentKey = (paradigmId, parentId) => `${String(paradigmId || "").trim()}::${parentKey(parentId)}`;
         const paradigmTreeKey = (parentParadigmId) => parentKey(parentParadigmId);
         const paradigmCategoryTreeKey = (parentCategoryId) => parentKey(parentCategoryId);
+        const paradigmCopyTreeKey = (hostParadigmId) => parentKey(hostParadigmId);
+        const makeParadigmMountMapKey = (tabId, mountScopeId, paradigmItemId) => `${String(tabId || "").trim()}::${String(mountScopeId || "").trim()}@@${String(paradigmItemId || "").trim()}`;
+        const parseParadigmMountMapKey = (scoped) => {
+            const parsed = splitScopedKey(scoped);
+            const raw = parsed.parent === ROOT_KEY ? "" : String(parsed.parent || "").trim();
+            const sep = raw.lastIndexOf("@@");
+            if (sep < 0) return { tabId: parsed.ownerId, mountScopeId: "", paradigmItemId: raw };
+            return {
+                tabId: parsed.ownerId,
+                mountScopeId: raw.slice(0, sep).trim(),
+                paradigmItemId: raw.slice(sep + 2).trim()
+            };
+        };
         const splitScopedKey = (scoped, fallbackId = "") => {
             const text = String(scoped || "").trim();
             if (!text) return { ownerId: fallbackId, parent: ROOT_KEY };
@@ -106,6 +119,8 @@
             childrenByParentByTab: { [tabParentKey(DEFAULT_TAB_ID, null)]: [] },
             paradigmsById: {},
             childParadigmIdsByParent: { [ROOT_KEY]: [] },
+            paradigmCopiesById: {},
+            childParadigmCopyIdsByParent: { [ROOT_KEY]: [] },
             paradigmCategoriesById: {},
             childParadigmCategoryIdsByParent: { [ROOT_KEY]: [] },
             paradigmItemsById: {},
@@ -252,6 +267,12 @@
                 const sourceParadigmBindingRootId = sourceType === "paradigm" && item.sourceParadigmBindingRootId
                     ? String(item.sourceParadigmBindingRootId).trim()
                     : null;
+                const sourceParadigmMountScopeId = sourceType === "paradigm" && item.sourceParadigmMountScopeId
+                    ? String(item.sourceParadigmMountScopeId).trim()
+                    : sourceParadigmId;
+                const sourceParadigmCopyRefId = sourceType === "paradigm" && item.sourceParadigmCopyRefId
+                    ? String(item.sourceParadigmCopyRefId).trim()
+                    : null;
                 const sourceParadigmMountMode = sourceType === "paradigm" && item.sourceParadigmMountMode === "inherited"
                     ? "inherited"
                     : "direct";
@@ -264,6 +285,8 @@
                     sourceParadigmId: sourceType === "paradigm" ? sourceParadigmId : null,
                     sourceParadigmItemId: sourceType === "paradigm" ? sourceParadigmItemId : null,
                     sourceParadigmBindingRootId: sourceType === "paradigm" ? sourceParadigmBindingRootId : null,
+                    sourceParadigmMountScopeId: sourceType === "paradigm" ? sourceParadigmMountScopeId : null,
+                    sourceParadigmCopyRefId: sourceType === "paradigm" ? sourceParadigmCopyRefId : null,
                     sourceParadigmMountMode: sourceType === "paradigm" ? sourceParadigmMountMode : "direct",
                     isCollapsed: hasItemCollapsed ? !!item.isCollapsed : collapsedFromMap,
                     imageRef: sanitizeImageInput(item.imageRef || item.image || ""),
@@ -475,6 +498,9 @@
                 paradigmsById[id] = {
                     id,
                     name: name || `范式-${id.slice(-4)}`,
+                    sourceParadigmId: (pg.sourceParadigmId !== undefined && pg.sourceParadigmId !== null && String(pg.sourceParadigmId).trim() !== "")
+                        ? String(pg.sourceParadigmId).trim()
+                        : null,
                     parentParadigmId: (pg.parentParadigmId !== undefined && pg.parentParadigmId !== null && String(pg.parentParadigmId).trim() !== "")
                         ? String(pg.parentParadigmId).trim()
                         : null,
@@ -490,7 +516,9 @@
                 : {};
             const assignedParadigms = new Set();
             Object.keys(paradigmsById).forEach((id) => {
-                if (!paradigmsById[id] || paradigmsById[id].parentParadigmId === id) paradigmsById[id].parentParadigmId = null;
+                if (!paradigmsById[id]) return;
+                if (paradigmsById[id].sourceParadigmId === id || !paradigmsById[paradigmsById[id].sourceParadigmId]) paradigmsById[id].sourceParadigmId = null;
+                if (paradigmsById[id].parentParadigmId === id) paradigmsById[id].parentParadigmId = null;
             });
             Object.keys(incomingParadigmTree).forEach((rawParentKey) => {
                 const normalizedParent = rawParentKey === ROOT_KEY ? null : String(rawParentKey || "").trim();
@@ -526,6 +554,56 @@
                 if (!childParadigmIdsByParent[scopedKey].includes(id)) childParadigmIdsByParent[scopedKey].push(id);
             });
 
+            const paradigmCopiesById = {};
+            const incomingParadigmCopies = src.paradigmCopiesById && typeof src.paradigmCopiesById === "object"
+                ? src.paradigmCopiesById
+                : {};
+            Object.keys(incomingParadigmCopies).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const copy = incomingParadigmCopies[rawId] || {};
+                const sourceParadigmId = String(copy.sourceParadigmId || "").trim();
+                const hostParadigmId = (copy.hostParadigmId !== undefined && copy.hostParadigmId !== null && String(copy.hostParadigmId).trim() !== "")
+                    ? String(copy.hostParadigmId).trim()
+                    : null;
+                if (!sourceParadigmId || !hostParadigmId) return;
+                if (!paradigmsById[sourceParadigmId] || !paradigmsById[hostParadigmId]) return;
+                if (sourceParadigmId === hostParadigmId) return;
+                paradigmCopiesById[id] = {
+                    id,
+                    sourceParadigmId,
+                    hostParadigmId,
+                    createdAt: copy.createdAt || nowString(),
+                    updatedAt: copy.updatedAt || nowString()
+                };
+            });
+            const childParadigmCopyIdsByParent = { [ROOT_KEY]: [] };
+            const incomingParadigmCopyTree = src.childParadigmCopyIdsByParent && typeof src.childParadigmCopyIdsByParent === "object"
+                ? src.childParadigmCopyIdsByParent
+                : {};
+            const assignedCopyIds = new Set();
+            Object.keys(incomingParadigmCopyTree).forEach((rawParentKey) => {
+                const normalizedHost = rawParentKey === ROOT_KEY ? null : String(rawParentKey || "").trim();
+                if (normalizedHost && !paradigmsById[normalizedHost]) return;
+                const list = ensureUniqueIds(incomingParadigmCopyTree[rawParentKey]).filter((id) => !!paradigmCopiesById[id]);
+                const scopedKey = paradigmCopyTreeKey(normalizedHost);
+                if (!childParadigmCopyIdsByParent[scopedKey]) childParadigmCopyIdsByParent[scopedKey] = [];
+                list.forEach((id) => {
+                    const copy = paradigmCopiesById[id];
+                    if (!copy || assignedCopyIds.has(id)) return;
+                    if ((copy.hostParadigmId || null) !== normalizedHost) copy.hostParadigmId = normalizedHost;
+                    childParadigmCopyIdsByParent[scopedKey].push(id);
+                    assignedCopyIds.add(id);
+                });
+            });
+            Object.keys(paradigmCopiesById).forEach((id) => {
+                const copy = paradigmCopiesById[id];
+                if (!copy) return;
+                const scopedKey = paradigmCopyTreeKey(copy.hostParadigmId);
+                if (!childParadigmCopyIdsByParent[scopedKey]) childParadigmCopyIdsByParent[scopedKey] = [];
+                if (!childParadigmCopyIdsByParent[scopedKey].includes(id)) childParadigmCopyIdsByParent[scopedKey].push(id);
+            });
+
             const paradigmItemsById = {};
             const incomingParadigmItems = src.paradigmItemsById && typeof src.paradigmItemsById === "object" ? src.paradigmItemsById : {};
             Object.keys(incomingParadigmItems).forEach((rawId) => {
@@ -538,6 +616,7 @@
                     paradigmsById[paradigmId] = {
                         id: paradigmId,
                         name: `范式-${paradigmId.slice(-4)}`,
+                        sourceParadigmId: null,
                         parentParadigmId: null,
                         categoryId: null,
                         createdAt: nowString(),
@@ -602,17 +681,20 @@
                 ? src.paradigmToTabItemMapByTab
                 : {};
             Object.keys(incomingMap).forEach((rawKey) => {
-                const tabPg = splitScopedKey(rawKey);
-                const tabId = String(tabPg.ownerId || "").trim();
-                const paradigmItemId = String(tabPg.parent || "").trim();
+                const tabPg = parseParadigmMountMapKey(rawKey);
+                const tabId = String(tabPg.tabId || "").trim();
+                const paradigmItemId = String(tabPg.paradigmItemId || "").trim();
+                const mountScopeId = String(tabPg.mountScopeId || "").trim();
                 const itemId = String(incomingMap[rawKey] || "").trim();
                 if (!tabId || !paradigmItemId || !itemId) return;
                 if (!tabsById[tabId] || !paradigmItemsById[paradigmItemId] || !itemsById[itemId]) return;
-                paradigmToTabItemMapByTab[`${tabId}::${paradigmItemId}`] = itemId;
+                const fallbackScopeId = itemsById[itemId]?.sourceParadigmMountScopeId || paradigmItemsById[paradigmItemId]?.paradigmId || "";
+                const scopedKey = makeParadigmMountMapKey(tabId, mountScopeId || fallbackScopeId, paradigmItemId);
+                paradigmToTabItemMapByTab[scopedKey] = itemId;
             });
             Object.values(itemsById).forEach((item) => {
                 if (item.sourceType !== "paradigm" || !item.sourceParadigmItemId || !tabsById[item.tabId]) return;
-                const mapKey = `${item.tabId}::${item.sourceParadigmItemId}`;
+                const mapKey = makeParadigmMountMapKey(item.tabId, item.sourceParadigmMountScopeId || item.sourceParadigmId || "", item.sourceParadigmItemId);
                 if (!paradigmToTabItemMapByTab[mapKey]) paradigmToTabItemMapByTab[mapKey] = item.id;
             });
 
@@ -703,6 +785,8 @@
                 childrenByParentByTab,
                 paradigmsById,
                 childParadigmIdsByParent,
+                paradigmCopiesById,
+                childParadigmCopyIdsByParent,
                 paradigmCategoriesById,
                 childParadigmCategoryIdsByParent,
                 paradigmItemsById,
@@ -1056,6 +1140,128 @@
             }
         }
 
+        class ParadigmPickerModal extends obsidian.Modal {
+            constructor(app, items, title, placeholder, onChoose) {
+                super(app);
+                this.items = Array.isArray(items) ? items : [];
+                this.titleStr = title || "选择范式";
+                this.placeholder = placeholder || "输入名称或ID筛选";
+                this.onChoose = onChoose;
+                this.resolved = false;
+                this.filtered = [];
+                this.activeIndex = 0;
+                this.maxRows = 200;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onChoose(result);
+            }
+            normalizeQuery(query) {
+                return String(query || "").trim().toLowerCase();
+            }
+            filterItems(query) {
+                const q = this.normalizeQuery(query);
+                if (!q) return this.items.slice(0, this.maxRows);
+                const terms = q.split(/\s+/).filter(Boolean);
+                const matched = [];
+                for (const item of this.items) {
+                    const hay = `${item.search || ""} ${item.name || ""} ${item.id || ""}`.toLowerCase();
+                    let ok = true;
+                    for (const term of terms) {
+                        if (!hay.includes(term)) { ok = false; break; }
+                    }
+                    if (ok) matched.push(item);
+                    if (matched.length >= this.maxRows * 2) break;
+                }
+                matched.sort((a, b) => (a.name || "").localeCompare(b.name || "", "zh"));
+                return matched.slice(0, this.maxRows);
+            }
+            renderList(listEl, statEl, query) {
+                listEl.empty();
+                this.filtered = this.filterItems(query);
+                if (this.activeIndex >= this.filtered.length) this.activeIndex = Math.max(0, this.filtered.length - 1);
+                statEl.textContent = `共 ${this.filtered.length} 条结果`;
+                if (this.filtered.length === 0) {
+                    listEl.createEl("div", { text: "无匹配范式", attr: { style: "padding:12px;color:var(--text-muted);text-align:center;" } });
+                    return;
+                }
+                this.filtered.forEach((item, idx) => {
+                    const active = idx === this.activeIndex;
+                    const row = listEl.createEl("div", {
+                        attr: {
+                            style: `display:flex;flex-direction:column;gap:2px;padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;border:1px solid ${active ? 'var(--interactive-accent)' : 'var(--background-modifier-border)'};background:${active ? 'var(--background-modifier-hover)' : 'var(--background-secondary)'};`
+                        }
+                    });
+                    row.createEl("div", { text: item.name || item.id, attr: { style: "font-weight:600;" } });
+                    row.createEl("small", { text: item.meta || item.id, attr: { style: "color:var(--text-muted);" } });
+                    row.onclick = () => {
+                        this.resolve(item);
+                        this.close();
+                    };
+                    row.onmouseenter = () => { this.activeIndex = idx; };
+                });
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "980px";
+                this.modalEl.style.width = "88vw";
+                this.modalEl.style.height = "76vh";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.style.display = "flex";
+                contentEl.style.flexDirection = "column";
+                contentEl.style.height = "100%";
+                contentEl.style.gap = "8px";
+
+                contentEl.createEl("h3", { text: this.titleStr });
+                const input = contentEl.createEl("input", {
+                    type: "text",
+                    attr: {
+                        placeholder: this.placeholder,
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;"
+                    }
+                });
+                const stat = contentEl.createEl("div", { text: "", attr: { style: "color:var(--text-muted);font-size:12px;" } });
+                const listEl = contentEl.createEl("div", { attr: { style: "flex:1;overflow:auto;border:1px solid var(--background-modifier-border);border-radius:8px;padding:8px;background:var(--background-primary);" } });
+                const render = () => this.renderList(listEl, stat, input.value || "");
+                input.addEventListener("input", () => { this.activeIndex = 0; render(); });
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        if (this.activeIndex < this.filtered.length - 1) this.activeIndex++;
+                        render();
+                    } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        if (this.activeIndex > 0) this.activeIndex--;
+                        render();
+                    } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        const selected = this.filtered[this.activeIndex];
+                        if (selected) {
+                            this.resolve(selected);
+                            this.close();
+                        }
+                    }
+                });
+                const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;" } });
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => { this.resolve(null); this.close(); };
+                render();
+                input.focus();
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.modalEl.style.height = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.height = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
         class TaskCommentModal extends obsidian.Modal {
             constructor(app, title, defaultValue, onResolve) {
                 super(app);
@@ -1243,6 +1449,8 @@
         const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
         const confirm = (title, message) => new Promise((resolve) => new ConfirmModal(app, title, message, resolve).open());
         const noteSelector = (noteIndex, currentNotePath = null) => new Promise(r => new VaultNotePickerModal(app, noteIndex, currentNotePath, r).open());
+        const paradigmSelector = (items, title = "选择范式", placeholder = "输入名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
+        const paradigmCategorySelector = (items, title = "选择分类", placeholder = "输入分类名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
         const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
         const imageManagerEditor = (title, defaultValue = "") => new Promise(r => new ImageManagerModal(app, title, defaultValue, r).open());
         const runWithPromptLock = async (workFn) => {
@@ -1470,19 +1678,54 @@
         };
         const hasChildren = (id, tabId = getActiveTabId()) => getChildrenIds(id, tabId).length > 0;
         const getParadigmById = (id) => WORKSPACE_DATA.paradigmsById?.[String(id || "").trim()] || null;
+        const isParadigmCopy = (paradigmOrId) => {
+            const paradigm = typeof paradigmOrId === "string" ? getParadigmById(paradigmOrId) : paradigmOrId;
+            return !!paradigm && !!String(paradigm.sourceParadigmId || "").trim();
+        };
+        const getParadigmSourceId = (paradigmOrId) => {
+            const paradigm = typeof paradigmOrId === "string" ? getParadigmById(paradigmOrId) : paradigmOrId;
+            if (!paradigm) return "";
+            const sourceId = String(paradigm.sourceParadigmId || "").trim();
+            return sourceId || String(paradigm.id || "").trim();
+        };
+        const getParadigmSourceParadigm = (paradigmOrId) => getParadigmById(getParadigmSourceId(paradigmOrId));
+        const getParadigmNodeLabel = (paradigmOrId) => {
+            const paradigm = typeof paradigmOrId === "string" ? getParadigmById(paradigmOrId) : paradigmOrId;
+            if (!paradigm) return String(paradigmOrId || "").trim();
+            const sourceParadigm = getParadigmSourceParadigm(paradigm) || paradigm;
+            return isParadigmCopy(paradigm) ? `${sourceParadigm.name} [副本]` : sourceParadigm.name;
+        };
         const getChildParadigmIds = (parentParadigmId = null) => (WORKSPACE_DATA.childParadigmIdsByParent?.[paradigmTreeKey(parentParadigmId)] || []).slice();
+        const getEffectiveChildParadigmIds = (paradigmId) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return [];
+            return getChildParadigmIds(paradigm.id);
+        };
         const getParadigmCategoryById = (id) => WORKSPACE_DATA.paradigmCategoriesById?.[String(id || "").trim()] || null;
         const getChildParadigmCategoryIds = (parentCategoryId = null) => (WORKSPACE_DATA.childParadigmCategoryIdsByParent?.[paradigmCategoryTreeKey(parentCategoryId)] || []).slice();
+        const getParadigmCategoryPathLabel = (categoryOrId) => {
+            const category = typeof categoryOrId === "string" ? getParadigmCategoryById(categoryOrId) : categoryOrId;
+            if (!category) return String(categoryOrId || "").trim();
+            const parts = [];
+            const seen = new Set();
+            let cursor = category;
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                parts.unshift(cursor.name);
+                cursor = cursor.parentCategoryId ? getParadigmCategoryById(cursor.parentCategoryId) : null;
+            }
+            return parts.join(" / ");
+        };
         const getParadigmDescendantIds = (paradigmId) => {
             const out = [];
             const seen = new Set();
-            const stack = getChildParadigmIds(paradigmId);
+            const stack = getEffectiveChildParadigmIds(paradigmId);
             while (stack.length > 0) {
                 const current = String(stack.pop() || "").trim();
                 if (!current || seen.has(current) || !getParadigmById(current)) continue;
                 seen.add(current);
                 out.push(current);
-                getChildParadigmIds(current).slice().reverse().forEach((childId) => stack.push(childId));
+                getEffectiveChildParadigmIds(current).slice().reverse().forEach((childId) => stack.push(childId));
             }
             return out;
         };
@@ -1577,6 +1820,11 @@
             return (WORKSPACE_DATA.paradigmChildrenByParent?.[key] || []).slice();
         };
         const isParadigmMountedItem = (item) => !!item && item.sourceType === "paradigm" && !!item.sourceParadigmId && !!item.sourceParadigmItemId;
+        const getMountedParadigmSourceItem = (itemOrId) => {
+            const mounted = typeof itemOrId === "string" ? getItemById(itemOrId) : itemOrId;
+            if (!isParadigmMountedItem(mounted)) return null;
+            return getParadigmItemById(mounted.sourceParadigmItemId) || null;
+        };
         const normalizeTaskBinding = (raw) => normalizeBindingValue(raw);
         const getTaskBindingById = (id) => {
             const key = String(id || "").trim();
@@ -1749,6 +1997,18 @@
             const key = paradigmTreeKey(parentParadigmId);
             return ensureUniqueIds(data.childParadigmIdsByParent?.[key] || []).filter((id) => !!data.paradigmsById?.[id]);
         };
+        const isParadigmCopyInData = (data, paradigmId) => !!String(data.paradigmsById?.[paradigmId]?.sourceParadigmId || "").trim();
+        const getParadigmSourceIdInData = (data, paradigmId) => {
+            const paradigm = data.paradigmsById?.[paradigmId];
+            if (!paradigm) return "";
+            const sourceId = String(paradigm.sourceParadigmId || "").trim();
+            return sourceId || String(paradigm.id || "").trim();
+        };
+        const getEffectiveChildParadigmIdsFromData = (data, paradigmId) => {
+            const paradigm = data.paradigmsById?.[paradigmId];
+            if (!paradigm) return [];
+            return getChildParadigmIdsFromData(data, paradigm.id);
+        };
 
         const getChildParadigmCategoryIdsFromData = (data, parentCategoryId = null) => {
             const key = paradigmCategoryTreeKey(parentCategoryId);
@@ -1758,13 +2018,13 @@
         const getParadigmDescendantIdsInData = (data, paradigmId) => {
             const out = [];
             const seen = new Set();
-            const stack = getChildParadigmIdsFromData(data, paradigmId);
+            const stack = getEffectiveChildParadigmIdsFromData(data, paradigmId);
             while (stack.length > 0) {
                 const current = String(stack.pop() || "").trim();
                 if (!current || seen.has(current) || !data.paradigmsById?.[current]) continue;
                 seen.add(current);
                 out.push(current);
-                getChildParadigmIdsFromData(data, current).slice().reverse().forEach((childId) => stack.push(childId));
+                getEffectiveChildParadigmIdsFromData(data, current).slice().reverse().forEach((childId) => stack.push(childId));
             }
             return out;
         };
@@ -1862,11 +2122,13 @@
         const convertBoundParadigmItemsToLocal = (data, tabId, paradigmId = null) => {
             Object.values(data.itemsById || {}).forEach((item) => {
                 if (!item || item.tabId !== tabId) return;
-                if (item.sourceType === "paradigm" && (!paradigmId || item.sourceParadigmId === paradigmId)) {
+                if (item.sourceType === "paradigm" && (!paradigmId || item.sourceParadigmMountScopeId === paradigmId)) {
                     item.sourceType = "tab";
                     item.sourceParadigmId = null;
                     item.sourceParadigmItemId = null;
                     item.sourceParadigmBindingRootId = null;
+                    item.sourceParadigmMountScopeId = null;
+                    item.sourceParadigmCopyRefId = null;
                     item.sourceParadigmMountMode = "direct";
                     // 解绑后保留显式标注，避免与普通条目混淆
                     item.orphaned = true;
@@ -1874,10 +2136,9 @@
                 }
             });
             Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
-                const parsed = splitScopedKey(scoped);
-                if (parsed.ownerId !== tabId) return;
-                const pgItem = data.paradigmItemsById?.[parsed.parent];
-                if (paradigmId && pgItem && pgItem.paradigmId !== paradigmId) return;
+                const parsed = parseParadigmMountMapKey(scoped);
+                if (parsed.tabId !== tabId) return;
+                if (paradigmId && parsed.mountScopeId !== paradigmId) return;
                 delete data.paradigmToTabItemMapByTab[scoped];
             });
         };
@@ -1914,17 +2175,37 @@
             const map = data.paradigmToTabItemMapByTab;
             const now = nowString();
             const { explicitBoundIds, rootMap } = collectBoundParadigmRootMapForTab(data, tabId);
-            const paradigmItems = Object.values(data.paradigmItemsById || {}).filter((it) => rootMap.has(it.paradigmId));
-            const paradigmItemIdSet = new Set(paradigmItems.map((it) => it.id));
+            const mountedEntries = [];
+            Array.from(rootMap.keys()).forEach((mountNodeId) => {
+                const sourceParadigmId = getParadigmSourceIdInData(data, mountNodeId);
+                if (!sourceParadigmId) return;
+                Object.values(data.paradigmItemsById || {}).forEach((pgItem) => {
+                    if (!pgItem || pgItem.paradigmId !== sourceParadigmId) return;
+                    mountedEntries.push({
+                        mountNodeId,
+                        sourceParadigmId,
+                        pgItem,
+                        bindingRootParadigmId: rootMap.get(mountNodeId) || mountNodeId,
+                        mountMode: (rootMap.get(mountNodeId) || mountNodeId) === mountNodeId ? "direct" : "inherited",
+                        isCopyScope: isParadigmCopyInData(data, mountNodeId)
+                    });
+                });
+            });
+            const validMountKeys = new Set(mountedEntries.map((entry) => makeParadigmMountMapKey(tabId, entry.mountNodeId, entry.pgItem.id)));
 
             Object.values(data.itemsById || {}).forEach((item) => {
                 if (!item || item.tabId !== tabId) return;
                 if (item.sourceType !== "paradigm") return;
-                if (!item.sourceParadigmItemId || !paradigmItemIdSet.has(item.sourceParadigmItemId)) {
+                const itemMapKey = item.sourceParadigmItemId
+                    ? makeParadigmMountMapKey(tabId, item.sourceParadigmMountScopeId || item.sourceParadigmId || "", item.sourceParadigmItemId)
+                    : "";
+                if (!item.sourceParadigmItemId || !validMountKeys.has(itemMapKey)) {
                     item.sourceType = "tab";
                     item.sourceParadigmId = null;
                     item.sourceParadigmItemId = null;
                     item.sourceParadigmBindingRootId = null;
+                    item.sourceParadigmMountScopeId = null;
+                    item.sourceParadigmCopyRefId = null;
                     item.sourceParadigmMountMode = "direct";
                     item.orphaned = true;
                     item.updatedAt = now;
@@ -1932,34 +2213,35 @@
             });
 
             Object.keys(map).forEach((scoped) => {
-                const parsed = splitScopedKey(scoped);
-                if (parsed.ownerId !== tabId) return;
-                const pgItem = data.paradigmItemsById?.[parsed.parent];
-                if (!pgItem || !rootMap.has(pgItem.paradigmId)) delete map[scoped];
+                const parsed = parseParadigmMountMapKey(scoped);
+                if (parsed.tabId !== tabId) return;
+                if (!validMountKeys.has(makeParadigmMountMapKey(parsed.tabId, parsed.mountScopeId || "", parsed.paradigmItemId || ""))) delete map[scoped];
             });
 
-            paradigmItems.forEach((pgItem) => {
-                const scoped = `${tabId}::${pgItem.id}`;
+            mountedEntries.forEach((entry) => {
+                const scoped = makeParadigmMountMapKey(tabId, entry.mountNodeId, entry.pgItem.id);
                 let itemId = map[scoped];
                 let mounted = itemId ? data.itemsById[itemId] : null;
-                const bindingRootParadigmId = rootMap.get(pgItem.paradigmId) || pgItem.paradigmId;
+                const bindingRootParadigmId = entry.bindingRootParadigmId;
                 if (!mounted || mounted.tabId !== tabId) {
                     itemId = generateId();
                     while (data.itemsById[itemId]) itemId = generateId();
                     mounted = {
                         id: itemId,
-                        title: pgItem.title,
+                        title: entry.pgItem.title,
                         parentId: null,
                         tabId,
                         sourceType: "paradigm",
-                        sourceParadigmId: pgItem.paradigmId,
-                        sourceParadigmItemId: pgItem.id,
+                        sourceParadigmId: entry.sourceParadigmId,
+                        sourceParadigmItemId: entry.pgItem.id,
                         sourceParadigmBindingRootId: bindingRootParadigmId,
-                        sourceParadigmMountMode: bindingRootParadigmId === pgItem.paradigmId ? "direct" : "inherited",
+                        sourceParadigmMountScopeId: entry.mountNodeId,
+                        sourceParadigmCopyRefId: entry.isCopyScope ? entry.mountNodeId : null,
+                        sourceParadigmMountMode: entry.mountMode,
                         isCollapsed: false,
-                        imageRef: sanitizeImageInput(pgItem.imageRef || ""),
-                        comment: typeof pgItem.comment === "string" ? pgItem.comment : "",
-                        noteBinding: normalizeBindingValue(pgItem.noteBinding),
+                        imageRef: sanitizeImageInput(entry.pgItem.imageRef || ""),
+                        comment: typeof entry.pgItem.comment === "string" ? entry.pgItem.comment : "",
+                        noteBinding: normalizeBindingValue(entry.pgItem.noteBinding),
                         orphaned: false,
                         createdAt: now,
                         updatedAt: now
@@ -1967,23 +2249,25 @@
                     data.itemsById[itemId] = mounted;
                     map[scoped] = itemId;
                 }
-                mounted.title = pgItem.title;
+                mounted.title = entry.pgItem.title;
                 mounted.tabId = tabId;
                 mounted.sourceType = "paradigm";
-                mounted.sourceParadigmId = pgItem.paradigmId;
-                mounted.sourceParadigmItemId = pgItem.id;
+                mounted.sourceParadigmId = entry.sourceParadigmId;
+                mounted.sourceParadigmItemId = entry.pgItem.id;
                 mounted.sourceParadigmBindingRootId = bindingRootParadigmId;
-                mounted.sourceParadigmMountMode = bindingRootParadigmId === pgItem.paradigmId ? "direct" : "inherited";
-                mounted.imageRef = sanitizeImageInput(pgItem.imageRef || "");
-                mounted.comment = typeof pgItem.comment === "string" ? pgItem.comment : "";
-                mounted.noteBinding = normalizeBindingValue(pgItem.noteBinding);
+                mounted.sourceParadigmMountScopeId = entry.mountNodeId;
+                mounted.sourceParadigmCopyRefId = entry.isCopyScope ? entry.mountNodeId : null;
+                mounted.sourceParadigmMountMode = entry.mountMode;
+                mounted.imageRef = sanitizeImageInput(entry.pgItem.imageRef || "");
+                mounted.comment = typeof entry.pgItem.comment === "string" ? entry.pgItem.comment : "";
+                mounted.noteBinding = normalizeBindingValue(entry.pgItem.noteBinding);
                 mounted.orphaned = false;
                 mounted.updatedAt = now;
             });
 
             const validInstanceIds = new Set();
-            paradigmItems.forEach((pgItem) => {
-                const itemId = map[`${tabId}::${pgItem.id}`];
+            mountedEntries.forEach((entry) => {
+                const itemId = map[makeParadigmMountMapKey(tabId, entry.mountNodeId, entry.pgItem.id)];
                 if (itemId && data.itemsById[itemId]) validInstanceIds.add(itemId);
             });
 
@@ -1995,21 +2279,22 @@
                 if (!desiredByParent.has(key)) desiredByParent.set(key, []);
                 desiredByParent.get(key).push(childTabItemId);
             };
-            const placeParadigmItemBranch = (paradigmId, pgItemId, parentTabItemId = null) => {
-                const tabItemId = map[`${tabId}::${pgItemId}`];
+            const placeParadigmItemBranch = (mountNodeId, sourceParadigmId, pgItemId, parentTabItemId = null) => {
+                const tabItemId = map[makeParadigmMountMapKey(tabId, mountNodeId, pgItemId)];
                 if (!tabItemId || !data.itemsById[tabItemId]) return;
                 data.itemsById[tabItemId].parentId = parentTabItemId;
                 pushDesired(parentTabItemId, tabItemId);
-                const childPgItems = (data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, pgItemId)] || []).slice();
-                childPgItems.forEach((childPgItemId) => placeParadigmItemBranch(paradigmId, childPgItemId, tabItemId));
+                const childPgItems = (data.paradigmChildrenByParent?.[paradigmParentKey(sourceParadigmId, pgItemId)] || []).slice();
+                childPgItems.forEach((childPgItemId) => placeParadigmItemBranch(mountNodeId, sourceParadigmId, childPgItemId, tabItemId));
             };
             const placedParadigms = new Set();
-            const placeParadigmScope = (paradigmId) => {
-                if (!rootMap.has(paradigmId) || placedParadigms.has(paradigmId)) return;
-                placedParadigms.add(paradigmId);
-                const rootPgItems = (data.paradigmChildrenByParent?.[paradigmParentKey(paradigmId, null)] || []).slice();
-                rootPgItems.forEach((pgItemId) => placeParadigmItemBranch(paradigmId, pgItemId, null));
-                getChildParadigmIdsFromData(data, paradigmId).forEach((childParadigmId) => {
+            const placeParadigmScope = (mountNodeId) => {
+                if (!rootMap.has(mountNodeId) || placedParadigms.has(mountNodeId)) return;
+                placedParadigms.add(mountNodeId);
+                const sourceParadigmId = getParadigmSourceIdInData(data, mountNodeId);
+                const rootPgItems = (data.paradigmChildrenByParent?.[paradigmParentKey(sourceParadigmId, null)] || []).slice();
+                rootPgItems.forEach((pgItemId) => placeParadigmItemBranch(mountNodeId, sourceParadigmId, pgItemId, null));
+                getEffectiveChildParadigmIdsFromData(data, mountNodeId).forEach((childParadigmId) => {
                     if (rootMap.has(childParadigmId)) placeParadigmScope(childParadigmId);
                 });
             };
@@ -2141,8 +2426,8 @@
                     if (parsed.ownerId === tabId) delete data.childrenByParentByTab[scoped];
                 });
                 Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
-                    const parsed = splitScopedKey(scoped);
-                    if (parsed.ownerId === tabId) delete data.paradigmToTabItemMapByTab[scoped];
+                    const parsed = parseParadigmMountMapKey(scoped);
+                    if (parsed.tabId === tabId) delete data.paradigmToTabItemMapByTab[scoped];
                 });
                 removeIdFromSimpleChildrenMap(data.tabChildrenByParent, tabId);
                 const nextParentKey = parentKey(parentTabId);
@@ -2285,21 +2570,37 @@
             const paradigm = getParadigmById(paradigmId);
             if (!paradigm) return;
             const currentCategory = paradigm.categoryId ? getParadigmCategoryById(paradigm.categoryId) : null;
-            const categoryList = Object.values(WORKSPACE_DATA.paradigmCategoriesById || {})
-                .map((item) => `${item.id}: ${item.name}`)
-                .join("\n");
-            const input = await runWithPromptLock(() => prompt(
+            const categoryItems = [
+                {
+                    id: "",
+                    name: "未分类",
+                    meta: "移出当前分类",
+                    search: "未分类 uncategorized 清除 移出 分类"
+                }
+            ].concat(
+                Object.values(WORKSPACE_DATA.paradigmCategoriesById || {})
+                    .filter((item) => !!item)
+                    .map((item) => ({
+                        id: item.id,
+                        name: getParadigmCategoryPathLabel(item),
+                        meta: `${item.id}${item.parentCategoryId ? ` · 上级 ${getParadigmCategoryById(item.parentCategoryId)?.name || item.parentCategoryId}` : " · 顶层分类"}`,
+                        search: [
+                            item.id,
+                            item.name,
+                            getParadigmCategoryPathLabel(item),
+                            item.parentCategoryId,
+                            getParadigmCategoryById(item.parentCategoryId)?.name || ""
+                        ].filter(Boolean).join(" ")
+                    }))
+                    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "zh"))
+            );
+            const selected = await runWithPromptLock(() => paradigmCategorySelector(
+                categoryItems,
                 "设置范式分类",
-                `输入分类 ID；留空表示移出分类。\n当前：${currentCategory ? `${currentCategory.name} (${currentCategory.id})` : "未分类"}${categoryList ? `\n\n可选分类：\n${categoryList}` : "\n\n当前还没有分类"}`,
-                paradigm.categoryId || ""
+                `输入分类名称或 ID 筛选（当前：${currentCategory ? getParadigmCategoryPathLabel(currentCategory) : "未分类"}）`
             ));
-            if (input === null) return;
-            const nextId = normalizeText(input);
-            if (nextId && !getParadigmCategoryById(nextId)) {
-                new Notice("⚠️ 未找到对应分类 ID");
-                return;
-            }
-            await assignParadigmCategory(paradigmId, nextId || null, { detachFromParent: !nextId });
+            if (!selected) return;
+            await assignParadigmCategory(paradigmId, selected.id || null, { detachFromParent: !selected.id });
         };
 
         const createParadigm = async (categoryId = null) => {
@@ -2314,6 +2615,7 @@
                 data.paradigmsById[paradigmId] = {
                     id: paradigmId,
                     name,
+                    sourceParadigmId: null,
                     parentParadigmId: null,
                     categoryId: categoryId && data.paradigmCategoriesById?.[categoryId] ? categoryId : null,
                     createdAt: nowString(),
@@ -2326,13 +2628,122 @@
             new Notice("✅ 范式已创建");
         };
 
+        const createParadigmChild = async (parentParadigmId) => {
+            const parentParadigm = getParadigmById(parentParadigmId);
+            if (!parentParadigm) return;
+            const name = await runWithPromptLock(() => prompt("新建子范式", "输入子范式名称"));
+            if (!name) return;
+            const paradigmId = `pg_${generateId()}`;
+            await updateWorkspaceData((data) => {
+                ensureParadigmHierarchyState(data);
+                ensureParadigmCategoryHierarchyState(data);
+                const parent = data.paradigmsById?.[parentParadigmId];
+                if (!parent) return;
+                if (!data.paradigmsById || typeof data.paradigmsById !== "object") data.paradigmsById = {};
+                if (!data.childParadigmIdsByParent || typeof data.childParadigmIdsByParent !== "object") data.childParadigmIdsByParent = {};
+                const key = paradigmTreeKey(parent.id);
+                if (!Array.isArray(data.childParadigmIdsByParent[key])) data.childParadigmIdsByParent[key] = [];
+                data.paradigmsById[paradigmId] = {
+                    id: paradigmId,
+                    name,
+                    sourceParadigmId: null,
+                    parentParadigmId: parent.id,
+                    categoryId: parent.categoryId || null,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                data.childParadigmIdsByParent[key].unshift(paradigmId);
+                if (!data.paradigmChildrenByParent || typeof data.paradigmChildrenByParent !== "object") data.paradigmChildrenByParent = {};
+                if (!data.paradigmChildrenByParent[paradigmParentKey(paradigmId, null)]) data.paradigmChildrenByParent[paradigmParentKey(paradigmId, null)] = [];
+            });
+            new Notice(`✅ 已在 ${getParadigmNodeLabel(parentParadigm)} 下创建子范式`);
+        };
+
+        const createParadigmCopy = async (hostParadigmId, sourceParadigmIdRaw) => {
+            const hostParadigm = getParadigmById(hostParadigmId);
+            if (!hostParadigm) return;
+            const sourceInput = normalizeText(sourceParadigmIdRaw || "");
+            let sourceParadigm = sourceInput ? getParadigmById(sourceInput) : null;
+            if (!sourceParadigm) {
+                const selectableParadigms = Object.values(WORKSPACE_DATA.paradigmsById || {})
+                    .filter((pg) => !!pg && pg.id !== hostParadigm.id)
+                    .map((pg) => {
+                        const source = getParadigmSourceParadigm(pg);
+                        const sourceId = getParadigmSourceId(pg);
+                        const sourceName = source?.name || sourceId || "";
+                        const isCopy = isParadigmCopy(pg);
+                        const tag = isCopy ? `引用副本 -> ${sourceName}` : "定义源";
+                        return {
+                            id: pg.id,
+                            name: getParadigmNodeLabel(pg),
+                            meta: `${pg.id} · ${tag}`,
+                            search: [
+                                pg.id,
+                                pg.name,
+                                getParadigmNodeLabel(pg),
+                                sourceName,
+                                sourceId,
+                                tag
+                            ].filter(Boolean).join(" ")
+                        };
+                    })
+                    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "zh"));
+                const selected = await runWithPromptLock(() => paradigmSelector(
+                    selectableParadigms,
+                    "添加引用副本",
+                    `输入范式名称、定义源或 ID 筛选（宿主：${hostParadigm.name}）`
+                ));
+                if (!selected) return;
+                sourceParadigm = getParadigmById(selected.id);
+            }
+            if (!sourceParadigm) {
+                new Notice("⚠️ 未找到要引用的范式");
+                return;
+            }
+            const sourceRootParadigmId = getParadigmSourceId(sourceParadigm);
+            if (!sourceRootParadigmId || sourceRootParadigmId === hostParadigm.id) {
+                new Notice("⚠️ 不能把当前范式引用为自己的副本");
+                return;
+            }
+            if (getParadigmScopeIds(sourceRootParadigmId).includes(hostParadigm.id)) {
+                new Notice("⚠️ 该引用会形成循环层级");
+                return;
+            }
+            const copyId = `pg_${generateId()}`;
+            await updateWorkspaceData((data) => {
+                ensureParadigmHierarchyState(data);
+                const host = data.paradigmsById?.[hostParadigmId];
+                const source = data.paradigmsById?.[sourceRootParadigmId];
+                if (!host || !source) return;
+                if (!data.paradigmsById || typeof data.paradigmsById !== "object") data.paradigmsById = {};
+                if (!data.childParadigmIdsByParent || typeof data.childParadigmIdsByParent !== "object") data.childParadigmIdsByParent = {};
+                const key = paradigmTreeKey(host.id);
+                if (!Array.isArray(data.childParadigmIdsByParent[key])) data.childParadigmIdsByParent[key] = [];
+                data.paradigmsById[copyId] = {
+                    id: copyId,
+                    name: source.name,
+                    sourceParadigmId: sourceRootParadigmId,
+                    parentParadigmId: host.id,
+                    categoryId: host.categoryId || null,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                data.childParadigmIdsByParent[key].unshift(copyId);
+                syncParadigmAcrossTabsInData(data);
+            });
+            new Notice(`📎 已在 ${hostParadigm.name} 下添加 ${getParadigmSourceParadigm(sourceParadigm)?.name || sourceParadigm.name} 的引用副本`);
+        };
+
         const renameParadigm = async (paradigmId) => {
             const paradigm = getParadigmById(paradigmId);
             if (!paradigm) return;
-            const name = await runWithPromptLock(() => prompt("重命名范式", "输入新名称", paradigm.name || ""));
+            const targetParadigmId = isParadigmCopy(paradigm) ? getParadigmSourceId(paradigm) : paradigm.id;
+            const targetParadigm = getParadigmById(targetParadigmId);
+            if (!targetParadigm) return;
+            const name = await runWithPromptLock(() => prompt("重命名范式", "输入新名称", targetParadigm.name || ""));
             if (!name) return;
             await updateWorkspaceData((data) => {
-                const pg = data.paradigmsById?.[paradigmId];
+                const pg = data.paradigmsById?.[targetParadigmId];
                 if (!pg) return;
                 pg.name = name;
                 pg.updatedAt = nowString();
@@ -2382,7 +2793,20 @@
         const deleteParadigm = async (paradigmId) => {
             const paradigm = getParadigmById(paradigmId);
             if (!paradigm) return;
-            const ok = await confirm("删除范式", `确定删除范式 <b>${paradigm.name}</b> 吗？已挂载实例会转为普通条目。`);
+            const copyIds = Object.values(WORKSPACE_DATA.paradigmsById || {})
+                .filter((pg) => !!pg && String(pg.sourceParadigmId || "").trim() === paradigmId)
+                .map((pg) => pg.id);
+            if (!isParadigmCopy(paradigm) && copyIds.length > 0) {
+                new Notice(`⚠️ 请先删除引用这个范式的 ${copyIds.length} 个引用副本`);
+                return;
+            }
+            const isCopyParadigm = isParadigmCopy(paradigm);
+            const ok = await confirm(
+                isCopyParadigm ? "删除引用副本" : "删除范式",
+                isCopyParadigm
+                    ? `确定删除引用副本 <b>${paradigm.name}</b> 吗？定义源与其他引用不会受影响。`
+                    : `确定删除范式 <b>${paradigm.name}</b> 吗？已挂载实例会转为普通条目。`
+            );
             if (!ok) return;
             await updateWorkspaceData((data) => {
                 ensureParadigmHierarchyState(data);
@@ -2397,13 +2821,15 @@
                     tab.updatedAt = nowString();
                     convertBoundParadigmItemsToLocal(data, tab.id, paradigmId);
                 });
-                Object.keys(data.paradigmItemsById || {}).forEach((id) => {
-                    if (data.paradigmItemsById[id]?.paradigmId === paradigmId) delete data.paradigmItemsById[id];
-                });
-                Object.keys(data.paradigmChildrenByParent || {}).forEach((scoped) => {
-                    const parsed = splitScopedKey(scoped);
-                    if (parsed.ownerId === paradigmId) delete data.paradigmChildrenByParent[scoped];
-                });
+                if (!isCopyParadigm) {
+                    Object.keys(data.paradigmItemsById || {}).forEach((id) => {
+                        if (data.paradigmItemsById[id]?.paradigmId === paradigmId) delete data.paradigmItemsById[id];
+                    });
+                    Object.keys(data.paradigmChildrenByParent || {}).forEach((scoped) => {
+                        const parsed = splitScopedKey(scoped);
+                        if (parsed.ownerId === paradigmId) delete data.paradigmChildrenByParent[scoped];
+                    });
+                }
                 removeIdFromSimpleChildrenMap(data.childParadigmIdsByParent, paradigmId);
                 const nextParentKey = paradigmTreeKey(parentParadigmId);
                 if (!Array.isArray(data.childParadigmIdsByParent[nextParentKey])) data.childParadigmIdsByParent[nextParentKey] = [];
@@ -2720,8 +3146,8 @@
                     delete data.paradigmItemsById[id];
                 });
                 Object.keys(data.paradigmToTabItemMapByTab || {}).forEach((scoped) => {
-                    const parsed = splitScopedKey(scoped);
-                    if (ids.includes(parsed.parent)) delete data.paradigmToTabItemMapByTab[scoped];
+                    const parsed = parseParadigmMountMapKey(scoped);
+                    if (ids.includes(parsed.paradigmItemId)) delete data.paradigmToTabItemMapByTab[scoped];
                 });
                 syncParadigmAcrossTabsInData(data, item.paradigmId);
             });
@@ -2799,6 +3225,8 @@
                         sourceType: "tab",
                         sourceParadigmId: null,
                         sourceParadigmItemId: null,
+                        sourceParadigmMountScopeId: null,
+                        sourceParadigmCopyRefId: null,
                         orphaned: false,
                         createdAt: nowString(),
                         updatedAt: nowString()
@@ -2844,6 +3272,16 @@
         };
 
         const addItem = async (parentId = null, tabId = null) => {
+            const parentItem = parentId ? getItemById(parentId) : null;
+            if (parentItem && isParadigmMountedItem(parentItem)) {
+                const sourceItem = getMountedParadigmSourceItem(parentItem);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await addParadigmItem(sourceItem.paradigmId, sourceItem.id);
+                return;
+            }
             const targetTabId = String(tabId || getActiveTabId()).trim() || getActiveTabId();
             const title = await runWithPromptLock(() => prompt(parentId ? "添加子条目" : "添加根条目", "输入条目名称"));
             if (!title) return;
@@ -2858,6 +3296,8 @@
                     sourceType: "tab",
                     sourceParadigmId: null,
                     sourceParadigmItemId: null,
+                    sourceParadigmMountScopeId: null,
+                    sourceParadigmCopyRefId: null,
                     isCollapsed: false,
                     imageRef: "",
                     comment: "",
@@ -2876,7 +3316,12 @@
             const item = getItemById(id);
             if (!item) return;
             if (isParadigmMountedItem(item)) {
-                new Notice("📐 该条目来自范式，请到范式面板中重命名");
+                const sourceItem = getMountedParadigmSourceItem(item);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await renameParadigmItem(sourceItem.id);
                 return;
             }
             const newTitle = await runWithPromptLock(() => prompt("重命名条目", "输入新名称", item.title || ""));
@@ -2894,7 +3339,12 @@
             const item = getItemById(id);
             if (!item) return;
             if (isParadigmMountedItem(item)) {
-                new Notice("📐 该条目来自范式，请到范式面板中删除");
+                const sourceItem = getMountedParadigmSourceItem(item);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await deleteParadigmItem(sourceItem.id);
                 return;
             }
             const directChildIds = getChildrenIds(item.id, item.tabId);
@@ -2966,10 +3416,12 @@
             const item = getItemById(id);
             if (!item) return;
             if (isParadigmMountedItem(item)) {
-                window.workspaceShowParadigmPanel = true;
-                window.workspaceEditingParadigmId = item.sourceParadigmId || null;
-                renderViewFn?.();
-                new Notice("📐 该条目来自范式，请在范式面板中编辑绑定");
+                const sourceItem = getMountedParadigmSourceItem(item);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await bindParadigmItemNote(sourceItem.id);
                 return;
             }
             const currentNotePath = getBoundNotePathById(id);
@@ -3033,10 +3485,12 @@
             const item = getItemById(id);
             if (!item) return;
             if (isParadigmMountedItem(item)) {
-                window.workspaceShowParadigmPanel = true;
-                window.workspaceEditingParadigmId = item.sourceParadigmId || null;
-                renderViewFn?.();
-                new Notice("📐 该条目来自范式，请在范式面板中编辑评论");
+                const sourceItem = getMountedParadigmSourceItem(item);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await editParadigmItemComment(sourceItem.id);
                 return;
             }
             const currentComment = getTaskCommentById(id);
@@ -3080,10 +3534,12 @@
             const item = getItemById(id);
             if (!item) return;
             if (isParadigmMountedItem(item)) {
-                window.workspaceShowParadigmPanel = true;
-                window.workspaceEditingParadigmId = item.sourceParadigmId || null;
-                renderViewFn?.();
-                new Notice("📐 该条目来自范式，请在范式面板中编辑图片");
+                const sourceItem = getMountedParadigmSourceItem(item);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await editParadigmItemImage(sourceItem.id);
                 return;
             }
             const currentImageRef = getItemImageRefById(id);
@@ -3130,7 +3586,21 @@
             const activeTabId = dragged.tabId;
             if (dragged.tabId !== target.tabId) return;
             if (isParadigmMountedItem(dragged)) {
-                new Notice("📐 范式条目请在范式面板中移动");
+                if (!isParadigmMountedItem(target)) {
+                    new Notice("📐 引用挂载只能与其他范式挂载条目调整相对位置");
+                    return;
+                }
+                const draggedSource = getMountedParadigmSourceItem(dragged);
+                const targetSource = getMountedParadigmSourceItem(target);
+                if (!draggedSource || !targetSource) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                if (draggedSource.paradigmId !== targetSource.paradigmId) {
+                    new Notice("📐 引用挂载只能在同一范式定义内调整层级");
+                    return;
+                }
+                await moveParadigmItem(draggedSource.id, targetSource.id, position);
                 return;
             }
 
@@ -3180,7 +3650,12 @@
             const activeTabId = dragged.tabId;
             if (dragged.tabId !== activeTabId) return;
             if (isParadigmMountedItem(dragged)) {
-                new Notice("📐 范式条目请在范式面板中移动");
+                const sourceItem = getMountedParadigmSourceItem(dragged);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await moveParadigmItemToRoot(sourceItem.id, sourceItem.paradigmId);
                 return;
             }
             if (dragged.parentId === null) return;
@@ -3253,8 +3728,10 @@
             const isParadigm = isParadigmMountedItem(item);
             const paradigm = isParadigm ? getParadigmById(item.sourceParadigmId) : null;
             const paradigmName = paradigm?.name || item.sourceParadigmId || "范式";
+            const mountScopeParadigm = isParadigm ? getParadigmById(item.sourceParadigmMountScopeId) : null;
+            const isCopyScope = !!mountScopeParadigm && isParadigmCopy(mountScopeParadigm);
             const bindingRootParadigm = isParadigm ? getParadigmById(item.sourceParadigmBindingRootId) : null;
-            const bindingRootParadigmName = bindingRootParadigm?.name || item.sourceParadigmBindingRootId || paradigmName;
+            const bindingRootParadigmName = bindingRootParadigm ? getParadigmNodeLabel(bindingRootParadigm) : (item.sourceParadigmBindingRootId || paradigmName);
             const paradigmVisual = isParadigm ? getParadigmVisual(item.sourceParadigmId) : null;
             const branchParadigmVisual = isParadigm ? getParadigmVisual(item.sourceParadigmBindingRootId || item.sourceParadigmId) : null;
 
@@ -3274,7 +3751,7 @@
                 }
             });
             let content = null;
-            line.draggable = !isParadigm;
+            line.draggable = true;
             if (isParadigm) line.classList.add("is-paradigm");
             if (isParadigm && paradigmVisual) {
                 line.style.borderLeft = `4px solid ${paradigmVisual.accent}`;
@@ -3282,7 +3759,6 @@
             }
 
             line.addEventListener("dragstart", (e) => {
-                if (isParadigm) return;
                 e.stopPropagation();
                 window.workspaceTreeCurrentDragId = item.id;
                 e.dataTransfer.effectAllowed = "move";
@@ -3353,7 +3829,7 @@
 
             const left = line.createEl("div", { cls: "workspace-line-left" });
             const dragHandle = left.createEl("span", { text: isParadigm ? "📐" : "⋮⋮", cls: "workspace-drag-handle" });
-            dragHandle.title = isParadigm ? "范式挂载条目" : "拖拽调整位置";
+            dragHandle.title = isParadigm ? "拖拽调整引用挂载位置（写回定义源）" : "拖拽调整位置";
             const collapseBtn = left.createEl("span", {
                 text: hasKids ? (item.isCollapsed ? "▶" : "▼") : "•",
                 cls: `workspace-collapse ${hasKids ? "clickable" : "dot"}`
@@ -3373,7 +3849,7 @@
             };
             if (isParadigm) {
                 content.createEl("span", {
-                    text: `📐 ${paradigmName}`,
+                    text: `定义源: ${paradigmName}`,
                     cls: "workspace-origin-badge",
                     attr: paradigmVisual
                         ? { style: `border-color:${paradigmVisual.accent}66;color:${paradigmVisual.accent};background:${paradigmVisual.bg};` }
@@ -3381,10 +3857,16 @@
                 });
                 content.createEl("span", {
                     text: item.sourceParadigmMountMode === "inherited"
-                        ? `↳ 上级范式挂入: ${bindingRootParadigmName}`
-                        : "● 直接绑定范式",
+                        ? `继承挂入: ${bindingRootParadigmName}`
+                        : "引用挂载",
                     cls: "workspace-origin-badge"
                 });
+                if (isCopyScope) {
+                    content.createEl("span", {
+                        text: `副本节点: ${mountScopeParadigm?.id || item.sourceParadigmMountScopeId}`,
+                        cls: "workspace-origin-badge"
+                    });
+                }
             }
             if (item.orphaned) {
                 content.createEl("span", { text: "🔓 原范式条目", cls: "workspace-origin-badge orphaned" });
@@ -3412,29 +3894,29 @@
             }
 
             const actions = line.createEl("div", { cls: "workspace-line-actions" });
-            const addChildBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: "添加子条目" } });
+            const addChildBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: isParadigm ? "添加引用挂载子条目（写回定义源）" : "添加子条目" } });
             addChildBtn.onclick = (e) => { e.stopPropagation(); addItem(item.id, item.tabId); };
-            const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: isParadigm ? "范式条目请在范式面板重命名" : "重命名" } });
+            const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: isParadigm ? "重命名引用挂载（写回定义源）" : "重命名" } });
             renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(item.id); };
             const imageBtn = actions.createEl("span", {
                 text: imageSrc ? "🖼️" : "🖼",
                 cls: "workspace-action-btn",
-                attr: { title: "图片设置（弹窗内可粘贴/修改/清除）" }
+                attr: { title: isParadigm ? "编辑引用挂载图片（写回定义源）" : "图片设置（弹窗内可粘贴/修改/清除）" }
             });
             imageBtn.onclick = async (e) => { e.stopPropagation(); await editItemImage(item.id); };
             const bindBtn = actions.createEl("span", {
                 text: boundPath ? "🔗" : "📝",
                 cls: "workspace-action-btn",
-                attr: { title: boundPath ? "修改/清除绑定" : "绑定笔记（EVA 索引优先）" }
+                attr: { title: isParadigm ? "编辑引用挂载笔记绑定（写回定义源）" : (boundPath ? "修改/清除绑定" : "绑定笔记（EVA 索引优先）") }
             });
             bindBtn.onclick = async (e) => { e.stopPropagation(); await bindItemNote(item.id); };
             const commentBtn = actions.createEl("span", {
                 text: commentText ? "💬" : "🗒️",
                 cls: "workspace-action-btn",
-                attr: { title: commentText ? "编辑评论（已填写）" : "添加评论" }
+                attr: { title: isParadigm ? "编辑引用挂载评论（写回定义源）" : (commentText ? "编辑评论（已填写）" : "添加评论") }
             });
             commentBtn.onclick = async (e) => { e.stopPropagation(); await editTaskComment(item.id); };
-            const deleteBtn = actions.createEl("span", { text: "🗑️", cls: "workspace-action-btn", attr: { title: isParadigm ? "范式条目请在范式面板删除" : "删除条目（含子树）" } });
+            const deleteBtn = actions.createEl("span", { text: "🗑️", cls: "workspace-action-btn", attr: { title: isParadigm ? "删除引用挂载（写回定义源，影响全部挂载）" : "删除条目（含子树）" } });
             deleteBtn.onclick = async (e) => { e.stopPropagation(); await deleteItem(item.id); };
 
             if (hasKids && !item.isCollapsed) {
@@ -3484,19 +3966,21 @@
             });
         };
 
-        const renderParadigmMountGroup = (container, tabId, paradigmId, paradigmRootItemIdsById, includedParadigmIdSet, rootMap, level = 0, chain = new Set()) => {
-            const groupParadigm = getParadigmById(paradigmId);
+        const renderParadigmMountGroup = (container, tabId, paradigmNodeId, paradigmRootItemIdsById, includedParadigmIdSet, rootMap, level = 0, chain = new Set()) => {
+            const groupParadigm = getParadigmById(paradigmNodeId);
             if (!groupParadigm) return;
-            const visual = getParadigmVisual(paradigmId);
-            const groupedItems = (paradigmRootItemIdsById.get(paradigmId) || [])
+            const visual = getParadigmVisual(getParadigmSourceId(groupParadigm) || paradigmNodeId);
+            const groupedItems = (paradigmRootItemIdsById.get(paradigmNodeId) || [])
                 .map((id) => getItemById(id))
-                .filter((item) => !!item && item.tabId === tabId && isParadigmMountedItem(item) && item.sourceParadigmId === paradigmId);
-            const childParadigmIds = getChildParadigmIds(paradigmId).filter((childId) => includedParadigmIdSet.has(childId));
+                .filter((item) => !!item && item.tabId === tabId && isParadigmMountedItem(item) && item.sourceParadigmMountScopeId === paradigmNodeId);
+            const childParadigmIds = getEffectiveChildParadigmIds(paradigmNodeId).filter((childId) => includedParadigmIdSet.has(childId));
             if (groupedItems.length === 0 && childParadigmIds.length === 0) return;
-            const collapsed = isParadigmMountGroupCollapsed(tabId, paradigmId);
-            const bindingRootParadigmId = rootMap.get(paradigmId) || paradigmId;
+            const collapsed = isParadigmMountGroupCollapsed(tabId, paradigmNodeId);
+            const bindingRootParadigmId = rootMap.get(paradigmNodeId) || paradigmNodeId;
             const bindingRootParadigm = getParadigmById(bindingRootParadigmId);
-            const isInherited = bindingRootParadigmId !== paradigmId;
+            const isInherited = bindingRootParadigmId !== paradigmNodeId;
+            const sourceParadigm = getParadigmSourceParadigm(groupParadigm) || groupParadigm;
+            const isCopyNode = isParadigmCopy(groupParadigm);
 
             const branch = container.createEl("div", {
                 cls: "workspace-paradigm-mount-group",
@@ -3517,23 +4001,23 @@
             collapseBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                toggleParadigmMountGroupCollapsed(tabId, paradigmId);
+                toggleParadigmMountGroupCollapsed(tabId, paradigmNodeId);
             };
 
             const meta = left.createEl("div", { cls: "workspace-paradigm-mount-group-meta" });
             meta.createEl("div", {
-                text: `范式挂载 · ${groupParadigm?.name || paradigmId || "未命名范式"}`,
+                text: `范式挂载 · ${sourceParadigm?.name || groupParadigm?.name || paradigmNodeId || "未命名范式"}${isCopyNode ? " · 引用副本" : ""}`,
                 cls: "workspace-paradigm-mount-group-title"
             });
             meta.createEl("div", {
                 text: isInherited
-                    ? `根条目 ${groupedItems.length} 个 · 子范式 ${childParadigmIds.length} 个 · 随上级范式 ${bindingRootParadigm?.name || bindingRootParadigmId} 挂入`
-                    : `根条目 ${groupedItems.length} 个 · 子范式 ${childParadigmIds.length} 个 · 当前绑定根范式`,
+                    ? `根条目 ${groupedItems.length} 个 · 子范式 ${childParadigmIds.length} 个 · 继承自 ${bindingRootParadigm?.name || bindingRootParadigmId}`
+                    : `根条目 ${groupedItems.length} 个 · 子范式 ${childParadigmIds.length} 个 · 当前Tab引用挂载`,
                 cls: "workspace-paradigm-mount-group-subtitle"
             });
 
             const badge = head.createEl("span", {
-                text: isInherited ? "继承挂入" : "直接绑定",
+                text: isInherited ? "继承挂入" : "引用挂载",
                 cls: "workspace-origin-badge"
             });
             if (visual) {
@@ -3615,10 +4099,10 @@
             rootIds.forEach((id) => {
                 const item = getItemById(id);
                 if (!item || item.tabId !== tabId || !isParadigmMountedItem(item)) return;
-                const paradigmId = String(item.sourceParadigmId || "").trim();
-                if (!paradigmId) return;
-                if (!paradigmRootItemIdsById.has(paradigmId)) paradigmRootItemIdsById.set(paradigmId, []);
-                paradigmRootItemIdsById.get(paradigmId).push(item.id);
+                const paradigmNodeId = String(item.sourceParadigmMountScopeId || "").trim();
+                if (!paradigmNodeId) return;
+                if (!paradigmRootItemIdsById.has(paradigmNodeId)) paradigmRootItemIdsById.set(paradigmNodeId, []);
+                paradigmRootItemIdsById.get(paradigmNodeId).push(item.id);
             });
 
             const localRootIds = [];
@@ -3725,6 +4209,7 @@
                 });
                 info.createEl("span", { text: `📐 ${item.title}`, cls: "workspace-paradigm-item-title" });
                 info.createEl("small", { text: `#${item.id}`, cls: "workspace-paradigm-item-id" });
+                info.createEl("span", { text: "定义源", cls: "workspace-origin-badge" });
                 if (commentSummary) info.createEl("span", { text: `💬 ${commentSummary}`, cls: "workspace-comment-summary", attr: { title: commentText } });
                 if (boundPath) info.createEl("span", { text: `🔗 ${boundFile ? boundFile.basename : "绑定失效"}`, cls: "workspace-bound-label", attr: { title: boundPath } });
                 if (imageRef) info.createEl("span", { text: "🖼️", cls: "workspace-origin-badge", attr: { title: imageRef } });
@@ -3966,7 +4451,7 @@
             const activeTabId = activeTab?.id || getActiveTabId();
             const { explicitBoundIds: boundParadigmIds, rootMap: includedParadigmRootMap } = getBoundParadigmRootMap(activeTab || {});
             const boundParadigms = boundParadigmIds.map((id) => getParadigmById(id)).filter(Boolean);
-            const boundParadigmText = boundParadigms.length > 0 ? boundParadigms.map((pg) => pg.name).join("、") : "无";
+            const boundParadigmText = boundParadigms.length > 0 ? boundParadigms.map((pg) => getParadigmNodeLabel(pg)).join("、") : "无";
             const includedParadigmIds = Array.from(includedParadigmRootMap.keys());
 
             const wrap = dv.container.createEl("div", { cls: "workspace-wrap" });
@@ -4087,7 +4572,7 @@
             const headerLeft = header.createEl("div");
             headerLeft.createEl("h3", { text: "🧩 Workspace（多 Tab / 范式 / 快照）", cls: "workspace-title" });
             headerLeft.createEl("div", {
-                text: `当前 Tab: ${activeTab?.name || "-"}；聚合显示: ${getVisibleTabIds(activeTabId).length} 个 Tab；直接绑定范式: ${boundParadigmText}；纳入视图范式: ${includedParadigmIds.length} 个；数据文件: ${JSON_FILENAME}`,
+                text: `当前 Tab: ${activeTab?.name || "-"}；聚合显示: ${getVisibleTabIds(activeTabId).length} 个 Tab；引用挂载根范式: ${boundParadigmText}；纳入视图范式: ${includedParadigmIds.length} 个；数据文件: ${JSON_FILENAME}`,
                 cls: "workspace-subtitle"
             });
             headerLeft.createEl("div", {
@@ -4138,11 +4623,11 @@
                 }
 
                 const includedParadigmText = includedParadigmIds.length > 0
-                    ? includedParadigmIds.map((id) => getParadigmById(id)?.name || id).join("、")
+                    ? includedParadigmIds.map((id) => getParadigmNodeLabel(id) || id).join("、")
                     : "无";
                 panel.createEl("div", {
                     cls: "workspace-paradigm-hint",
-                    text: `当前Tab直接绑定 ${boundParadigmIds.length} 个范式；实际纳入 ${includedParadigmIds.length} 个范式：${includedParadigmText}`
+                    text: `当前Tab引用挂载 ${boundParadigmIds.length} 个根范式；实际纳入 ${includedParadigmIds.length} 个范式：${includedParadigmText}`
                 });
                 const paradigmRootDropZone = panel.createEl("div", {
                     cls: "workspace-paradigm-root-drop-zone",
@@ -4192,13 +4677,15 @@
                 const renderParadigmRow = (container, paradigmId, level = 0) => {
                     const paradigm = getParadigmById(paradigmId);
                     if (!paradigm) return;
+                    const sourceParadigm = getParadigmSourceParadigm(paradigm) || paradigm;
+                    const isCopyParadigm = isParadigmCopy(paradigm);
                     const currentCategoryId = paradigm.categoryId || null;
-                    const childParadigmIds = getChildParadigmIds(paradigm.id).filter((childId) => {
+                    const childParadigmIds = getEffectiveChildParadigmIds(paradigm.id).filter((childId) => {
                         const childParadigm = getParadigmById(childId);
                         return !!childParadigm && (childParadigm.categoryId || null) === currentCategoryId;
                     });
                     const isCollapsed = childParadigmIds.length > 0 ? isParadigmTreeCollapsed(paradigm.id) : false;
-                    const paradigmVisual = getParadigmVisual(paradigm.id);
+                    const paradigmVisual = getParadigmVisual(getParadigmSourceId(paradigm) || paradigm.id);
                     const category = currentCategoryId ? getParadigmCategoryById(currentCategoryId) : null;
                     let left = null;
                     const branch = container.createEl("div", {
@@ -4213,7 +4700,7 @@
                     const row = branch.createEl("div", {
                         cls: "workspace-panel-row"
                     });
-                    const itemCount = Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((x) => x.paradigmId === paradigm.id).length;
+                    const itemCount = Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((x) => x.paradigmId === sourceParadigm.id).length;
                     const isBound = boundParadigmIds.includes(paradigm.id);
                     const bindingRootId = includedParadigmRootMap.get(paradigm.id) || null;
                     const isInherited = !!bindingRootId && bindingRootId !== paradigm.id;
@@ -4270,17 +4757,17 @@
                         };
                     }
                     left = head.createEl("div", { cls: "workspace-panel-row-left" });
-                    left.createEl("div", { text: `${paradigm.name} (${itemCount})` });
+                    left.createEl("div", { text: `${sourceParadigm.name} (${itemCount})${isCopyParadigm ? " · 引用副本" : ""}` });
                     const scopeLabel = isBound
-                        ? "当前Tab直接绑定"
+                        ? "当前Tab引用挂载"
                         : (isInherited ? `随上级范式 ${getParadigmById(bindingRootId)?.name || bindingRootId} 挂入` : "未绑定到当前Tab");
                     left.createEl("small", {
-                        text: `${paradigm.id} · 分类 ${category?.name || "未分类"} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
+                        text: `${paradigm.id}${isCopyParadigm ? ` · 定义源 ${sourceParadigm.id}` : ""} · 分类 ${category?.name || "未分类"} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
                         attr: { style: "color:var(--text-muted);" }
                     });
                     left.createEl("div", {
                         cls: "workspace-panel-row-hint",
-                        text: "向右拖入可设为子范式；拖到分类行可归类"
+                        text: isCopyParadigm ? "这是引用副本：内容回写定义源，但它也可以继续挂子范式" : "向右拖入可设为子范式；拖到分类行可归类"
                     });
 
                     const actions = row.createEl("div", { cls: "workspace-main-actions" });
@@ -4289,16 +4776,20 @@
                         if (isBound) await unbindParadigmFromCurrentTab(paradigm.id);
                         else await bindParadigmToCurrentTab(paradigm.id);
                     };
-                    const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === paradigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
+                    const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === sourceParadigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
                     editBtn.onclick = () => {
-                        window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === paradigm.id ? null : paradigm.id;
+                        window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === sourceParadigm.id ? null : sourceParadigm.id;
                         renderViewFn?.();
                     };
+                    const addChildParadigmBtn = actions.createEl("button", { text: "＋ 子范式", cls: "workspace-sub-btn" });
+                    addChildParadigmBtn.onclick = async () => { await createParadigmChild(paradigm.id); };
+                    const copyBtn = actions.createEl("button", { text: "＋ 引用", cls: "workspace-sub-btn" });
+                    copyBtn.onclick = async () => { await createParadigmCopy(paradigm.id, ""); };
                     const categoryBtn = actions.createEl("button", { text: "分类", cls: "workspace-sub-btn" });
                     categoryBtn.onclick = async () => { await promptParadigmCategoryAssignment(paradigm.id); };
                     const renameBtn = actions.createEl("button", { text: "重命名", cls: "workspace-sub-btn" });
-                    renameBtn.onclick = async () => { await renameParadigm(paradigm.id); };
-                    const deleteBtn = actions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
+                    renameBtn.onclick = async () => { await renameParadigm(isCopyParadigm ? sourceParadigm.id : paradigm.id); };
+                    const deleteBtn = actions.createEl("button", { text: isCopyParadigm ? "删副本" : "删除", cls: "workspace-sub-btn" });
                     deleteBtn.onclick = async () => { await deleteParadigm(paradigm.id); };
 
                     if (childParadigmIds.length > 0 && !isCollapsed) {
@@ -4586,7 +5077,181 @@
     }
 })();
 ```
-[[说明这个视图]]
+
+## Workspace V2（多 Tab + 范式 + 快照）改造规范
+
+> 目标：在保留扁平字典 JSON 结构的前提下，引入多 Tab、范式（父子条目）、范式挂载同步、命名快照，并保证对旧数据非破坏升级。
+
+### 1) 核心模型（保持扁平字典）
+
+```json
+{
+  "schemaVersion": "2.2",
+  "lastModified": "2026-03-05 17:00:00",
+  "activeTabId": "tab_xxx",
+  "tabsById": {
+    "tab_xxx": {
+      "id": "tab_xxx",
+      "name": "项目A",
+      "kind": "project",
+      "boundParadigmIds": ["pg_xxx", "pg_yyy"],
+      "boundParadigmItemKeys": [],
+      "boundParadigmId": "pg_xxx",
+      "createdAt": "2026-03-05 16:50:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "tabOrder": ["tab_xxx"],
+  "itemsById": {
+    "item_x1": {
+      "id": "item_x1",
+      "title": "需求澄清",
+      "parentId": null,
+      "tabId": "tab_xxx",
+      "sourceType": "tab",
+      "sourceParadigmId": null,
+      "sourceParadigmItemId": null,
+      "isCollapsed": false,
+      "imageRef": "",
+      "comment": "",
+      "noteBinding": null,
+      "createdAt": "2026-03-05 16:55:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    },
+    "item_p1_in_tab_xxx": {
+      "id": "item_p1_in_tab_xxx",
+      "title": "范式：目标定义",
+      "parentId": null,
+      "tabId": "tab_xxx",
+      "sourceType": "paradigm",
+      "sourceParadigmId": "pg_xxx",
+      "sourceParadigmItemId": "pgItem_p1",
+      "sourceParadigmBindingRootId": "pg_xxx",
+      "sourceParadigmMountMode": "direct",
+      "isCollapsed": false,
+      "imageRef": "",
+      "comment": "",
+      "noteBinding": null,
+      "createdAt": "2026-03-05 16:56:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "childrenByParentByTab": {
+    "tab_xxx::__root__": ["item_x1", "item_p1_in_tab_xxx"],
+    "tab_xxx::item_p1_in_tab_xxx": []
+  },
+  "paradigmsById": {
+    "pg_xxx": {
+      "id": "pg_xxx",
+      "name": "任务启动范式",
+      "parentParadigmId": null,
+      "createdAt": "2026-03-05 16:40:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    },
+    "pg_yyy": {
+      "id": "pg_yyy",
+      "name": "任务启动-复盘子范式",
+      "parentParadigmId": "pg_xxx",
+      "createdAt": "2026-03-05 16:40:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "childParadigmIdsByParent": {
+    "__root__": ["pg_xxx"],
+    "pg_xxx": ["pg_yyy"]
+  },
+  "paradigmItemsById": {
+    "pgItem_p1": {
+      "id": "pgItem_p1",
+      "paradigmId": "pg_xxx",
+      "title": "目标定义",
+      "parentId": null,
+      "order": 10,
+      "imageRef": "",
+      "comment": "",
+      "noteBinding": null,
+      "createdAt": "2026-03-05 16:41:00",
+      "updatedAt": "2026-03-05 17:00:00"
+    }
+  },
+  "paradigmChildrenByParent": {
+    "pg_xxx::__root__": ["pgItem_p1"]
+  },
+  "paradigmToTabItemMapByTab": {
+    "tab_xxx::pgItem_p1": "item_p1_in_tab_xxx"
+  },
+  "collapsedById": {},
+  "snapshotsById": {},
+  "snapshotOrderByTab": {
+    "tab_xxx": []
+  }
+}
+```
+
+说明：
+- `childrenByParentByTab` 与 `paradigmChildrenByParent` 用 `tabId::parentId` / `paradigmId::parentId` 作为键，保持扁平字典。
+- `childParadigmIdsByParent` 用 `parentParadigmId -> 子范式列表` 记录范式之间的上下级，同样是扁平字典。
+- 范式挂载条目通过 `sourceType=paradigm` + `sourceParadigmItemId` 明确标注“这是范式条目”。
+- 当父范式被绑定到 Tab 时，子范式条目会一并进入视图，并通过 `sourceParadigmBindingRootId` / `sourceParadigmMountMode` 标识是“引用挂载”还是“由上级范式带入的继承挂入”。
+- 范式条目与挂载实例都支持 `imageRef`、`comment`、`noteBinding`，并按范式同步到各 Tab。
+- Tab 可表示项目/任务/对象，建议 `kind` 支持 `project | task | object`。
+
+### 2) Tab 系统规则
+
+- 多开界面：顶部 `tabOrder` 渲染 Tab 条；`activeTabId` 决定当前树。
+- Tab 条支持拖拽重排，直接更新 `tabOrder`（按前后插入）。
+- Tab 条支持自动换行（Tab 很多时折行显示）。
+- Tab 操作：新增、重命名、关闭（关闭前确认是否保留快照）。
+- 每个 Tab 独立树：渲染和拖拽只读写当前 `tabId` 对应的 `childrenByParentByTab` 关系。
+
+### 3) 范式系统规则
+
+- 范式是独立父子树：`paradigmsById + paradigmItemsById + paradigmChildrenByParent`。
+- 范式与范式之间也可形成层级：`parentParadigmId + childParadigmIdsByParent`。
+- 范式节点分两类：
+  - `定义源范式`：`sourceParadigmId = null`
+  - `引用副本范式`：`sourceParadigmId = <定义源范式ID>`
+- 引用副本不是独立内容拷贝，只复用定义源的范式条目；但它自己也可以继续挂 `真正的子范式` 或 `别的引用副本`。
+- Tab 可绑定多个“根范式”：在 Tab 上保存 `boundParadigmIds`（兼容保留 `boundParadigmId` 首项），并建立 `paradigmToTabItemMapByTab`。
+- 当根范式被绑定后，它的子范式、孙范式会自动纳入当前 Tab 视图。
+- 挂载时创建实例条目：
+  - 每个范式条目在 Tab 内有一个实例 `itemId`（可编辑显示状态，但核心标题/结构受范式驱动）。
+  - 实例条目保留 `sourceParadigmItemId`，用于后续同步定位。
+  - 视图上强区分三类身份：范式面板内显示“定义源”；Tab 内直接出现的范式实例显示“引用挂载”；由父范式带入的实例显示“继承挂入”。
+  - 在 Tab 内编辑“引用挂载 / 继承挂入”时，默认回写到定义源，再同步到全部挂载实例。
+  - 同一个定义源可因不同 `范式节点` 在同一 Tab 中出现多次，因此挂载实例索引需要区分 `挂载节点ID + 范式条目ID`。
+
+### 4) 范式编辑同步（你要求的“联动移动”）
+
+- 范式条目改名：同步所有绑定 Tab 的实例标题。
+- 范式条目移动（改 parent/order）：
+  - 在每个绑定 Tab 中找到对应实例条目并更新 `parentId` 与同级顺序。
+  - 如果该范式实例节点下挂了 Tab 私有子节点，这些子节点不变；因为父节点实例 ID 不变，随父节点整体移动。
+- 范式条目删除：对应实例条目标记为 `orphaned=true`（推荐）或按策略级联删除。
+
+### 5) 快照系统规则
+
+- 快照是“Tab 级只读历史切片”，不与当前范式冲突。
+- 保存快照（命名保存）时写入：
+  - `snapshotsById[snapshotId] = { id, tabId, name, createdAt, itemsById, childrenByParentByTab, collapsedById }`
+- 浏览快照：独立视图只读渲染快照树。
+- 恢复策略建议：`恢复为新 Tab`，避免覆盖当前 Tab 与范式同步状态。
+
+### 6) 非破坏升级与兼容
+
+- `schemaVersion 1.x -> 2.0` 迁移时：
+  - 原 `itemsById/childrenByParent` 迁移到默认 `tab_default`。
+  - 原字段保留，不做删除式重写；仅追加新字段与新索引。
+- 更新采用“复制-修改-保存”：
+  - 读取当前 JSON -> `clone` -> 在内存变更 -> `sanitize` -> 整体写回。
+  - 禁止就地破坏旧 key（尤其历史快照与旧绑定）。
+
+### 7) UI 最小落地清单
+
+- 顶部：Tab 条 + `新建Tab` + `快照`按钮。
+- 侧栏/弹窗：范式管理（新建范式、编辑范式树、绑定到当前 Tab）。
+- 主树：范式条目标识（如 `📐` 徽标）、普通条目保持原操作。
+- 快照面板：按 Tab 列出快照，支持“查看”和“恢复为新 Tab”。
 
 ```mermaid
 flowchart LR
