@@ -7,9 +7,10 @@
         const TASK_COMMENTS_FILENAME = "Workspace_TaskComments.json";
         const TASK_COMMENTS_SCHEMA_VERSION = "1.0";
         const ATTACHMENTS_FOLDER = "attachments";
-        const WORKSPACE_SCHEMA_VERSION = "2.2";
+        const WORKSPACE_SCHEMA_VERSION = "2.5";
         const ROOT_KEY = "__root__";
         const DEFAULT_TAB_ID = "tab_default";
+        const UNCATEGORIZED_PARADIGM_GROUP_ID = "__uncategorized__";
         const EVA_NOTES_CANDIDATE_PATHS = [
             "EVA_Notes.json",
             "data/EVA_Notes.json"
@@ -31,6 +32,7 @@
         const tabParentKey = (tabId, parentId) => `${String(tabId || "").trim()}::${parentKey(parentId)}`;
         const paradigmParentKey = (paradigmId, parentId) => `${String(paradigmId || "").trim()}::${parentKey(parentId)}`;
         const paradigmTreeKey = (parentParadigmId) => parentKey(parentParadigmId);
+        const paradigmCategoryTreeKey = (parentCategoryId) => parentKey(parentCategoryId);
         const splitScopedKey = (scoped, fallbackId = "") => {
             const text = String(scoped || "").trim();
             if (!text) return { ownerId: fallbackId, parent: ROOT_KEY };
@@ -75,8 +77,11 @@
         if (window.workspaceParadigmCurrentDragId === undefined) window.workspaceParadigmCurrentDragId = null;
         if (window.workspaceParadigmDragParadigmId === undefined) window.workspaceParadigmDragParadigmId = null;
         if (window.workspaceParadigmNodeDragId === undefined) window.workspaceParadigmNodeDragId = null;
+        if (window.workspaceParadigmCategoryDragId === undefined) window.workspaceParadigmCategoryDragId = null;
         if (window.workspaceCollapsedParadigmTreeIds === undefined) window.workspaceCollapsedParadigmTreeIds = {};
         if (window.workspaceTabCurrentDragId === undefined) window.workspaceTabCurrentDragId = null;
+        if (window.workspaceCollapsedParadigmMountGroups === undefined) window.workspaceCollapsedParadigmMountGroups = {};
+        if (window.workspaceCollapsedParadigmCategoryTreeIds === undefined) window.workspaceCollapsedParadigmCategoryTreeIds = {};
 
         const defaultWorkspaceData = () => ({
             schemaVersion: WORKSPACE_SCHEMA_VERSION,
@@ -101,10 +106,17 @@
             childrenByParentByTab: { [tabParentKey(DEFAULT_TAB_ID, null)]: [] },
             paradigmsById: {},
             childParadigmIdsByParent: { [ROOT_KEY]: [] },
+            paradigmCategoriesById: {},
+            childParadigmCategoryIdsByParent: { [ROOT_KEY]: [] },
             paradigmItemsById: {},
             paradigmChildrenByParent: {},
             paradigmToTabItemMapByTab: {},
             collapsedById: {},
+            tabTreeCollapsedById: {},
+            paradigmTreeCollapsedById: {},
+            paradigmCategoryCollapsedById: {},
+            paradigmMountGroupCollapsedByKey: {},
+            paradigmMountCollectionCollapsedByTab: {},
             snapshotsById: {},
             snapshotOrderByTab: {},
             // 兼容旧结构，不作为主写入源
@@ -186,6 +198,9 @@
                 ? src.childrenByParent
                 : {};
             const incomingCollapsed = src.collapsedById && typeof src.collapsedById === "object" ? src.collapsedById : {};
+            const incomingTabTreeCollapsed = src.tabTreeCollapsedById && typeof src.tabTreeCollapsedById === "object"
+                ? src.tabTreeCollapsedById
+                : {};
 
             const tabsById = {};
             Object.keys(incomingTabs).forEach((rawId) => {
@@ -385,6 +400,68 @@
                 if (!childrenByParentByTab[rootK]) childrenByParentByTab[rootK] = [];
             });
 
+            const paradigmCategoriesById = {};
+            const incomingParadigmCategories = src.paradigmCategoriesById && typeof src.paradigmCategoriesById === "object"
+                ? src.paradigmCategoriesById
+                : {};
+            Object.keys(incomingParadigmCategories).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const category = incomingParadigmCategories[rawId] || {};
+                const name = normalizeText(category.name || category.title || `分类-${id.slice(-4)}`);
+                paradigmCategoriesById[id] = {
+                    id,
+                    name: name || `分类-${id.slice(-4)}`,
+                    parentCategoryId: (category.parentCategoryId !== undefined && category.parentCategoryId !== null && String(category.parentCategoryId).trim() !== "")
+                        ? String(category.parentCategoryId).trim()
+                        : null,
+                    createdAt: category.createdAt || nowString(),
+                    updatedAt: category.updatedAt || nowString()
+                };
+            });
+
+            const childParadigmCategoryIdsByParent = { [ROOT_KEY]: [] };
+            const incomingParadigmCategoryTree = src.childParadigmCategoryIdsByParent && typeof src.childParadigmCategoryIdsByParent === "object"
+                ? src.childParadigmCategoryIdsByParent
+                : {};
+            const assignedParadigmCategories = new Set();
+            Object.keys(paradigmCategoriesById).forEach((id) => {
+                if (!paradigmCategoriesById[id] || paradigmCategoriesById[id].parentCategoryId === id) paradigmCategoriesById[id].parentCategoryId = null;
+            });
+            Object.keys(incomingParadigmCategoryTree).forEach((rawParentKey) => {
+                const normalizedParent = rawParentKey === ROOT_KEY ? null : String(rawParentKey || "").trim();
+                if (normalizedParent && !paradigmCategoriesById[normalizedParent]) return;
+                const list = ensureUniqueIds(incomingParadigmCategoryTree[rawParentKey]).filter((id) => !!paradigmCategoriesById[id]);
+                const scopedKey = paradigmCategoryTreeKey(normalizedParent);
+                if (!childParadigmCategoryIdsByParent[scopedKey]) childParadigmCategoryIdsByParent[scopedKey] = [];
+                list.forEach((id) => {
+                    if (id === normalizedParent || assignedParadigmCategories.has(id)) return;
+                    paradigmCategoriesById[id].parentCategoryId = normalizedParent;
+                    childParadigmCategoryIdsByParent[scopedKey].push(id);
+                    assignedParadigmCategories.add(id);
+                });
+            });
+            const categoryWouldCreateCycle = (categoryId, nextParentId) => {
+                let cursor = nextParentId;
+                const seen = new Set([categoryId]);
+                while (cursor) {
+                    if (seen.has(cursor)) return true;
+                    seen.add(cursor);
+                    cursor = paradigmCategoriesById[cursor]?.parentCategoryId || null;
+                }
+                return false;
+            };
+            Object.keys(paradigmCategoriesById).forEach((id) => {
+                const category = paradigmCategoriesById[id];
+                if (!category) return;
+                if (category.parentCategoryId && (!paradigmCategoriesById[category.parentCategoryId] || categoryWouldCreateCycle(id, category.parentCategoryId))) {
+                    category.parentCategoryId = null;
+                }
+                const scopedKey = paradigmCategoryTreeKey(category.parentCategoryId);
+                if (!childParadigmCategoryIdsByParent[scopedKey]) childParadigmCategoryIdsByParent[scopedKey] = [];
+                if (!childParadigmCategoryIdsByParent[scopedKey].includes(id)) childParadigmCategoryIdsByParent[scopedKey].push(id);
+            });
+
             const paradigmsById = {};
             const incomingParadigms = src.paradigmsById && typeof src.paradigmsById === "object" ? src.paradigmsById : {};
             Object.keys(incomingParadigms).forEach((rawId) => {
@@ -392,12 +469,16 @@
                 if (!id) return;
                 const pg = incomingParadigms[rawId] || {};
                 const name = normalizeText(pg.name || pg.title || `范式-${id.slice(-4)}`);
+                const categoryIdRaw = (pg.categoryId !== undefined && pg.categoryId !== null && String(pg.categoryId).trim() !== "")
+                    ? String(pg.categoryId).trim()
+                    : null;
                 paradigmsById[id] = {
                     id,
                     name: name || `范式-${id.slice(-4)}`,
                     parentParadigmId: (pg.parentParadigmId !== undefined && pg.parentParadigmId !== null && String(pg.parentParadigmId).trim() !== "")
                         ? String(pg.parentParadigmId).trim()
                         : null,
+                    categoryId: categoryIdRaw && paradigmCategoriesById[categoryIdRaw] ? categoryIdRaw : null,
                     createdAt: pg.createdAt || nowString(),
                     updatedAt: pg.updatedAt || nowString()
                 };
@@ -458,6 +539,7 @@
                         id: paradigmId,
                         name: `范式-${paradigmId.slice(-4)}`,
                         parentParadigmId: null,
+                        categoryId: null,
                         createdAt: nowString(),
                         updatedAt: nowString()
                     };
@@ -534,6 +616,18 @@
                 if (!paradigmToTabItemMapByTab[mapKey]) paradigmToTabItemMapByTab[mapKey] = item.id;
             });
 
+            const incomingParadigmTreeCollapsed = src.paradigmTreeCollapsedById && typeof src.paradigmTreeCollapsedById === "object"
+                ? src.paradigmTreeCollapsedById
+                : {};
+            const incomingParadigmCategoryCollapsed = src.paradigmCategoryCollapsedById && typeof src.paradigmCategoryCollapsedById === "object"
+                ? src.paradigmCategoryCollapsedById
+                : {};
+            const incomingParadigmMountGroupCollapsed = src.paradigmMountGroupCollapsedByKey && typeof src.paradigmMountGroupCollapsedByKey === "object"
+                ? src.paradigmMountGroupCollapsedByKey
+                : {};
+            const incomingParadigmMountCollectionCollapsed = src.paradigmMountCollectionCollapsedByTab && typeof src.paradigmMountCollectionCollapsedByTab === "object"
+                ? src.paradigmMountCollectionCollapsedByTab
+                : {};
             const snapshotsById = src.snapshotsById && typeof src.snapshotsById === "object" ? src.snapshotsById : {};
             const snapshotOrderByTab = src.snapshotOrderByTab && typeof src.snapshotOrderByTab === "object" ? src.snapshotOrderByTab : {};
             tabOrder.forEach((tabId) => {
@@ -543,6 +637,39 @@
             const collapsedById = {};
             Object.keys(itemsById).forEach((id) => {
                 collapsedById[id] = !!itemsById[id].isCollapsed;
+            });
+            const tabTreeCollapsedById = {};
+            Object.keys(incomingTabTreeCollapsed).forEach((id) => {
+                const normalizedId = String(id || "").trim();
+                if (!normalizedId || !tabsById[normalizedId]) return;
+                tabTreeCollapsedById[normalizedId] = !!incomingTabTreeCollapsed[id];
+            });
+            const paradigmTreeCollapsedById = {};
+            Object.keys(incomingParadigmTreeCollapsed).forEach((id) => {
+                const normalizedId = String(id || "").trim();
+                if (!normalizedId || !paradigmsById[normalizedId]) return;
+                paradigmTreeCollapsedById[normalizedId] = !!incomingParadigmTreeCollapsed[id];
+            });
+            const paradigmCategoryCollapsedById = {};
+            Object.keys(incomingParadigmCategoryCollapsed).forEach((id) => {
+                const normalizedId = String(id || "").trim();
+                if (!normalizedId) return;
+                if (normalizedId !== UNCATEGORIZED_PARADIGM_GROUP_ID && !paradigmCategoriesById[normalizedId]) return;
+                paradigmCategoryCollapsedById[normalizedId] = !!incomingParadigmCategoryCollapsed[id];
+            });
+            const paradigmMountGroupCollapsedByKey = {};
+            Object.keys(incomingParadigmMountGroupCollapsed).forEach((rawKey) => {
+                const parsed = splitScopedKey(rawKey);
+                const tabId = String(parsed.ownerId || "").trim();
+                const paradigmId = parsed.parent === ROOT_KEY ? "" : String(parsed.parent || "").trim();
+                if (!tabId || !paradigmId || !tabsById[tabId] || !paradigmsById[paradigmId]) return;
+                paradigmMountGroupCollapsedByKey[`${tabId}::${paradigmId}`] = !!incomingParadigmMountGroupCollapsed[rawKey];
+            });
+            const paradigmMountCollectionCollapsedByTab = {};
+            Object.keys(incomingParadigmMountCollectionCollapsed).forEach((rawTabId) => {
+                const tabId = String(rawTabId || "").trim();
+                if (!tabId || !tabsById[tabId]) return;
+                paradigmMountCollectionCollapsedByTab[tabId] = !!incomingParadigmMountCollectionCollapsed[rawTabId];
             });
 
             const legacyChildrenByParent = { [ROOT_KEY]: (childrenByParentByTab[tabParentKey(activeTabId, null)] || []).slice() };
@@ -576,10 +703,17 @@
                 childrenByParentByTab,
                 paradigmsById,
                 childParadigmIdsByParent,
+                paradigmCategoriesById,
+                childParadigmCategoryIdsByParent,
                 paradigmItemsById,
                 paradigmChildrenByParent,
                 paradigmToTabItemMapByTab,
                 collapsedById,
+                tabTreeCollapsedById,
+                paradigmTreeCollapsedById,
+                paradigmCategoryCollapsedById,
+                paradigmMountGroupCollapsedByKey,
+                paradigmMountCollectionCollapsedByTab,
                 snapshotsById,
                 snapshotOrderByTab,
                 // 兼容旧读取
@@ -1291,6 +1425,15 @@
         const getActiveTab = () => WORKSPACE_DATA.tabsById?.[getActiveTabId()] || null;
         const getTabById = (id) => WORKSPACE_DATA.tabsById?.[String(id || "").trim()] || null;
         const getTabChildrenIds = (parentTabId = null) => (WORKSPACE_DATA.tabChildrenByParent?.[parentKey(parentTabId)] || []).slice();
+        const isTabTreeCollapsed = (tabId) => !!WORKSPACE_DATA?.tabTreeCollapsedById?.[String(tabId || "").trim()];
+        const toggleTabTreeCollapsed = async (tabId) => {
+            const id = String(tabId || "").trim();
+            if (!id) return;
+            await updateWorkspaceData((data) => {
+                if (!data.tabTreeCollapsedById || typeof data.tabTreeCollapsedById !== "object") data.tabTreeCollapsedById = {};
+                data.tabTreeCollapsedById[id] = !data.tabTreeCollapsedById[id];
+            });
+        };
         const getTabDepth = (tabId) => {
             let depth = 0;
             let cursor = getTabById(tabId)?.parentTabId || null;
@@ -1328,6 +1471,8 @@
         const hasChildren = (id, tabId = getActiveTabId()) => getChildrenIds(id, tabId).length > 0;
         const getParadigmById = (id) => WORKSPACE_DATA.paradigmsById?.[String(id || "").trim()] || null;
         const getChildParadigmIds = (parentParadigmId = null) => (WORKSPACE_DATA.childParadigmIdsByParent?.[paradigmTreeKey(parentParadigmId)] || []).slice();
+        const getParadigmCategoryById = (id) => WORKSPACE_DATA.paradigmCategoriesById?.[String(id || "").trim()] || null;
+        const getChildParadigmCategoryIds = (parentCategoryId = null) => (WORKSPACE_DATA.childParadigmCategoryIdsByParent?.[paradigmCategoryTreeKey(parentCategoryId)] || []).slice();
         const getParadigmDescendantIds = (paradigmId) => {
             const out = [];
             const seen = new Set();
@@ -1345,6 +1490,24 @@
             const id = String(paradigmId || "").trim();
             if (!id || !getParadigmById(id)) return [];
             return [id].concat(getParadigmDescendantIds(id));
+        };
+        const getParadigmCategoryDescendantIds = (categoryId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getChildParadigmCategoryIds(categoryId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !getParadigmCategoryById(current)) continue;
+                seen.add(current);
+                out.push(current);
+                getChildParadigmCategoryIds(current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+        const getParadigmCategoryScopeIds = (categoryId) => {
+            const id = String(categoryId || "").trim();
+            if (!id || !getParadigmCategoryById(id)) return [];
+            return [id].concat(getParadigmCategoryDescendantIds(id));
         };
         const getBoundParadigmRootMap = (tabLike = getActiveTab()) => {
             const explicitBoundIds = normalizeBoundParadigmIds(tabLike || {}).filter((id) => !!getParadigmById(id));
@@ -1367,15 +1530,46 @@
             });
             return { explicitBoundIds, rootMap };
         };
-        const isParadigmTreeCollapsed = (paradigmId) => !!window.workspaceCollapsedParadigmTreeIds?.[String(paradigmId || "").trim()];
-        const toggleParadigmTreeCollapsed = (paradigmId) => {
+        const isParadigmTreeCollapsed = (paradigmId) => !!WORKSPACE_DATA?.paradigmTreeCollapsedById?.[String(paradigmId || "").trim()];
+        const toggleParadigmTreeCollapsed = async (paradigmId) => {
             const id = String(paradigmId || "").trim();
             if (!id) return;
-            if (!window.workspaceCollapsedParadigmTreeIds || typeof window.workspaceCollapsedParadigmTreeIds !== "object") {
-                window.workspaceCollapsedParadigmTreeIds = {};
-            }
-            window.workspaceCollapsedParadigmTreeIds[id] = !window.workspaceCollapsedParadigmTreeIds[id];
-            renderViewFn?.();
+            await updateWorkspaceData((data) => {
+                if (!data.paradigmTreeCollapsedById || typeof data.paradigmTreeCollapsedById !== "object") data.paradigmTreeCollapsedById = {};
+                data.paradigmTreeCollapsedById[id] = !data.paradigmTreeCollapsedById[id];
+            });
+        };
+        const isParadigmCategoryTreeCollapsed = (categoryId) => !!WORKSPACE_DATA?.paradigmCategoryCollapsedById?.[String(categoryId || "").trim()];
+        const toggleParadigmCategoryTreeCollapsed = async (categoryId) => {
+            const id = String(categoryId || "").trim();
+            if (!id) return;
+            await updateWorkspaceData((data) => {
+                if (!data.paradigmCategoryCollapsedById || typeof data.paradigmCategoryCollapsedById !== "object") data.paradigmCategoryCollapsedById = {};
+                data.paradigmCategoryCollapsedById[id] = !data.paradigmCategoryCollapsedById[id];
+            });
+        };
+        const getParadigmMountGroupKey = (tabId, paradigmId) => `${String(tabId || "").trim()}::${String(paradigmId || "").trim()}`;
+        const isParadigmMountGroupCollapsed = (tabId, paradigmId) => !!WORKSPACE_DATA?.paradigmMountGroupCollapsedByKey?.[getParadigmMountGroupKey(tabId, paradigmId)];
+        const toggleParadigmMountGroupCollapsed = async (tabId, paradigmId) => {
+            const key = getParadigmMountGroupKey(tabId, paradigmId);
+            if (!key || key === "::") return;
+            await updateWorkspaceData((data) => {
+                if (!data.paradigmMountGroupCollapsedByKey || typeof data.paradigmMountGroupCollapsedByKey !== "object") {
+                    data.paradigmMountGroupCollapsedByKey = {};
+                }
+                data.paradigmMountGroupCollapsedByKey[key] = !data.paradigmMountGroupCollapsedByKey[key];
+            });
+        };
+        const isParadigmMountCollectionCollapsed = (tabId) => !!WORKSPACE_DATA?.paradigmMountCollectionCollapsedByTab?.[String(tabId || "").trim()];
+        const toggleParadigmMountCollectionCollapsed = async (tabId) => {
+            const id = String(tabId || "").trim();
+            if (!id) return;
+            await updateWorkspaceData((data) => {
+                if (!data.paradigmMountCollectionCollapsedByTab || typeof data.paradigmMountCollectionCollapsedByTab !== "object") {
+                    data.paradigmMountCollectionCollapsedByTab = {};
+                }
+                data.paradigmMountCollectionCollapsedByTab[id] = !data.paradigmMountCollectionCollapsedByTab[id];
+            });
         };
         const getParadigmItemById = (id) => WORKSPACE_DATA.paradigmItemsById?.[String(id || "").trim()] || null;
         const getParadigmChildrenIds = (paradigmId, parentId = null) => {
@@ -1556,6 +1750,11 @@
             return ensureUniqueIds(data.childParadigmIdsByParent?.[key] || []).filter((id) => !!data.paradigmsById?.[id]);
         };
 
+        const getChildParadigmCategoryIdsFromData = (data, parentCategoryId = null) => {
+            const key = paradigmCategoryTreeKey(parentCategoryId);
+            return ensureUniqueIds(data.childParadigmCategoryIdsByParent?.[key] || []).filter((id) => !!data.paradigmCategoriesById?.[id]);
+        };
+
         const getParadigmDescendantIdsInData = (data, paradigmId) => {
             const out = [];
             const seen = new Set();
@@ -1566,6 +1765,20 @@
                 seen.add(current);
                 out.push(current);
                 getChildParadigmIdsFromData(data, current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+
+        const getParadigmCategoryDescendantIdsInData = (data, categoryId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getChildParadigmCategoryIdsFromData(data, categoryId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !data.paradigmCategoriesById?.[current]) continue;
+                seen.add(current);
+                out.push(current);
+                getChildParadigmCategoryIdsFromData(data, current).slice().reverse().forEach((childId) => stack.push(childId));
             }
             return out;
         };
@@ -1583,6 +1796,25 @@
             });
         };
 
+        const ensureParadigmCategoryHierarchyState = (data) => {
+            if (!data.paradigmCategoriesById || typeof data.paradigmCategoriesById !== "object") data.paradigmCategoriesById = {};
+            if (!data.childParadigmCategoryIdsByParent || typeof data.childParadigmCategoryIdsByParent !== "object") data.childParadigmCategoryIdsByParent = {};
+            if (!Array.isArray(data.childParadigmCategoryIdsByParent[ROOT_KEY])) data.childParadigmCategoryIdsByParent[ROOT_KEY] = [];
+            Object.keys(data.paradigmCategoriesById || {}).forEach((categoryId) => {
+                const category = data.paradigmCategoriesById[categoryId];
+                if (!category) return;
+                if (category.parentCategoryId && !data.paradigmCategoriesById[category.parentCategoryId]) category.parentCategoryId = null;
+                const key = paradigmCategoryTreeKey(category.parentCategoryId);
+                if (!Array.isArray(data.childParadigmCategoryIdsByParent[key])) data.childParadigmCategoryIdsByParent[key] = [];
+                if (!data.childParadigmCategoryIdsByParent[key].includes(categoryId)) data.childParadigmCategoryIdsByParent[key].push(categoryId);
+            });
+            Object.values(data.paradigmsById || {}).forEach((paradigm) => {
+                if (!paradigm) return;
+                const categoryId = paradigm.categoryId ? String(paradigm.categoryId).trim() : null;
+                paradigm.categoryId = categoryId && data.paradigmCategoriesById?.[categoryId] ? categoryId : null;
+            });
+        };
+
         const wouldCreateParadigmTreeCycleInData = (data, draggedParadigmId, nextParentParadigmId) => {
             let cursor = nextParentParadigmId;
             const seen = new Set([draggedParadigmId]);
@@ -1592,6 +1824,39 @@
                 cursor = data.paradigmsById?.[cursor]?.parentParadigmId || null;
             }
             return false;
+        };
+
+        const wouldCreateParadigmCategoryCycleInData = (data, draggedCategoryId, nextParentCategoryId) => {
+            let cursor = nextParentCategoryId;
+            const seen = new Set([draggedCategoryId]);
+            while (cursor) {
+                if (seen.has(cursor)) return true;
+                seen.add(cursor);
+                cursor = data.paradigmCategoriesById?.[cursor]?.parentCategoryId || null;
+            }
+            return false;
+        };
+
+        const assignParadigmCategoryInData = (data, paradigmId, nextCategoryId = null, options = {}) => {
+            const normalizedCategoryId = nextCategoryId && data.paradigmCategoriesById?.[nextCategoryId] ? nextCategoryId : null;
+            const paradigm = data.paradigmsById?.[paradigmId];
+            if (!paradigm) return;
+            ensureParadigmHierarchyState(data);
+            ensureParadigmCategoryHierarchyState(data);
+            const subtreeIds = [paradigmId].concat(getParadigmDescendantIdsInData(data, paradigmId));
+            const now = nowString();
+            if (options.detachFromParent || (paradigm.parentParadigmId && (data.paradigmsById?.[paradigm.parentParadigmId]?.categoryId || null) !== normalizedCategoryId)) {
+                removeIdFromSimpleChildrenMap(data.childParadigmIdsByParent, paradigmId);
+                paradigm.parentParadigmId = null;
+                if (!Array.isArray(data.childParadigmIdsByParent[ROOT_KEY])) data.childParadigmIdsByParent[ROOT_KEY] = [];
+                if (!data.childParadigmIdsByParent[ROOT_KEY].includes(paradigmId)) data.childParadigmIdsByParent[ROOT_KEY].push(paradigmId);
+            }
+            subtreeIds.forEach((id) => {
+                const node = data.paradigmsById?.[id];
+                if (!node) return;
+                node.categoryId = normalizedCategoryId;
+                node.updatedAt = now;
+            });
         };
 
         const convertBoundParadigmItemsToLocal = (data, tabId, paradigmId = null) => {
@@ -1904,7 +2169,140 @@
             new Notice("🗑️ Tab 已关闭");
         };
 
-        const createParadigm = async () => {
+        const createParadigmCategory = async (parentCategoryId = null) => {
+            const title = parentCategoryId ? "新建子分类" : "新建分类";
+            const name = await runWithPromptLock(() => prompt(title, "输入分类名称"));
+            if (!name) return;
+            const categoryId = `pgCat_${generateId()}`;
+            await updateWorkspaceData((data) => {
+                ensureParadigmCategoryHierarchyState(data);
+                if (!data.paradigmCategoriesById || typeof data.paradigmCategoriesById !== "object") data.paradigmCategoriesById = {};
+                if (!data.childParadigmCategoryIdsByParent || typeof data.childParadigmCategoryIdsByParent !== "object") data.childParadigmCategoryIdsByParent = {};
+                const normalizedParentId = parentCategoryId && data.paradigmCategoriesById?.[parentCategoryId] ? parentCategoryId : null;
+                const parentKeyId = paradigmCategoryTreeKey(normalizedParentId);
+                if (!Array.isArray(data.childParadigmCategoryIdsByParent[parentKeyId])) data.childParadigmCategoryIdsByParent[parentKeyId] = [];
+                data.paradigmCategoriesById[categoryId] = {
+                    id: categoryId,
+                    name,
+                    parentCategoryId: normalizedParentId,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                data.childParadigmCategoryIdsByParent[parentKeyId].push(categoryId);
+            });
+            new Notice("✅ 范式分类已创建");
+        };
+
+        const renameParadigmCategory = async (categoryId) => {
+            const category = getParadigmCategoryById(categoryId);
+            if (!category) return;
+            const name = await runWithPromptLock(() => prompt("重命名分类", "输入新名称", category.name || ""));
+            if (!name) return;
+            await updateWorkspaceData((data) => {
+                const target = data.paradigmCategoriesById?.[categoryId];
+                if (!target) return;
+                target.name = name;
+                target.updatedAt = nowString();
+            });
+        };
+
+        const moveParadigmCategoryOrder = async (draggedIdRaw, targetIdRaw, position = "after") => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            if (!getParadigmCategoryById(draggedId) || !getParadigmCategoryById(targetId)) return;
+            const targetCategory = getParadigmCategoryById(targetId);
+            const nextParentId = position === "child" ? targetId : (targetCategory?.parentCategoryId || null);
+            if (wouldCreateParadigmCategoryCycleInData(WORKSPACE_DATA, draggedId, nextParentId)) {
+                new Notice("⚠️ 不能把分类拖到自己的子级下面");
+                return;
+            }
+            await updateWorkspaceData((data) => {
+                ensureParadigmCategoryHierarchyState(data);
+                const dragged = data.paradigmCategoriesById?.[draggedId];
+                const target = data.paradigmCategoriesById?.[targetId];
+                if (!dragged || !target) return;
+                const parentId = position === "child" ? target.id : (target.parentCategoryId || null);
+                if (wouldCreateParadigmCategoryCycleInData(data, dragged.id, parentId)) return;
+                removeIdFromSimpleChildrenMap(data.childParadigmCategoryIdsByParent, dragged.id);
+                dragged.parentCategoryId = parentId;
+                dragged.updatedAt = nowString();
+                const key = paradigmCategoryTreeKey(parentId);
+                if (!Array.isArray(data.childParadigmCategoryIdsByParent[key])) data.childParadigmCategoryIdsByParent[key] = [];
+                const siblings = data.childParadigmCategoryIdsByParent[key];
+                if (position === "child") siblings.unshift(dragged.id);
+                else {
+                    const targetIndex = siblings.indexOf(target.id);
+                    if (targetIndex < 0) siblings.push(dragged.id);
+                    else siblings.splice(position === "before" ? targetIndex : targetIndex + 1, 0, dragged.id);
+                }
+            });
+        };
+
+        const deleteParadigmCategory = async (categoryId) => {
+            const category = getParadigmCategoryById(categoryId);
+            if (!category) return;
+            const ok = await confirm("删除分类", `确定删除分类 <b>${category.name}</b> 吗？其子分类会上移，范式会并入上级分类。`);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                ensureParadigmCategoryHierarchyState(data);
+                const target = data.paradigmCategoriesById?.[categoryId];
+                if (!target) return;
+                const parentCategoryId = target.parentCategoryId || null;
+                const childCategoryIds = Array.isArray(data.childParadigmCategoryIdsByParent?.[paradigmCategoryTreeKey(categoryId)])
+                    ? data.childParadigmCategoryIdsByParent[paradigmCategoryTreeKey(categoryId)].slice()
+                    : [];
+                Object.values(data.paradigmsById || {}).forEach((paradigm) => {
+                    if (!paradigm || paradigm.categoryId !== categoryId) return;
+                    paradigm.categoryId = parentCategoryId;
+                    paradigm.updatedAt = nowString();
+                });
+                removeIdFromSimpleChildrenMap(data.childParadigmCategoryIdsByParent, categoryId);
+                const nextParentKey = paradigmCategoryTreeKey(parentCategoryId);
+                if (!Array.isArray(data.childParadigmCategoryIdsByParent[nextParentKey])) data.childParadigmCategoryIdsByParent[nextParentKey] = [];
+                childCategoryIds.forEach((childId) => {
+                    if (!data.paradigmCategoriesById?.[childId]) return;
+                    data.paradigmCategoriesById[childId].parentCategoryId = parentCategoryId;
+                    if (!data.childParadigmCategoryIdsByParent[nextParentKey].includes(childId)) data.childParadigmCategoryIdsByParent[nextParentKey].push(childId);
+                });
+                delete data.childParadigmCategoryIdsByParent[paradigmCategoryTreeKey(categoryId)];
+                delete data.paradigmCategoriesById[categoryId];
+            });
+        };
+
+        const assignParadigmCategory = async (paradigmId, categoryId = null, options = {}) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            const normalizedCategoryId = categoryId && getParadigmCategoryById(categoryId) ? categoryId : null;
+            await updateWorkspaceData((data) => {
+                assignParadigmCategoryInData(data, paradigmId, normalizedCategoryId, options);
+                syncParadigmAcrossTabsInData(data);
+            });
+            new Notice(normalizedCategoryId ? "🏷️ 已调整范式分类" : "🏷️ 已移出分类");
+        };
+
+        const promptParadigmCategoryAssignment = async (paradigmId) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            const currentCategory = paradigm.categoryId ? getParadigmCategoryById(paradigm.categoryId) : null;
+            const categoryList = Object.values(WORKSPACE_DATA.paradigmCategoriesById || {})
+                .map((item) => `${item.id}: ${item.name}`)
+                .join("\n");
+            const input = await runWithPromptLock(() => prompt(
+                "设置范式分类",
+                `输入分类 ID；留空表示移出分类。\n当前：${currentCategory ? `${currentCategory.name} (${currentCategory.id})` : "未分类"}${categoryList ? `\n\n可选分类：\n${categoryList}` : "\n\n当前还没有分类"}`,
+                paradigm.categoryId || ""
+            ));
+            if (input === null) return;
+            const nextId = normalizeText(input);
+            if (nextId && !getParadigmCategoryById(nextId)) {
+                new Notice("⚠️ 未找到对应分类 ID");
+                return;
+            }
+            await assignParadigmCategory(paradigmId, nextId || null, { detachFromParent: !nextId });
+        };
+
+        const createParadigm = async (categoryId = null) => {
             const name = await runWithPromptLock(() => prompt("新建范式", "输入范式名称"));
             if (!name) return;
             const paradigmId = `pg_${generateId()}`;
@@ -1912,10 +2310,12 @@
                 if (!data.paradigmsById || typeof data.paradigmsById !== "object") data.paradigmsById = {};
                 if (!data.childParadigmIdsByParent || typeof data.childParadigmIdsByParent !== "object") data.childParadigmIdsByParent = {};
                 if (!Array.isArray(data.childParadigmIdsByParent[ROOT_KEY])) data.childParadigmIdsByParent[ROOT_KEY] = [];
+                ensureParadigmCategoryHierarchyState(data);
                 data.paradigmsById[paradigmId] = {
                     id: paradigmId,
                     name,
                     parentParadigmId: null,
+                    categoryId: categoryId && data.paradigmCategoriesById?.[categoryId] ? categoryId : null,
                     createdAt: nowString(),
                     updatedAt: nowString()
                 };
@@ -1953,6 +2353,7 @@
             }
             await updateWorkspaceData((data) => {
                 ensureParadigmHierarchyState(data);
+                ensureParadigmCategoryHierarchyState(data);
                 const dragged = data.paradigmsById?.[draggedId];
                 const target = data.paradigmsById?.[targetId];
                 if (!dragged || !target) return;
@@ -1973,6 +2374,7 @@
                     if (targetIndex < 0) siblings.push(dragged.id);
                     else siblings.splice(position === "before" ? targetIndex : targetIndex + 1, 0, dragged.id);
                 }
+                assignParadigmCategoryInData(data, dragged.id, target.categoryId || null);
                 syncParadigmAcrossTabsInData(data);
             });
         };
@@ -2802,7 +3204,13 @@
                 "rgba(241, 196, 15, 0.09)",
                 "rgba(230, 126, 34, 0.09)",
                 "rgba(231, 76, 60, 0.08)",
-                "rgba(155, 89, 182, 0.08)"
+                "rgba(155, 89, 182, 0.08)",
+                "rgba(26, 188, 156, 0.08)",
+                "rgba(52, 73, 94, 0.08)",
+                "rgba(127, 140, 141, 0.08)",
+                "rgba(243, 156, 18, 0.08)",
+                "rgba(233, 30, 99, 0.07)",
+                "rgba(63, 81, 181, 0.07)"
             ];
             if (!Number.isFinite(level) || level < 0) return palette[0];
             return palette[level % palette.length];
@@ -2821,7 +3229,13 @@
                 { accent: "#d35400", bg: "rgba(211, 84, 0, 0.10)" },
                 { accent: "#8e44ad", bg: "rgba(142, 68, 173, 0.10)" },
                 { accent: "#2c7a3f", bg: "rgba(44, 122, 63, 0.10)" },
-                { accent: "#c0392b", bg: "rgba(192, 57, 43, 0.10)" }
+                { accent: "#c0392b", bg: "rgba(192, 57, 43, 0.10)" },
+                { accent: "#1abc9c", bg: "rgba(26, 188, 156, 0.10)" },
+                { accent: "#2c3e50", bg: "rgba(44, 62, 80, 0.10)" },
+                { accent: "#7f8c8d", bg: "rgba(127, 140, 141, 0.10)" },
+                { accent: "#f39c12", bg: "rgba(243, 156, 18, 0.10)" },
+                { accent: "#e91e63", bg: "rgba(233, 30, 99, 0.10)" },
+                { accent: "#3f51b5", bg: "rgba(63, 81, 181, 0.10)" }
             ];
             return palette[Math.abs(hash) % palette.length];
         };
@@ -3070,6 +3484,179 @@
             });
         };
 
+        const renderParadigmMountGroup = (container, tabId, paradigmId, paradigmRootItemIdsById, includedParadigmIdSet, rootMap, level = 0, chain = new Set()) => {
+            const groupParadigm = getParadigmById(paradigmId);
+            if (!groupParadigm) return;
+            const visual = getParadigmVisual(paradigmId);
+            const groupedItems = (paradigmRootItemIdsById.get(paradigmId) || [])
+                .map((id) => getItemById(id))
+                .filter((item) => !!item && item.tabId === tabId && isParadigmMountedItem(item) && item.sourceParadigmId === paradigmId);
+            const childParadigmIds = getChildParadigmIds(paradigmId).filter((childId) => includedParadigmIdSet.has(childId));
+            if (groupedItems.length === 0 && childParadigmIds.length === 0) return;
+            const collapsed = isParadigmMountGroupCollapsed(tabId, paradigmId);
+            const bindingRootParadigmId = rootMap.get(paradigmId) || paradigmId;
+            const bindingRootParadigm = getParadigmById(bindingRootParadigmId);
+            const isInherited = bindingRootParadigmId !== paradigmId;
+
+            const branch = container.createEl("div", {
+                cls: "workspace-paradigm-mount-group",
+                attr: { style: `margin-left:${level * 26}px;` }
+            });
+            if (visual) {
+                branch.style.borderColor = `${visual.accent}4d`;
+                branch.style.background = `linear-gradient(180deg, ${visual.bg} 0%, rgba(255,255,255,0) 100%)`;
+                branch.style.boxShadow = `inset 0 0 0 1px ${visual.accent}14`;
+            }
+
+            const head = branch.createEl("div", { cls: "workspace-paradigm-mount-group-head" });
+            const left = head.createEl("div", { cls: "workspace-paradigm-mount-group-left" });
+            const collapseBtn = left.createEl("span", {
+                text: collapsed ? "▶" : "▼",
+                cls: "workspace-paradigm-collapse clickable"
+            });
+            collapseBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleParadigmMountGroupCollapsed(tabId, paradigmId);
+            };
+
+            const meta = left.createEl("div", { cls: "workspace-paradigm-mount-group-meta" });
+            meta.createEl("div", {
+                text: `范式挂载 · ${groupParadigm?.name || paradigmId || "未命名范式"}`,
+                cls: "workspace-paradigm-mount-group-title"
+            });
+            meta.createEl("div", {
+                text: isInherited
+                    ? `根条目 ${groupedItems.length} 个 · 子范式 ${childParadigmIds.length} 个 · 随上级范式 ${bindingRootParadigm?.name || bindingRootParadigmId} 挂入`
+                    : `根条目 ${groupedItems.length} 个 · 子范式 ${childParadigmIds.length} 个 · 当前绑定根范式`,
+                cls: "workspace-paradigm-mount-group-subtitle"
+            });
+
+            const badge = head.createEl("span", {
+                text: isInherited ? "继承挂入" : "直接绑定",
+                cls: "workspace-origin-badge"
+            });
+            if (visual) {
+                badge.style.borderColor = `${visual.accent}66`;
+                badge.style.color = visual.accent;
+                badge.style.background = visual.bg;
+            }
+
+            if (!collapsed) {
+                const childWrap = branch.createEl("div", { cls: "workspace-paradigm-mount-group-children" });
+                groupedItems.forEach((item) => renderItemLine(childWrap, item, 0, chain, tabId));
+                childParadigmIds.forEach((childParadigmId) => {
+                    renderParadigmMountGroup(childWrap, tabId, childParadigmId, paradigmRootItemIdsById, includedParadigmIdSet, rootMap, 1, chain);
+                });
+            }
+        };
+
+        const renderParadigmMountCollection = (container, tabId, paradigmRootItemIdsById, level = 0, chain = new Set()) => {
+            const rootMapInfo = collectBoundParadigmRootMapForTab(WORKSPACE_DATA, tabId);
+            const includedParadigmIds = Array.from(rootMapInfo.rootMap.keys());
+            const includedParadigmIdSet = new Set(includedParadigmIds);
+            const rootParadigmIds = includedParadigmIds.filter((paradigmId) => {
+                const parentId = getParadigmById(paradigmId)?.parentParadigmId || null;
+                return !parentId || !includedParadigmIdSet.has(parentId);
+            });
+            if (rootParadigmIds.length === 0) return;
+
+            const collapsed = isParadigmMountCollectionCollapsed(tabId);
+            const totalRootItems = Array.from(paradigmRootItemIdsById.values()).reduce((sum, ids) => sum + ids.length, 0);
+            const totalParadigmCount = includedParadigmIds.length;
+
+            const branch = container.createEl("div", {
+                cls: "workspace-paradigm-mount-collection",
+                attr: { style: `margin-left:${level * 26}px;` }
+            });
+            const head = branch.createEl("div", { cls: "workspace-paradigm-mount-collection-head" });
+            const left = head.createEl("div", { cls: "workspace-paradigm-mount-collection-left" });
+            const collapseBtn = left.createEl("span", {
+                text: collapsed ? "▶" : "▼",
+                cls: "workspace-paradigm-collapse clickable"
+            });
+            collapseBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleParadigmMountCollectionCollapsed(tabId);
+            };
+
+            const meta = left.createEl("div", { cls: "workspace-paradigm-mount-collection-meta" });
+            meta.createEl("div", {
+                text: "范式挂载条目",
+                cls: "workspace-paradigm-mount-collection-title"
+            });
+            meta.createEl("div", {
+                text: `顶层范式 ${rootParadigmIds.length} 个 · 纳入范式 ${totalParadigmCount} 个 · 根条目 ${totalRootItems} 个`,
+                cls: "workspace-paradigm-mount-collection-subtitle"
+            });
+
+            head.createEl("span", {
+                text: `${rootParadigmIds.length} 组`,
+                cls: "workspace-origin-badge"
+            });
+
+            if (!collapsed) {
+                const childWrap = branch.createEl("div", { cls: "workspace-paradigm-mount-collection-children" });
+                rootParadigmIds.forEach((paradigmId) => {
+                    renderParadigmMountGroup(childWrap, tabId, paradigmId, paradigmRootItemIdsById, includedParadigmIdSet, rootMapInfo.rootMap, 0, chain);
+                });
+            }
+        };
+
+        const renderRootTreeWithParadigmGroups = (container, tabId, chain = new Set()) => {
+            const rootIds = getChildrenIds(null, tabId);
+            if (rootIds.length === 0) {
+                container.createEl("div", { text: "_这个 Tab 暂无条目_", cls: "workspace-empty" });
+                return;
+            }
+
+            const paradigmRootItemIdsById = new Map();
+            rootIds.forEach((id) => {
+                const item = getItemById(id);
+                if (!item || item.tabId !== tabId || !isParadigmMountedItem(item)) return;
+                const paradigmId = String(item.sourceParadigmId || "").trim();
+                if (!paradigmId) return;
+                if (!paradigmRootItemIdsById.has(paradigmId)) paradigmRootItemIdsById.set(paradigmId, []);
+                paradigmRootItemIdsById.get(paradigmId).push(item.id);
+            });
+
+            const localRootIds = [];
+            rootIds.forEach((id) => {
+                const item = getItemById(id);
+                if (!item || item.tabId !== tabId) return;
+                if (!isParadigmMountedItem(item)) {
+                    localRootIds.push(item.id);
+                }
+            });
+
+            localRootIds.forEach((id) => {
+                const item = getItemById(id);
+                if (!item || item.tabId !== tabId) return;
+                renderItemLine(container, item, 0, chain, tabId);
+            });
+            renderParadigmMountCollection(container, tabId, paradigmRootItemIdsById, 0, chain);
+        };
+
+        const getCategoryParadigmRootIds = (categoryId = null) => Object.values(WORKSPACE_DATA.paradigmsById || {})
+            .filter((paradigm) => {
+                if (!paradigm) return false;
+                const ownCategoryId = paradigm.categoryId || null;
+                if (ownCategoryId !== (categoryId || null)) return false;
+                const parent = paradigm.parentParadigmId ? getParadigmById(paradigm.parentParadigmId) : null;
+                return !parent || (parent.categoryId || null) !== ownCategoryId;
+            })
+            .map((paradigm) => paradigm.id);
+
+        const getParadigmCountForCategoryScope = (categoryId = null) => {
+            const scopeIds = categoryId ? new Set(getParadigmCategoryScopeIds(categoryId)) : new Set();
+            return Object.values(WORKSPACE_DATA.paradigmsById || {}).filter((paradigm) => {
+                const ownCategoryId = paradigm?.categoryId || null;
+                if (!categoryId) return ownCategoryId === null;
+                return ownCategoryId && scopeIds.has(ownCategoryId);
+            }).length;
+        };
+
         const renderParadigmTree = (container, paradigmId, parentId = null, level = 0, chain = new Set()) => {
             const ids = getParadigmChildrenIds(paradigmId, parentId);
             ids.forEach((id) => {
@@ -3208,11 +3795,9 @@
                 cls: "workspace-tab-section-title",
                 text: `${tabId === rootActiveTabId ? "●" : "◦"} ${tab.name}`
             });
-            const childCount = getTabChildrenIds(tabId).length;
             const subtitle = [
                 `Tab ID: ${tab.id}`,
-                tabId === rootActiveTabId ? "当前激活视图" : `来自上级 ${getTabById(tab.parentTabId)?.name || "根层"}`,
-                `下级Tab: ${childCount}`
+                tabId === rootActiveTabId ? "当前激活视图" : `来自上级 ${getTabById(tab.parentTabId)?.name || "根层"}`
             ].join(" · ");
             titleWrap.createEl("div", { cls: "workspace-tab-section-subtitle", text: subtitle });
 
@@ -3240,12 +3825,7 @@
             });
 
             const treeWrap = section.createEl("div", { cls: "workspace-tab-section-tree" });
-            const roots = getChildrenIds(null, tab.id);
-            if (roots.length === 0) {
-                treeWrap.createEl("div", { text: "_这个 Tab 暂无条目_", cls: "workspace-empty" });
-            } else {
-                renderTree(treeWrap, null, 0, new Set(), tab.id);
-            }
+            renderRootTreeWithParadigmGroups(treeWrap, tab.id, new Set());
 
             const childTabs = getTabChildrenIds(tab.id);
             if (childTabs.length > 0) {
@@ -3263,16 +3843,21 @@
                 .workspace-tab-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:10px; padding:8px 12px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
                 .workspace-tab-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.12); color:var(--text-normal); }
                 .workspace-tab-capsule-group { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start; }
-                .workspace-tab-capsule { display:inline-flex; flex-direction:column; gap:10px; padding:10px 12px; border:2px solid rgba(52,152,219,.24); border-radius:16px; background:linear-gradient(135deg, rgba(52,152,219,.10) 0%, rgba(52,152,219,.04) 100%); min-width:220px; transition:box-shadow .15s,border-color .15s,transform .15s; }
+                .workspace-tab-capsule { display:inline-flex; flex-direction:column; gap:8px; padding:8px 10px 10px; border:2px solid rgba(52,152,219,.24); border-radius:16px; background:linear-gradient(135deg, rgba(52,152,219,.10) 0%, rgba(52,152,219,.04) 100%); min-width:220px; transition:box-shadow .15s,border-color .15s,transform .15s; position:relative; }
                 .workspace-tab-capsule:hover { border-color:rgba(52,152,219,.45); box-shadow:0 4px 14px rgba(52,152,219,.12); }
                 .workspace-tab-capsule.is-current { border-color:rgba(46,204,113,.55); background:linear-gradient(135deg, rgba(46,204,113,.12) 0%, rgba(46,204,113,.05) 100%); }
-                .workspace-tab-capsule.is-dragging { opacity:.45; transform:scale(.98); }
-                .workspace-tab-capsule.drag-over-before { box-shadow:inset 4px 0 0 #2ecc71; }
-                .workspace-tab-capsule.drag-over-after { box-shadow:inset -4px 0 0 #2ecc71; }
-                .workspace-tab-capsule.drag-over-child { border-color:#2ecc71; background:linear-gradient(135deg, rgba(46,204,113,.16) 0%, rgba(46,204,113,.06) 100%); }
+                .workspace-tab-capsule.is-dragging, .workspace-tab-leaf.is-dragging { opacity:.45; transform:scale(.98); }
+                .workspace-tab-capsule.drag-over-before, .workspace-tab-leaf.drag-over-before { box-shadow:inset 4px 0 0 #2ecc71; }
+                .workspace-tab-capsule.drag-over-after, .workspace-tab-leaf.drag-over-after { box-shadow:inset -4px 0 0 #2ecc71; }
+                .workspace-tab-capsule.drag-over-child, .workspace-tab-leaf.drag-over-child { border-color:#2ecc71; background:linear-gradient(135deg, rgba(46,204,113,.16) 0%, rgba(46,204,113,.06) 100%); }
+                .workspace-tab-leaf { display:inline-flex; flex-direction:column; gap:6px; min-width:0; transition:box-shadow .15s,border-color .15s,transform .15s; border:1px solid transparent; border-radius:16px; padding:0; }
+                .workspace-tab-capsule-head { display:flex; align-items:center; gap:6px; }
+                .workspace-tab-collapse-toggle { border:none; background:transparent; color:var(--text-muted); cursor:pointer; font-size:10px; line-height:1; padding:1px 4px; border-radius:999px; flex:0 0 auto; }
+                .workspace-tab-collapse-toggle:hover { color:var(--text-normal); background:rgba(127,127,127,.12); }
+                .workspace-tab-collapse-toggle.is-collapsed { color:#d35400; background:rgba(243, 156, 18, .16); box-shadow:inset 0 0 0 1px rgba(211, 84, 0, .18); }
+                .workspace-tab-collapse-toggle.is-collapsed:hover { color:#a84300; background:rgba(243, 156, 18, .22); }
                 .workspace-tab-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:999px; padding:6px 12px; cursor:pointer; font-size:12px; user-select:none; transition:filter .15s,border-color .15s,transform .15s; text-align:left; display:flex; align-items:center; justify-content:space-between; gap:8px; }
                 .workspace-tab-btn.active { background:var(--interactive-accent); color:var(--text-on-accent); border-color:var(--interactive-accent); font-weight:700; }
-                .workspace-tab-badge { font-size:11px; border-radius:999px; padding:2px 7px; background:rgba(0,0,0,.08); }
                 .workspace-tab-children { display:flex; flex-wrap:wrap; gap:10px; margin-left:18px; }
                 .workspace-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
                 .workspace-title { margin:0; font-size:1.1em; font-weight:700; color:var(--text-normal); }
@@ -3300,6 +3885,10 @@
                 .workspace-paradigm-branch { margin-bottom:8px; }
                 .workspace-paradigm-branch.has-children { border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:6px; }
                 .workspace-paradigm-branch-children { margin-top:6px; }
+                .workspace-paradigm-category-branch { margin-bottom:8px; border:1px solid rgba(52,152,219,.16); border-radius:12px; padding:6px; }
+                .workspace-paradigm-category-branch.uncategorized, .workspace-paradigm-category-row.uncategorized { border-style:dashed; }
+                .workspace-paradigm-category-children { margin-top:6px; display:flex; flex-direction:column; gap:6px; }
+                .workspace-paradigm-category-row { background:var(--background-primary); }
                 .workspace-paradigm-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; margin-bottom:8px; }
                 .workspace-paradigm-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
                 .workspace-paradigm-hint { font-size:12px; color:var(--text-muted); margin-bottom:8px; }
@@ -3308,6 +3897,20 @@
                 .workspace-item-branch { position:relative; margin-bottom:4px; }
                 .workspace-item-branch.is-paradigm-group { border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:6px 6px 8px 6px; margin-bottom:8px; }
                 .workspace-item-branch-children { margin-top:6px; }
+                .workspace-paradigm-mount-collection { border:1px solid rgba(52,152,219,.30); border-radius:14px; padding:8px 10px; margin-bottom:10px; background:linear-gradient(180deg, rgba(52,152,219,.08) 0%, rgba(255,255,255,0) 100%); box-shadow:inset 0 0 0 1px rgba(52,152,219,.08); }
+                .workspace-paradigm-mount-collection-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+                .workspace-paradigm-mount-collection-left { display:flex; align-items:flex-start; gap:8px; min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-mount-collection-meta { min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-mount-collection-title { font-weight:700; color:var(--text-normal); }
+                .workspace-paradigm-mount-collection-subtitle { font-size:12px; color:var(--text-muted); margin-top:2px; }
+                .workspace-paradigm-mount-collection-children { margin-top:8px; display:flex; flex-direction:column; gap:8px; }
+                .workspace-paradigm-mount-group { border:1px solid rgba(52,152,219,.24); border-radius:12px; padding:8px; margin-bottom:8px; }
+                .workspace-paradigm-mount-group-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+                .workspace-paradigm-mount-group-left { display:flex; align-items:flex-start; gap:8px; min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-mount-group-meta { min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-mount-group-title { font-weight:700; color:var(--text-normal); }
+                .workspace-paradigm-mount-group-subtitle { font-size:12px; color:var(--text-muted); margin-top:2px; }
+                .workspace-paradigm-mount-group-children { margin-top:8px; }
                 .workspace-item-line { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; margin-bottom:4px; border:1px solid var(--background-modifier-border); transition:filter .15s,border-color .15s; user-select:none; }
                 .workspace-item-line.is-paradigm { border-style:dashed; }
                 .workspace-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
@@ -3401,63 +4004,80 @@
                 const tab = getTabById(tabId);
                 if (!tab) return;
                 const childIds = getTabChildrenIds(tab.id);
-                const capsule = container.createEl("div", {
-                    cls: `workspace-tab-capsule ${tab.id === activeTabId ? "is-current" : ""}`
+                const hasChildren = childIds.length > 0;
+                const collapsed = hasChildren ? isTabTreeCollapsed(tab.id) : false;
+                const wrapper = container.createEl("div", {
+                    cls: hasChildren
+                        ? `workspace-tab-capsule ${tab.id === activeTabId ? "is-current" : ""}`
+                        : "workspace-tab-leaf"
                 });
-                capsule.draggable = true;
-                capsule.addEventListener("dragstart", (e) => {
+                wrapper.draggable = true;
+                wrapper.addEventListener("dragstart", (e) => {
                     e.stopPropagation();
                     window.workspaceTabCurrentDragId = tab.id;
                     e.dataTransfer.effectAllowed = "move";
                     e.dataTransfer.setData("text/plain", tab.id);
-                    setTimeout(() => capsule.classList.add("is-dragging"), 0);
+                    setTimeout(() => wrapper.classList.add("is-dragging"), 0);
                 });
-                capsule.addEventListener("dragend", (e) => {
+                wrapper.addEventListener("dragend", (e) => {
                     e.stopPropagation();
                     window.workspaceTabCurrentDragId = null;
-                    capsule.classList.remove("is-dragging", "drag-over-before", "drag-over-after", "drag-over-child");
+                    wrapper.classList.remove("is-dragging", "drag-over-before", "drag-over-after", "drag-over-child");
                 });
-                capsule.addEventListener("dragover", (e) => {
+                wrapper.addEventListener("dragover", (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     const draggedId = window.workspaceTabCurrentDragId;
                     if (!draggedId || draggedId === tab.id) return;
-                    const rect = capsule.getBoundingClientRect();
+                    const rect = wrapper.getBoundingClientRect();
                     const ratio = (e.clientX - rect.left) / Math.max(rect.width, 1);
-                    capsule.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
-                    if (ratio < 0.25) capsule.classList.add("drag-over-before");
-                    else if (ratio > 0.75) capsule.classList.add("drag-over-after");
-                    else capsule.classList.add("drag-over-child");
+                    wrapper.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    if (ratio < 0.25) wrapper.classList.add("drag-over-before");
+                    else if (ratio > 0.75) wrapper.classList.add("drag-over-after");
+                    else wrapper.classList.add("drag-over-child");
                 });
-                capsule.addEventListener("dragleave", (e) => {
+                wrapper.addEventListener("dragleave", (e) => {
                     e.stopPropagation();
-                    capsule.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    wrapper.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
                 });
-                capsule.addEventListener("drop", async (e) => {
+                wrapper.addEventListener("drop", async (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     const draggedId = window.workspaceTabCurrentDragId;
-                    capsule.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    wrapper.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
                     if (!draggedId || draggedId === tab.id) return;
-                    const rect = capsule.getBoundingClientRect();
+                    const rect = wrapper.getBoundingClientRect();
                     const ratio = (e.clientX - rect.left) / Math.max(rect.width, 1);
                     const position = ratio < 0.25 ? "before" : (ratio > 0.75 ? "after" : "child");
                     await moveTabOrder(draggedId, tab.id, position);
                 });
 
-                const tabBtn = capsule.createEl("button", {
+                const headRow = hasChildren
+                    ? wrapper.createEl("div", { cls: "workspace-tab-capsule-head" })
+                    : wrapper;
+
+                if (hasChildren) {
+                    const collapseBtn = headRow.createEl("button", {
+                        cls: `workspace-tab-collapse-toggle ${collapsed ? "is-collapsed" : ""}`,
+                        text: collapsed ? "▶" : "▼",
+                        attr: { type: "button", title: collapsed ? "展开子 Tab" : "折叠子 Tab" }
+                    });
+                    collapseBtn.onclick = async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        await toggleTabTreeCollapsed(tab.id);
+                    };
+                }
+
+                const tabBtn = headRow.createEl("button", {
                     cls: `workspace-tab-btn ${tab.id === activeTabId ? "active" : ""}`,
                     attr: { title: "点击切换；拖拽可调整为前/后/子级" }
                 });
                 tabBtn.createEl("span", { text: `${tab.id === activeTabId ? "● " : ""}${tab.name}` });
-                tabBtn.createEl("span", {
-                    cls: "workspace-tab-badge",
-                    text: `${childIds.length} 子Tab`
-                });
                 tabBtn.onclick = async () => { await switchTab(tab.id); };
 
-                if (childIds.length > 0) {
-                    const childWrap = capsule.createEl("div", { cls: "workspace-tab-children" });
+                if (hasChildren && !collapsed) {
+                    const childWrap = wrapper.createEl("div", { cls: "workspace-tab-children" });
                     childIds.forEach((childId) => renderTabCapsule(childWrap, childId));
                 }
             };
@@ -3501,6 +4121,8 @@
                 const panelHead = panel.createEl("div", { cls: "workspace-panel-head" });
                 panelHead.createEl("div", { text: "📐 范式管理", cls: "workspace-panel-title" });
                 const panelActions = panelHead.createEl("div", { cls: "workspace-main-actions" });
+                const createCategoryBtn = panelActions.createEl("button", { text: "新建分类", cls: "workspace-sub-btn" });
+                createCategoryBtn.onclick = async () => { await createParadigmCategory(); };
                 const createBtn = panelActions.createEl("button", { text: "新建范式", cls: "workspace-sub-btn" });
                 createBtn.onclick = async () => { await createParadigm(); };
                 const unbindBtn = panelActions.createEl("button", { text: "解绑当前Tab全部范式", cls: "workspace-sub-btn" });
@@ -3524,38 +4146,60 @@
                 });
                 const paradigmRootDropZone = panel.createEl("div", {
                     cls: "workspace-paradigm-root-drop-zone",
-                    text: "↥ 拖到这里设为顶层范式"
+                    text: "↥ 拖分类到这里设为顶层；拖范式到这里移出分类"
                 });
                 paradigmRootDropZone.addEventListener("dragover", (e) => {
                     e.preventDefault();
-                    if (!window.workspaceParadigmNodeDragId) return;
+                    if (!window.workspaceParadigmNodeDragId && !window.workspaceParadigmCategoryDragId) return;
                     paradigmRootDropZone.classList.add("drag-over");
                 });
                 paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
                 paradigmRootDropZone.addEventListener("drop", async (e) => {
                     e.preventDefault();
                     paradigmRootDropZone.classList.remove("drag-over");
-                    const draggedId = String(window.workspaceParadigmNodeDragId || "").trim();
-                    if (!draggedId || !getParadigmById(draggedId)) return;
-                    await updateWorkspaceData((data) => {
-                        ensureParadigmHierarchyState(data);
-                        const dragged = data.paradigmsById?.[draggedId];
-                        if (!dragged) return;
-                        removeIdFromSimpleChildrenMap(data.childParadigmIdsByParent, draggedId);
-                        dragged.parentParadigmId = null;
-                        if (!Array.isArray(data.childParadigmIdsByParent[ROOT_KEY])) data.childParadigmIdsByParent[ROOT_KEY] = [];
-                        data.childParadigmIdsByParent[ROOT_KEY].push(draggedId);
-                        syncParadigmAcrossTabsInData(data);
-                    });
+                    const draggedCategoryId = String(window.workspaceParadigmCategoryDragId || "").trim();
+                    if (draggedCategoryId && getParadigmCategoryById(draggedCategoryId)) {
+                        await updateWorkspaceData((data) => {
+                            ensureParadigmCategoryHierarchyState(data);
+                            const dragged = data.paradigmCategoriesById?.[draggedCategoryId];
+                            if (!dragged) return;
+                            removeIdFromSimpleChildrenMap(data.childParadigmCategoryIdsByParent, draggedCategoryId);
+                            dragged.parentCategoryId = null;
+                            if (!Array.isArray(data.childParadigmCategoryIdsByParent[ROOT_KEY])) data.childParadigmCategoryIdsByParent[ROOT_KEY] = [];
+                            data.childParadigmCategoryIdsByParent[ROOT_KEY].push(draggedCategoryId);
+                        });
+                        return;
+                    }
+                    const draggedParadigmId = String(window.workspaceParadigmNodeDragId || "").trim();
+                    if (!draggedParadigmId || !getParadigmById(draggedParadigmId)) return;
+                    await assignParadigmCategory(draggedParadigmId, null, { detachFromParent: true });
                 });
 
                 const list = panel.createEl("div", { cls: "workspace-panel-list workspace-paradigm-tree-wrap" });
+                const getParadigmRowDropPosition = (row, left, event) => {
+                    const rect = row.getBoundingClientRect();
+                    const offsetX = event.clientX - rect.left;
+                    const childThreshold = left
+                        ? Math.min(
+                            rect.width - 28,
+                            Math.max(rect.width * 0.42, left.getBoundingClientRect().right - rect.left + 14)
+                        )
+                        : rect.width * 0.5;
+                    if (offsetX >= childThreshold) return "child";
+                    return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+                };
+
                 const renderParadigmRow = (container, paradigmId, level = 0) => {
                     const paradigm = getParadigmById(paradigmId);
                     if (!paradigm) return;
-                    const childParadigmIds = getChildParadigmIds(paradigm.id);
+                    const currentCategoryId = paradigm.categoryId || null;
+                    const childParadigmIds = getChildParadigmIds(paradigm.id).filter((childId) => {
+                        const childParadigm = getParadigmById(childId);
+                        return !!childParadigm && (childParadigm.categoryId || null) === currentCategoryId;
+                    });
                     const isCollapsed = childParadigmIds.length > 0 ? isParadigmTreeCollapsed(paradigm.id) : false;
                     const paradigmVisual = getParadigmVisual(paradigm.id);
+                    const category = currentCategoryId ? getParadigmCategoryById(currentCategoryId) : null;
                     let left = null;
                     const branch = container.createEl("div", {
                         cls: `workspace-paradigm-branch ${childParadigmIds.length > 0 ? "has-children" : ""}`,
@@ -3569,18 +4213,6 @@
                     const row = branch.createEl("div", {
                         cls: "workspace-panel-row"
                     });
-                    const getParadigmRowDropPosition = (event) => {
-                        const rect = row.getBoundingClientRect();
-                        const offsetX = event.clientX - rect.left;
-                        const childThreshold = left
-                            ? Math.min(
-                                rect.width - 28,
-                                Math.max(rect.width * 0.42, left.getBoundingClientRect().right - rect.left + 14)
-                            )
-                            : rect.width * 0.5;
-                        if (offsetX >= childThreshold) return "child";
-                        return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
-                    };
                     const itemCount = Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((x) => x.paradigmId === paradigm.id).length;
                     const isBound = boundParadigmIds.includes(paradigm.id);
                     const bindingRootId = includedParadigmRootMap.get(paradigm.id) || null;
@@ -3601,9 +4233,10 @@
                     row.addEventListener("dragover", (e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (window.workspaceParadigmCategoryDragId) return;
                         const draggedId = window.workspaceParadigmNodeDragId;
                         if (!draggedId || draggedId === paradigm.id) return;
-                        const position = getParadigmRowDropPosition(e);
+                        const position = getParadigmRowDropPosition(row, left, e);
                         row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
                         if (position === "child") row.classList.add("drag-over-child");
                         else if (position === "before") row.classList.add("drag-over-top");
@@ -3616,10 +4249,11 @@
                     row.addEventListener("drop", async (e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (window.workspaceParadigmCategoryDragId) return;
                         const draggedId = window.workspaceParadigmNodeDragId;
                         row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
                         if (!draggedId || draggedId === paradigm.id) return;
-                        const position = getParadigmRowDropPosition(e);
+                        const position = getParadigmRowDropPosition(row, left, e);
                         await moveParadigmOrder(draggedId, paradigm.id, position);
                     });
 
@@ -3641,12 +4275,12 @@
                         ? "当前Tab直接绑定"
                         : (isInherited ? `随上级范式 ${getParadigmById(bindingRootId)?.name || bindingRootId} 挂入` : "未绑定到当前Tab");
                     left.createEl("small", {
-                        text: `${paradigm.id} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
+                        text: `${paradigm.id} · 分类 ${category?.name || "未分类"} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
                         attr: { style: "color:var(--text-muted);" }
                     });
                     left.createEl("div", {
                         cls: "workspace-panel-row-hint",
-                        text: "向右拖入可设为子范式"
+                        text: "向右拖入可设为子范式；拖到分类行可归类"
                     });
 
                     const actions = row.createEl("div", { cls: "workspace-main-actions" });
@@ -3660,6 +4294,8 @@
                         window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === paradigm.id ? null : paradigm.id;
                         renderViewFn?.();
                     };
+                    const categoryBtn = actions.createEl("button", { text: "分类", cls: "workspace-sub-btn" });
+                    categoryBtn.onclick = async () => { await promptParadigmCategoryAssignment(paradigm.id); };
                     const renameBtn = actions.createEl("button", { text: "重命名", cls: "workspace-sub-btn" });
                     renameBtn.onclick = async () => { await renameParadigm(paradigm.id); };
                     const deleteBtn = actions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
@@ -3670,7 +4306,162 @@
                         childParadigmIds.forEach((childId) => renderParadigmRow(childWrap, childId, level + 1));
                     }
                 };
-                getChildParadigmIds(null).forEach((paradigmId) => renderParadigmRow(list, paradigmId, 0));
+
+                const renderParadigmCategoryRow = (container, categoryId, level = 0) => {
+                    const category = getParadigmCategoryById(categoryId);
+                    if (!category) return;
+                    const childCategoryIds = getChildParadigmCategoryIds(category.id);
+                    const paradigmRootIds = getCategoryParadigmRootIds(category.id);
+                    const totalParadigmCount = getParadigmCountForCategoryScope(category.id);
+                    const isCollapsed = (childCategoryIds.length > 0 || paradigmRootIds.length > 0)
+                        ? isParadigmCategoryTreeCollapsed(category.id)
+                        : false;
+                    const categoryVisual = getParadigmVisual(category.id);
+                    let left = null;
+                    const branch = container.createEl("div", {
+                        cls: `workspace-paradigm-category-branch ${(childCategoryIds.length > 0 || paradigmRootIds.length > 0) ? "has-children" : ""}`,
+                        attr: { style: `margin-left:${level * 18}px;` }
+                    });
+                    if (categoryVisual) {
+                        branch.style.borderColor = `${categoryVisual.accent}33`;
+                        branch.style.background = `linear-gradient(180deg, ${categoryVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
+                        branch.style.boxShadow = `inset 0 0 0 1px ${categoryVisual.accent}10`;
+                    }
+                    const row = branch.createEl("div", {
+                        cls: "workspace-panel-row workspace-paradigm-category-row"
+                    });
+                    row.draggable = true;
+                    row.addEventListener("dragstart", (e) => {
+                        e.stopPropagation();
+                        window.workspaceParadigmCategoryDragId = category.id;
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", category.id);
+                        setTimeout(() => row.classList.add("is-dragging"), 0);
+                    });
+                    row.addEventListener("dragend", (e) => {
+                        e.stopPropagation();
+                        window.workspaceParadigmCategoryDragId = null;
+                        row.classList.remove("is-dragging", "drag-over-top", "drag-over-bottom", "drag-over-child");
+                    });
+                    row.addEventListener("dragover", (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                        const draggedCategoryId = window.workspaceParadigmCategoryDragId;
+                        if (draggedCategoryId && draggedCategoryId !== category.id) {
+                            const position = getParadigmRowDropPosition(row, left, e);
+                            if (position === "child") row.classList.add("drag-over-child");
+                            else if (position === "before") row.classList.add("drag-over-top");
+                            else row.classList.add("drag-over-bottom");
+                            return;
+                        }
+                        const draggedParadigmId = window.workspaceParadigmNodeDragId;
+                        if (draggedParadigmId && getParadigmById(draggedParadigmId)) row.classList.add("drag-over-child");
+                    });
+                    row.addEventListener("dragleave", (e) => {
+                        e.stopPropagation();
+                        row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    });
+                    row.addEventListener("drop", async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                        const draggedCategoryId = window.workspaceParadigmCategoryDragId;
+                        if (draggedCategoryId && draggedCategoryId !== category.id) {
+                            const position = getParadigmRowDropPosition(row, left, e);
+                            await moveParadigmCategoryOrder(draggedCategoryId, category.id, position);
+                            return;
+                        }
+                        const draggedParadigmId = window.workspaceParadigmNodeDragId;
+                        if (draggedParadigmId && getParadigmById(draggedParadigmId)) {
+                            await assignParadigmCategory(draggedParadigmId, category.id, { detachFromParent: true });
+                        }
+                    });
+
+                    const head = row.createEl("div", { cls: "workspace-panel-row-head" });
+                    const collapseBtn = head.createEl("span", {
+                        text: (childCategoryIds.length > 0 || paradigmRootIds.length > 0) ? (isCollapsed ? "▶" : "▼") : "•",
+                        cls: `workspace-paradigm-collapse ${(childCategoryIds.length > 0 || paradigmRootIds.length > 0) ? "clickable" : "dot"}`
+                    });
+                    if (childCategoryIds.length > 0 || paradigmRootIds.length > 0) {
+                        collapseBtn.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleParadigmCategoryTreeCollapsed(category.id);
+                        };
+                    }
+                    left = head.createEl("div", { cls: "workspace-panel-row-left" });
+                    left.createEl("div", { text: `📚 ${category.name}` });
+                    left.createEl("small", {
+                        text: `${category.id} · 子分类 ${childCategoryIds.length} · 直属范式 ${paradigmRootIds.length} · 全部范式 ${totalParadigmCount}`,
+                        attr: { style: "color:var(--text-muted);" }
+                    });
+                    left.createEl("div", {
+                        cls: "workspace-panel-row-hint",
+                        text: "拖分类可调整层级；把范式拖到这里可归入此类"
+                    });
+
+                    const actions = row.createEl("div", { cls: "workspace-main-actions" });
+                    const addChildCategoryBtn = actions.createEl("button", { text: "＋ 子分类", cls: "workspace-sub-btn" });
+                    addChildCategoryBtn.onclick = async () => { await createParadigmCategory(category.id); };
+                    const addParadigmBtn = actions.createEl("button", { text: "＋ 范式", cls: "workspace-sub-btn" });
+                    addParadigmBtn.onclick = async () => { await createParadigm(category.id); };
+                    const renameBtn = actions.createEl("button", { text: "重命名", cls: "workspace-sub-btn" });
+                    renameBtn.onclick = async () => { await renameParadigmCategory(category.id); };
+                    const deleteBtn = actions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
+                    deleteBtn.onclick = async () => { await deleteParadigmCategory(category.id); };
+
+                    if (!isCollapsed) {
+                        const childWrap = branch.createEl("div", { cls: "workspace-paradigm-category-children" });
+                        paradigmRootIds.forEach((paradigmId) => renderParadigmRow(childWrap, paradigmId, 0));
+                        childCategoryIds.forEach((childId) => renderParadigmCategoryRow(childWrap, childId, level + 1));
+                    }
+                };
+
+                const renderUncategorizedParadigmGroup = (container) => {
+                    const paradigmRootIds = getCategoryParadigmRootIds(null);
+                    const isCollapsed = paradigmRootIds.length > 0 ? isParadigmCategoryTreeCollapsed(UNCATEGORIZED_PARADIGM_GROUP_ID) : false;
+                    const branch = container.createEl("div", {
+                        cls: `workspace-paradigm-category-branch uncategorized ${paradigmRootIds.length > 0 ? "has-children" : ""}`
+                    });
+                    const row = branch.createEl("div", {
+                        cls: "workspace-panel-row workspace-paradigm-category-row uncategorized"
+                    });
+                    const head = row.createEl("div", { cls: "workspace-panel-row-head" });
+                    const collapseBtn = head.createEl("span", {
+                        text: paradigmRootIds.length > 0 ? (isCollapsed ? "▶" : "▼") : "•",
+                        cls: `workspace-paradigm-collapse ${paradigmRootIds.length > 0 ? "clickable" : "dot"}`
+                    });
+                    if (paradigmRootIds.length > 0) {
+                        collapseBtn.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleParadigmCategoryTreeCollapsed(UNCATEGORIZED_PARADIGM_GROUP_ID);
+                        };
+                    }
+                    const left = head.createEl("div", { cls: "workspace-panel-row-left" });
+                    left.createEl("div", { text: "🗂 未分类" });
+                    left.createEl("small", {
+                        text: `直属范式 ${paradigmRootIds.length} · 全部范式 ${getParadigmCountForCategoryScope(null)}`,
+                        attr: { style: "color:var(--text-muted);" }
+                    });
+                    left.createEl("div", {
+                        cls: "workspace-panel-row-hint",
+                        text: "把范式拖到顶部拖放区，可直接移到未分类"
+                    });
+                    const actions = row.createEl("div", { cls: "workspace-main-actions" });
+                    const addParadigmBtn = actions.createEl("button", { text: "＋ 范式", cls: "workspace-sub-btn" });
+                    addParadigmBtn.onclick = async () => { await createParadigm(null); };
+                    if (!isCollapsed) {
+                        const childWrap = branch.createEl("div", { cls: "workspace-paradigm-category-children" });
+                        if (paradigmRootIds.length === 0) childWrap.createEl("div", { text: "_暂无未分类范式_", cls: "workspace-empty" });
+                        else paradigmRootIds.forEach((paradigmId) => renderParadigmRow(childWrap, paradigmId, 0));
+                    }
+                };
+
+                const rootCategoryIds = getChildParadigmCategoryIds(null);
+                rootCategoryIds.forEach((categoryId) => renderParadigmCategoryRow(list, categoryId, 0));
+                renderUncategorizedParadigmGroup(list);
 
                 const editingParadigmId = window.workspaceEditingParadigmId;
                 const editingParadigm = editingParadigmId ? getParadigmById(editingParadigmId) : null;
@@ -3795,174 +4586,7 @@
     }
 })();
 ```
-
-## Workspace V2（多 Tab + 范式 + 快照）改造规范
-
-> 目标：在保留扁平字典 JSON 结构的前提下，引入多 Tab、范式（父子条目）、范式挂载同步、命名快照，并保证对旧数据非破坏升级。
-
-### 1) 核心模型（保持扁平字典）
-
-```json
-{
-  "schemaVersion": "2.2",
-  "lastModified": "2026-03-05 17:00:00",
-  "activeTabId": "tab_xxx",
-  "tabsById": {
-    "tab_xxx": {
-      "id": "tab_xxx",
-      "name": "项目A",
-      "kind": "project",
-      "boundParadigmIds": ["pg_xxx", "pg_yyy"],
-      "boundParadigmItemKeys": [],
-      "boundParadigmId": "pg_xxx",
-      "createdAt": "2026-03-05 16:50:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "tabOrder": ["tab_xxx"],
-  "itemsById": {
-    "item_x1": {
-      "id": "item_x1",
-      "title": "需求澄清",
-      "parentId": null,
-      "tabId": "tab_xxx",
-      "sourceType": "tab",
-      "sourceParadigmId": null,
-      "sourceParadigmItemId": null,
-      "isCollapsed": false,
-      "imageRef": "",
-      "comment": "",
-      "noteBinding": null,
-      "createdAt": "2026-03-05 16:55:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    },
-    "item_p1_in_tab_xxx": {
-      "id": "item_p1_in_tab_xxx",
-      "title": "范式：目标定义",
-      "parentId": null,
-      "tabId": "tab_xxx",
-      "sourceType": "paradigm",
-      "sourceParadigmId": "pg_xxx",
-      "sourceParadigmItemId": "pgItem_p1",
-      "sourceParadigmBindingRootId": "pg_xxx",
-      "sourceParadigmMountMode": "direct",
-      "isCollapsed": false,
-      "imageRef": "",
-      "comment": "",
-      "noteBinding": null,
-      "createdAt": "2026-03-05 16:56:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "childrenByParentByTab": {
-    "tab_xxx::__root__": ["item_x1", "item_p1_in_tab_xxx"],
-    "tab_xxx::item_p1_in_tab_xxx": []
-  },
-  "paradigmsById": {
-    "pg_xxx": {
-      "id": "pg_xxx",
-      "name": "任务启动范式",
-      "parentParadigmId": null,
-      "createdAt": "2026-03-05 16:40:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    },
-    "pg_yyy": {
-      "id": "pg_yyy",
-      "name": "任务启动-复盘子范式",
-      "parentParadigmId": "pg_xxx",
-      "createdAt": "2026-03-05 16:40:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "childParadigmIdsByParent": {
-    "__root__": ["pg_xxx"],
-    "pg_xxx": ["pg_yyy"]
-  },
-  "paradigmItemsById": {
-    "pgItem_p1": {
-      "id": "pgItem_p1",
-      "paradigmId": "pg_xxx",
-      "title": "目标定义",
-      "parentId": null,
-      "order": 10,
-      "imageRef": "",
-      "comment": "",
-      "noteBinding": null,
-      "createdAt": "2026-03-05 16:41:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "paradigmChildrenByParent": {
-    "pg_xxx::__root__": ["pgItem_p1"]
-  },
-  "paradigmToTabItemMapByTab": {
-    "tab_xxx::pgItem_p1": "item_p1_in_tab_xxx"
-  },
-  "collapsedById": {},
-  "snapshotsById": {},
-  "snapshotOrderByTab": {
-    "tab_xxx": []
-  }
-}
-```
-
-说明：
-- `childrenByParentByTab` 与 `paradigmChildrenByParent` 用 `tabId::parentId` / `paradigmId::parentId` 作为键，保持扁平字典。
-- `childParadigmIdsByParent` 用 `parentParadigmId -> 子范式列表` 记录范式之间的上下级，同样是扁平字典。
-- 范式挂载条目通过 `sourceType=paradigm` + `sourceParadigmItemId` 明确标注“这是范式条目”。
-- 当父范式被绑定到 Tab 时，子范式条目会一并进入视图，并通过 `sourceParadigmBindingRootId` / `sourceParadigmMountMode` 标识是“直接绑定”还是“由上级范式带入”。
-- 范式条目与挂载实例都支持 `imageRef`、`comment`、`noteBinding`，并按范式同步到各 Tab。
-- Tab 可表示项目/任务/对象，建议 `kind` 支持 `project | task | object`。
-
-### 2) Tab 系统规则
-
-- 多开界面：顶部 `tabOrder` 渲染 Tab 条；`activeTabId` 决定当前树。
-- Tab 条支持拖拽重排，直接更新 `tabOrder`（按前后插入）。
-- Tab 条支持自动换行（Tab 很多时折行显示）。
-- Tab 操作：新增、重命名、关闭（关闭前确认是否保留快照）。
-- 每个 Tab 独立树：渲染和拖拽只读写当前 `tabId` 对应的 `childrenByParentByTab` 关系。
-
-### 3) 范式系统规则
-
-- 范式是独立父子树：`paradigmsById + paradigmItemsById + paradigmChildrenByParent`。
-- 范式与范式之间也可形成层级：`parentParadigmId + childParadigmIdsByParent`。
-- Tab 可绑定多个“根范式”：在 Tab 上保存 `boundParadigmIds`（兼容保留 `boundParadigmId` 首项），并建立 `paradigmToTabItemMapByTab`。
-- 当根范式被绑定后，它的子范式、孙范式会自动纳入当前 Tab 视图。
-- 挂载时创建实例条目：
-  - 每个范式条目在 Tab 内有一个实例 `itemId`（可编辑显示状态，但核心标题/结构受范式驱动）。
-  - 实例条目保留 `sourceParadigmItemId`，用于后续同步定位。
-
-### 4) 范式编辑同步（你要求的“联动移动”）
-
-- 范式条目改名：同步所有绑定 Tab 的实例标题。
-- 范式条目移动（改 parent/order）：
-  - 在每个绑定 Tab 中找到对应实例条目并更新 `parentId` 与同级顺序。
-  - 如果该范式实例节点下挂了 Tab 私有子节点，这些子节点不变；因为父节点实例 ID 不变，随父节点整体移动。
-- 范式条目删除：对应实例条目标记为 `orphaned=true`（推荐）或按策略级联删除。
-
-### 5) 快照系统规则
-
-- 快照是“Tab 级只读历史切片”，不与当前范式冲突。
-- 保存快照（命名保存）时写入：
-  - `snapshotsById[snapshotId] = { id, tabId, name, createdAt, itemsById, childrenByParentByTab, collapsedById }`
-- 浏览快照：独立视图只读渲染快照树。
-- 恢复策略建议：`恢复为新 Tab`，避免覆盖当前 Tab 与范式同步状态。
-
-### 6) 非破坏升级与兼容
-
-- `schemaVersion 1.x -> 2.0` 迁移时：
-  - 原 `itemsById/childrenByParent` 迁移到默认 `tab_default`。
-  - 原字段保留，不做删除式重写；仅追加新字段与新索引。
-- 更新采用“复制-修改-保存”：
-  - 读取当前 JSON -> `clone` -> 在内存变更 -> `sanitize` -> 整体写回。
-  - 禁止就地破坏旧 key（尤其历史快照与旧绑定）。
-
-### 7) UI 最小落地清单
-
-- 顶部：Tab 条 + `新建Tab` + `快照`按钮。
-- 侧栏/弹窗：范式管理（新建范式、编辑范式树、绑定到当前 Tab）。
-- 主树：范式条目标识（如 `📐` 徽标）、普通条目保持原操作。
-- 快照面板：按 Tab 列出快照，支持“查看”和“恢复为新 Tab”。
+[[说明这个视图]]
 
 ```mermaid
 flowchart LR
