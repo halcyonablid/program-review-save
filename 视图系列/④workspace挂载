@@ -129,6 +129,7 @@
             collapsedById: {},
             tabTreeCollapsedById: {},
             paradigmTreeCollapsedById: {},
+            paradigmEditorScopeCollapsedById: {},
             paradigmCategoryCollapsedById: {},
             paradigmMountGroupCollapsedByKey: {},
             paradigmMountCollectionCollapsedByTab: {},
@@ -701,6 +702,9 @@
             const incomingParadigmTreeCollapsed = src.paradigmTreeCollapsedById && typeof src.paradigmTreeCollapsedById === "object"
                 ? src.paradigmTreeCollapsedById
                 : {};
+            const incomingParadigmEditorScopeCollapsed = src.paradigmEditorScopeCollapsedById && typeof src.paradigmEditorScopeCollapsedById === "object"
+                ? src.paradigmEditorScopeCollapsedById
+                : {};
             const incomingParadigmCategoryCollapsed = src.paradigmCategoryCollapsedById && typeof src.paradigmCategoryCollapsedById === "object"
                 ? src.paradigmCategoryCollapsedById
                 : {};
@@ -731,6 +735,12 @@
                 const normalizedId = String(id || "").trim();
                 if (!normalizedId || !paradigmsById[normalizedId]) return;
                 paradigmTreeCollapsedById[normalizedId] = !!incomingParadigmTreeCollapsed[id];
+            });
+            const paradigmEditorScopeCollapsedById = {};
+            Object.keys(incomingParadigmEditorScopeCollapsed).forEach((id) => {
+                const normalizedId = String(id || "").trim();
+                if (!normalizedId || !paradigmsById[normalizedId]) return;
+                paradigmEditorScopeCollapsedById[normalizedId] = !!incomingParadigmEditorScopeCollapsed[id];
             });
             const paradigmCategoryCollapsedById = {};
             Object.keys(incomingParadigmCategoryCollapsed).forEach((id) => {
@@ -795,6 +805,7 @@
                 collapsedById,
                 tabTreeCollapsedById,
                 paradigmTreeCollapsedById,
+                paradigmEditorScopeCollapsedById,
                 paradigmCategoryCollapsedById,
                 paradigmMountGroupCollapsedByKey,
                 paradigmMountCollectionCollapsedByTab,
@@ -1695,6 +1706,61 @@
             const sourceParadigm = getParadigmSourceParadigm(paradigm) || paradigm;
             return isParadigmCopy(paradigm) ? `${sourceParadigm.name} [副本]` : sourceParadigm.name;
         };
+        const getParadigmSourcePathLabel = (paradigmOrId) => {
+            const sourceParadigm = getParadigmSourceParadigm(paradigmOrId);
+            if (!sourceParadigm) return String(paradigmOrId || "").trim();
+            const parts = [];
+            const categoryPath = sourceParadigm.categoryId ? getParadigmCategoryPathLabel(sourceParadigm.categoryId) : "未分类";
+            if (categoryPath) parts.push(categoryPath);
+            const paradigmParts = [];
+            const seen = new Set();
+            let cursor = sourceParadigm;
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                paradigmParts.unshift(cursor.id === sourceParadigm.id ? sourceParadigm.name : getParadigmNodeLabel(cursor));
+                cursor = cursor.parentParadigmId ? getParadigmById(cursor.parentParadigmId) : null;
+            }
+            return parts.concat(paradigmParts).filter(Boolean).join(" - ");
+        };
+        const getParadigmCopyReferenceEntries = (sourceParadigmId) => {
+            const sourceId = String(sourceParadigmId || "").trim();
+            if (!sourceId) return [];
+            return Object.values(WORKSPACE_DATA.paradigmsById || {})
+                .filter((pg) => !!pg && String(pg.sourceParadigmId || "").trim() === sourceId)
+                .map((copyParadigm) => {
+                    const hostParadigm = copyParadigm.parentParadigmId ? getParadigmById(copyParadigm.parentParadigmId) : null;
+                    return {
+                        copyParadigm,
+                        hostParadigm,
+                        hostLabel: hostParadigm ? `${getParadigmNodeLabel(hostParadigm)} (${hostParadigm.id})` : "根层"
+                    };
+                })
+                .sort((a, b) => a.hostLabel.localeCompare(b.hostLabel, "zh"));
+        };
+        const summarizeParadigmCopyReferences = (sourceParadigmId, maxCount = 4) => {
+            const entries = getParadigmCopyReferenceEntries(sourceParadigmId);
+            if (entries.length === 0) return "";
+            const preview = entries
+                .slice(0, maxCount)
+                .map((entry) => `${entry.hostLabel} / ${entry.copyParadigm.id}`)
+                .join("、");
+            return `被引用于 ${entries.length} 处：${preview}${entries.length > maxCount ? ` 等 ${entries.length} 处` : ""}`;
+        };
+        const getParadigmNodeSubtreeIds = (paradigmNodeId) => {
+            const rootId = String(paradigmNodeId || "").trim();
+            if (!rootId || !getParadigmById(rootId)) return [];
+            const out = [];
+            const seen = new Set();
+            const stack = [rootId];
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !getParadigmById(current)) continue;
+                seen.add(current);
+                out.push(current);
+                getEffectiveChildParadigmIds(current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
         const getChildParadigmIds = (parentParadigmId = null) => (WORKSPACE_DATA.childParadigmIdsByParent?.[paradigmTreeKey(parentParadigmId)] || []).slice();
         const getEffectiveChildParadigmIds = (paradigmId) => {
             const paradigm = getParadigmById(paradigmId);
@@ -1780,6 +1846,15 @@
             await updateWorkspaceData((data) => {
                 if (!data.paradigmTreeCollapsedById || typeof data.paradigmTreeCollapsedById !== "object") data.paradigmTreeCollapsedById = {};
                 data.paradigmTreeCollapsedById[id] = !data.paradigmTreeCollapsedById[id];
+            });
+        };
+        const isParadigmEditorScopeCollapsed = (paradigmId) => !!WORKSPACE_DATA?.paradigmEditorScopeCollapsedById?.[String(paradigmId || "").trim()];
+        const toggleParadigmEditorScopeCollapsed = async (paradigmId) => {
+            const id = String(paradigmId || "").trim();
+            if (!id) return;
+            await updateWorkspaceData((data) => {
+                if (!data.paradigmEditorScopeCollapsedById || typeof data.paradigmEditorScopeCollapsedById !== "object") data.paradigmEditorScopeCollapsedById = {};
+                data.paradigmEditorScopeCollapsedById[id] = !data.paradigmEditorScopeCollapsedById[id];
             });
         };
         const isParadigmCategoryTreeCollapsed = (categoryId) => !!WORKSPACE_DATA?.paradigmCategoryCollapsedById?.[String(categoryId || "").trim()];
@@ -3272,16 +3347,6 @@
         };
 
         const addItem = async (parentId = null, tabId = null) => {
-            const parentItem = parentId ? getItemById(parentId) : null;
-            if (parentItem && isParadigmMountedItem(parentItem)) {
-                const sourceItem = getMountedParadigmSourceItem(parentItem);
-                if (!sourceItem) {
-                    new Notice("⚠️ 未找到引用挂载对应的定义源");
-                    return;
-                }
-                await addParadigmItem(sourceItem.paradigmId, sourceItem.id);
-                return;
-            }
             const targetTabId = String(tabId || getActiveTabId()).trim() || getActiveTabId();
             const title = await runWithPromptLock(() => prompt(parentId ? "添加子条目" : "添加根条目", "输入条目名称"));
             if (!title) return;
@@ -3310,6 +3375,17 @@
                 if (!data.childrenByParentByTab[pKey]) data.childrenByParentByTab[pKey] = [];
                 data.childrenByParentByTab[pKey].unshift(id);
             });
+        };
+
+        const addMountedParadigmChild = async (mountedItemId) => {
+            const mountedItem = getItemById(mountedItemId);
+            if (!mountedItem || !isParadigmMountedItem(mountedItem)) return;
+            const sourceItem = getMountedParadigmSourceItem(mountedItem);
+            if (!sourceItem) {
+                new Notice("⚠️ 未找到引用挂载对应的定义源");
+                return;
+            }
+            await addParadigmItem(sourceItem.paradigmId, sourceItem.id);
         };
 
         const renameItem = async (id) => {
@@ -3739,6 +3815,7 @@
                 cls: `workspace-item-branch ${isParadigm && hasKids ? "is-paradigm-group" : ""}`,
                 attr: { style: `margin-left:${level * 26}px;` }
             });
+            if (hasKids && item.isCollapsed) branch.classList.add("is-collapsed");
             if (isParadigm && hasKids && branchParadigmVisual) {
                 branch.style.borderColor = `${branchParadigmVisual.accent}55`;
                 branch.style.background = `linear-gradient(180deg, ${branchParadigmVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
@@ -3753,6 +3830,7 @@
             let content = null;
             line.draggable = true;
             if (isParadigm) line.classList.add("is-paradigm");
+            if (hasKids && item.isCollapsed) line.classList.add("is-collapsed");
             if (isParadigm && paradigmVisual) {
                 line.style.borderLeft = `4px solid ${paradigmVisual.accent}`;
                 line.style.background = `linear-gradient(90deg, ${paradigmVisual.bg} 0%, ${levelBg} 56%)`;
@@ -3834,6 +3912,7 @@
                 text: hasKids ? (item.isCollapsed ? "▶" : "▼") : "•",
                 cls: `workspace-collapse ${hasKids ? "clickable" : "dot"}`
             });
+            if (hasKids && item.isCollapsed) collapseBtn.classList.add("is-collapsed");
             if (hasKids) collapseBtn.onclick = (e) => { e.stopPropagation(); toggleCollapse(item.id); };
 
             content = line.createEl("div", { cls: "workspace-line-content" });
@@ -3892,10 +3971,32 @@
                     attr: { title: boundPath }
                 });
             }
+            if (hasKids && item.isCollapsed) {
+                content.createEl("span", {
+                    text: "已折叠",
+                    cls: "workspace-origin-badge collapsed",
+                    attr: { title: "该条目当前处于折叠状态" }
+                });
+            }
 
             const actions = line.createEl("div", { cls: "workspace-line-actions" });
-            const addChildBtn = actions.createEl("span", { text: "＋", cls: "workspace-action-btn", attr: { title: isParadigm ? "添加引用挂载子条目（写回定义源）" : "添加子条目" } });
+            const addChildBtn = actions.createEl("span", {
+                text: "＋",
+                cls: "workspace-action-btn",
+                attr: { title: isParadigm ? "添加普通 Tab 子条目（仅当前 Tab）" : "添加子条目" }
+            });
             addChildBtn.onclick = (e) => { e.stopPropagation(); addItem(item.id, item.tabId); };
+            if (isParadigm) {
+                const addParadigmChildBtn = actions.createEl("span", {
+                    text: "📐＋",
+                    cls: "workspace-action-btn",
+                    attr: { title: "添加范式子条目（写回定义源）" }
+                });
+                addParadigmChildBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    await addMountedParadigmChild(item.id);
+                };
+            }
             const renameBtn = actions.createEl("span", { text: "✏️", cls: "workspace-action-btn", attr: { title: isParadigm ? "重命名引用挂载（写回定义源）" : "重命名" } });
             renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(item.id); };
             const imageBtn = actions.createEl("span", {
@@ -3986,6 +4087,7 @@
                 cls: "workspace-paradigm-mount-group",
                 attr: { style: `margin-left:${level * 26}px;` }
             });
+            if (collapsed) branch.classList.add("is-collapsed");
             if (visual) {
                 branch.style.borderColor = `${visual.accent}4d`;
                 branch.style.background = `linear-gradient(180deg, ${visual.bg} 0%, rgba(255,255,255,0) 100%)`;
@@ -3998,6 +4100,7 @@
                 text: collapsed ? "▶" : "▼",
                 cls: "workspace-paradigm-collapse clickable"
             });
+            if (collapsed) collapseBtn.classList.add("is-collapsed");
             collapseBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -4024,6 +4127,13 @@
                 badge.style.borderColor = `${visual.accent}66`;
                 badge.style.color = visual.accent;
                 badge.style.background = visual.bg;
+            }
+            if (collapsed) {
+                head.createEl("span", {
+                    text: "已折叠",
+                    cls: "workspace-origin-badge collapsed",
+                    attr: { title: "该范式挂载分组当前处于折叠状态" }
+                });
             }
 
             if (!collapsed) {
@@ -4053,12 +4163,14 @@
                 cls: "workspace-paradigm-mount-collection",
                 attr: { style: `margin-left:${level * 26}px;` }
             });
+            if (collapsed) branch.classList.add("is-collapsed");
             const head = branch.createEl("div", { cls: "workspace-paradigm-mount-collection-head" });
             const left = head.createEl("div", { cls: "workspace-paradigm-mount-collection-left" });
             const collapseBtn = left.createEl("span", {
                 text: collapsed ? "▶" : "▼",
                 cls: "workspace-paradigm-collapse clickable"
             });
+            if (collapsed) collapseBtn.classList.add("is-collapsed");
             collapseBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -4079,6 +4191,13 @@
                 text: `${rootParadigmIds.length} 组`,
                 cls: "workspace-origin-badge"
             });
+            if (collapsed) {
+                head.createEl("span", {
+                    text: "已折叠",
+                    cls: "workspace-origin-badge collapsed",
+                    attr: { title: "范式挂载集合当前处于折叠状态" }
+                });
+            }
 
             if (!collapsed) {
                 const childWrap = branch.createEl("div", { cls: "workspace-paradigm-mount-collection-children" });
@@ -4363,6 +4482,7 @@
                 .workspace-panel-row-head { display:flex; align-items:flex-start; gap:8px; flex:1 1 auto; min-width:0; }
                 .workspace-paradigm-collapse { width:16px; text-align:center; color:var(--text-muted); user-select:none; flex:0 0 16px; }
                 .workspace-paradigm-collapse.clickable { cursor:pointer; }
+                .workspace-paradigm-collapse.is-collapsed { color:#b9770e; background:rgba(243,156,18,.14); border-radius:999px; box-shadow:inset 0 0 0 1px rgba(185,119,14,.16); }
                 .workspace-paradigm-collapse.dot { opacity:.35; }
                 .workspace-panel-row-left { min-width:0; flex:1 1 auto; }
                 .workspace-panel-row-hint { font-size:11px; color:var(--text-faint); margin-top:2px; }
@@ -4380,16 +4500,21 @@
                 .workspace-root-drop-zone { margin-bottom:10px; border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
                 .workspace-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
                 .workspace-item-branch { position:relative; margin-bottom:4px; }
+                .workspace-item-branch.is-collapsed::after { content:""; position:absolute; left:20px; right:14px; bottom:-2px; height:6px; border-radius:0 0 10px 10px; background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(243,156,18,0) 100%); pointer-events:none; }
                 .workspace-item-branch.is-paradigm-group { border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:6px 6px 8px 6px; margin-bottom:8px; }
                 .workspace-item-branch-children { margin-top:6px; }
-                .workspace-paradigm-mount-collection { border:1px solid rgba(52,152,219,.30); border-radius:14px; padding:8px 10px; margin-bottom:10px; background:linear-gradient(180deg, rgba(52,152,219,.08) 0%, rgba(255,255,255,0) 100%); box-shadow:inset 0 0 0 1px rgba(52,152,219,.08); }
+                .workspace-paradigm-mount-collection { border:1px solid rgba(52,152,219,.30); border-radius:14px; padding:8px 10px; margin-bottom:10px; background:linear-gradient(180deg, rgba(52,152,219,.08) 0%, rgba(255,255,255,0) 100%); box-shadow:inset 0 0 0 1px rgba(52,152,219,.08); position:relative; }
+                .workspace-paradigm-mount-collection.is-collapsed { border-color:rgba(243,156,18,.32); box-shadow:inset 0 0 0 1px rgba(243,156,18,.10); background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(255,255,255,0) 82%); }
+                .workspace-paradigm-mount-collection.is-collapsed::after { content:""; position:absolute; left:24px; right:16px; bottom:-2px; height:7px; border-radius:0 0 12px 12px; background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(243,156,18,0) 100%); pointer-events:none; }
                 .workspace-paradigm-mount-collection-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
                 .workspace-paradigm-mount-collection-left { display:flex; align-items:flex-start; gap:8px; min-width:0; flex:1 1 auto; }
                 .workspace-paradigm-mount-collection-meta { min-width:0; flex:1 1 auto; }
                 .workspace-paradigm-mount-collection-title { font-weight:700; color:var(--text-normal); }
                 .workspace-paradigm-mount-collection-subtitle { font-size:12px; color:var(--text-muted); margin-top:2px; }
                 .workspace-paradigm-mount-collection-children { margin-top:8px; display:flex; flex-direction:column; gap:8px; }
-                .workspace-paradigm-mount-group { border:1px solid rgba(52,152,219,.24); border-radius:12px; padding:8px; margin-bottom:8px; }
+                .workspace-paradigm-mount-group { border:1px solid rgba(52,152,219,.24); border-radius:12px; padding:8px; margin-bottom:8px; position:relative; }
+                .workspace-paradigm-mount-group.is-collapsed { border-color:rgba(243,156,18,.30); box-shadow:inset 0 0 0 1px rgba(243,156,18,.10); background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(255,255,255,0) 78%); }
+                .workspace-paradigm-mount-group.is-collapsed::after { content:""; position:absolute; left:22px; right:14px; bottom:-2px; height:7px; border-radius:0 0 10px 10px; background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(243,156,18,0) 100%); pointer-events:none; }
                 .workspace-paradigm-mount-group-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
                 .workspace-paradigm-mount-group-left { display:flex; align-items:flex-start; gap:8px; min-width:0; flex:1 1 auto; }
                 .workspace-paradigm-mount-group-meta { min-width:0; flex:1 1 auto; }
@@ -4398,6 +4523,9 @@
                 .workspace-paradigm-mount-group-children { margin-top:8px; }
                 .workspace-item-line { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; margin-bottom:4px; border:1px solid var(--background-modifier-border); transition:filter .15s,border-color .15s; user-select:none; }
                 .workspace-item-line.is-paradigm { border-style:dashed; }
+                .workspace-item-line.is-collapsed { border-color:rgba(243,156,18,.34); box-shadow:inset 0 0 0 1px rgba(243,156,18,.10); }
+                .workspace-item-line.is-collapsed:not(.is-paradigm) { background:linear-gradient(90deg, rgba(243,156,18,.08) 0%, transparent 72%); }
+                .workspace-item-line.is-collapsed.is-paradigm { box-shadow:inset 0 0 0 1px rgba(243,156,18,.10), inset 4px 0 0 rgba(243,156,18,.16); }
                 .workspace-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
                 .workspace-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
                 .workspace-item-line.drag-over-top { border-top:3px solid #2ecc71; }
@@ -4413,10 +4541,12 @@
                 .workspace-drag-handle { color:var(--text-faint); cursor:grab; letter-spacing:-1px; }
                 .workspace-collapse { width:14px; text-align:center; color:var(--text-muted); user-select:none; }
                 .workspace-collapse.clickable { cursor:pointer; }
+                .workspace-collapse.is-collapsed { color:#b9770e; background:rgba(243,156,18,.14); border-radius:999px; box-shadow:inset 0 0 0 1px rgba(185,119,14,.16); }
                 .workspace-collapse.dot { opacity:.4; }
                 .workspace-line-content { flex:1; min-width:0; display:flex; align-items:flex-start; flex-wrap:wrap; gap:6px 8px; overflow:visible; }
                 .workspace-origin-badge { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; }
                 .workspace-origin-badge.orphaned { color:#c0392b; border-color:#c0392b66; }
+                .workspace-origin-badge.collapsed { color:#9c640c; border-color:rgba(156,100,12,.24); background:rgba(243,156,18,.10); }
                 .workspace-bound-label { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; flex-shrink:0; }
                 .workspace-title-link { font-weight:600; color:var(--text-normal); min-width:0; flex:1 1 100%; white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word; }
                 .workspace-title-link:hover { color:var(--interactive-accent); text-decoration:underline; }
@@ -4435,6 +4565,11 @@
                 .workspace-tab-section-children { margin-top:10px; }
                 .workspace-tab-section-tree { margin-top:8px; }
                 .workspace-tab-local-root-drop-zone { margin-bottom:8px; }
+                .workspace-paradigm-editor-scope { margin-top:10px; padding:10px; border:1px solid rgba(52,152,219,.18); border-radius:12px; background:var(--background-primary); position:relative; }
+                .workspace-paradigm-editor-scope.is-copy { border-style:dashed; }
+                .workspace-paradigm-editor-scope.is-collapsed { border-color:rgba(243,156,18,.30); box-shadow:inset 0 0 0 1px rgba(243,156,18,.10); background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(255,255,255,0) 84%); }
+                .workspace-paradigm-editor-scope.is-collapsed::after { content:""; position:absolute; left:22px; right:14px; bottom:-2px; height:7px; border-radius:0 0 10px 10px; background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(243,156,18,0) 100%); pointer-events:none; }
+                .workspace-paradigm-editor-children { display:flex; flex-direction:column; gap:10px; margin-top:10px; }
                 .workspace-paradigm-item-line { display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--background-modifier-border); border-radius:7px; padding:6px 8px; margin-bottom:5px; background:var(--background-primary); transition:filter .15s,border-color .15s; user-select:none; }
                 .workspace-paradigm-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
                 .workspace-paradigm-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
@@ -4704,6 +4839,9 @@
                     const isBound = boundParadigmIds.includes(paradigm.id);
                     const bindingRootId = includedParadigmRootMap.get(paradigm.id) || null;
                     const isInherited = !!bindingRootId && bindingRootId !== paradigm.id;
+                    const hostParadigm = paradigm.parentParadigmId ? getParadigmById(paradigm.parentParadigmId) : null;
+                    const sourcePathLabel = getParadigmSourcePathLabel(paradigm);
+                    const incomingCopyRefSummary = !isCopyParadigm ? summarizeParadigmCopyReferences(paradigm.id) : "";
                     row.draggable = true;
                     row.addEventListener("dragstart", (e) => {
                         e.stopPropagation();
@@ -4762,13 +4900,21 @@
                         ? "当前Tab引用挂载"
                         : (isInherited ? `随上级范式 ${getParadigmById(bindingRootId)?.name || bindingRootId} 挂入` : "未绑定到当前Tab");
                     left.createEl("small", {
-                        text: `${paradigm.id}${isCopyParadigm ? ` · 定义源 ${sourceParadigm.id}` : ""} · 分类 ${category?.name || "未分类"} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
+                        text: `${paradigm.id}${isCopyParadigm ? ` · 本体位置 ${sourcePathLabel}` : ""} · 分类 ${category?.name || "未分类"} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
                         attr: { style: "color:var(--text-muted);" }
                     });
                     left.createEl("div", {
                         cls: "workspace-panel-row-hint",
-                        text: isCopyParadigm ? "这是引用副本：内容回写定义源，但它也可以继续挂子范式" : "向右拖入可设为子范式；拖到分类行可归类"
+                        text: isCopyParadigm
+                            ? `这是引用副本：内容回写定义源，但它也可以继续挂子范式${hostParadigm ? ` · 当前挂在 ${getParadigmNodeLabel(hostParadigm)} (${hostParadigm.id}) 下` : " · 当前挂在根层"}`
+                            : "向右拖入可设为子范式；拖到分类行可归类"
                     });
+                    if (!isCopyParadigm && incomingCopyRefSummary) {
+                        left.createEl("div", {
+                            cls: "workspace-panel-row-hint",
+                            text: `🔁 ${incomingCopyRefSummary}`
+                        });
+                    }
 
                     const actions = row.createEl("div", { cls: "workspace-main-actions" });
                     const bindBtn = actions.createEl("button", { text: isBound ? "解绑" : "绑定到当前Tab", cls: "workspace-sub-btn" });
@@ -4776,9 +4922,9 @@
                         if (isBound) await unbindParadigmFromCurrentTab(paradigm.id);
                         else await bindParadigmToCurrentTab(paradigm.id);
                     };
-                    const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === sourceParadigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
+                    const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === paradigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
                     editBtn.onclick = () => {
-                        window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === sourceParadigm.id ? null : sourceParadigm.id;
+                        window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === paradigm.id ? null : paradigm.id;
                         renderViewFn?.();
                     };
                     const addChildParadigmBtn = actions.createEl("button", { text: "＋ 子范式", cls: "workspace-sub-btn" });
@@ -4959,10 +5105,20 @@
                 if (editingParadigm) {
                     const editor = panel.createEl("div", { cls: "workspace-panel", attr: { style: "margin-top:10px;" } });
                     const head = editor.createEl("div", { cls: "workspace-panel-head" });
-                    head.createEl("div", { text: `🛠 范式条目：${editingParadigm.name}`, cls: "workspace-panel-title" });
+                    const editingSourceParadigm = getParadigmSourceParadigm(editingParadigm) || editingParadigm;
+                    const editingSourcePathLabel = getParadigmSourcePathLabel(editingParadigm);
+                    const editingSubtreeIds = getParadigmNodeSubtreeIds(editingParadigm.id);
+                    const editingSourceIds = Array.from(new Set(editingSubtreeIds.map((id) => getParadigmSourceId(id)).filter(Boolean)));
+                    const headLeft = head.createEl("div");
+                    headLeft.createEl("div", {
+                        text: `🛠 范式条目链：${getParadigmNodeLabel(editingParadigm)}`,
+                        cls: "workspace-panel-title"
+                    });
+                    headLeft.createEl("div", {
+                        text: `当前节点 ${editingParadigm.id}${isParadigmCopy(editingParadigm) ? ` · 本体位置 ${editingSourcePathLabel}` : " · 定义源"} · 纳入范式节点 ${editingSubtreeIds.length} 个 · 涉及定义源 ${editingSourceIds.length} 个`,
+                        cls: "workspace-subtitle"
+                    });
                     const actions = head.createEl("div", { cls: "workspace-main-actions" });
-                    const addRoot = actions.createEl("button", { text: "＋ 根条目", cls: "workspace-sub-btn" });
-                    addRoot.onclick = async () => { await addParadigmItem(editingParadigm.id, null); };
                     const syncAll = actions.createEl("button", { text: "同步到已绑定Tab", cls: "workspace-sub-btn" });
                     syncAll.onclick = async () => {
                         await updateWorkspaceData((data) => {
@@ -4970,28 +5126,99 @@
                         });
                         new Notice("✅ 已同步到所有绑定 Tab");
                     };
-                    const paradigmRootDropZone = editor.createEl("div", {
-                        cls: "workspace-root-drop-zone",
-                        text: "↥ 拖拽到这里设为该范式根条目（顶层）"
-                    });
-                    paradigmRootDropZone.addEventListener("dragover", (e) => {
-                        e.preventDefault();
-                        if (!window.workspaceParadigmCurrentDragId) return;
-                        if (window.workspaceParadigmDragParadigmId !== editingParadigm.id) return;
-                        paradigmRootDropZone.classList.add("drag-over");
-                    });
-                    paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
-                    paradigmRootDropZone.addEventListener("drop", async (e) => {
-                        e.preventDefault();
-                        paradigmRootDropZone.classList.remove("drag-over");
-                        if (!window.workspaceParadigmCurrentDragId) return;
-                        if (window.workspaceParadigmDragParadigmId !== editingParadigm.id) return;
-                        await moveParadigmItemToRoot(window.workspaceParadigmCurrentDragId, editingParadigm.id);
-                    });
-                    const tree = editor.createEl("div");
-                    const roots = getParadigmChildrenIds(editingParadigm.id, null);
-                    if (roots.length === 0) tree.createEl("div", { text: "_暂无范式条目_", cls: "workspace-empty" });
-                    else renderParadigmTree(tree, editingParadigm.id, null, 0, new Set());
+                    const editorTree = editor.createEl("div", { cls: "workspace-paradigm-editor-children" });
+                    const renderParadigmEditorScope = (container, paradigmNodeId, level = 0, chain = new Set()) => {
+                        const paradigmNode = getParadigmById(paradigmNodeId);
+                        if (!paradigmNode || chain.has(paradigmNode.id)) return;
+                        const nextChain = new Set(chain);
+                        nextChain.add(paradigmNode.id);
+                        const sourceParadigm = getParadigmSourceParadigm(paradigmNode) || paradigmNode;
+                        const targetParadigmId = sourceParadigm.id;
+                        const roots = getParadigmChildrenIds(targetParadigmId, null);
+                        const childNodeIds = getEffectiveChildParadigmIds(paradigmNode.id);
+                        const hasScopeChildren = roots.length > 0 || childNodeIds.length > 0;
+                        const isCollapsed = hasScopeChildren ? isParadigmEditorScopeCollapsed(paradigmNode.id) : false;
+                        const hostParadigm = paradigmNode.parentParadigmId ? getParadigmById(paradigmNode.parentParadigmId) : null;
+                        const sourcePathLabel = getParadigmSourcePathLabel(paradigmNode);
+                        const scopeVisual = getParadigmVisual(getParadigmSourceId(paradigmNode) || paradigmNode.id);
+                        const scope = container.createEl("div", {
+                            cls: `workspace-paradigm-editor-scope ${isParadigmCopy(paradigmNode) ? "is-copy" : ""}`,
+                            attr: { style: `margin-left:${level * 18}px;` }
+                        });
+                        if (isCollapsed) scope.classList.add("is-collapsed");
+                        if (scopeVisual) {
+                            scope.style.borderColor = `${scopeVisual.accent}3d`;
+                            scope.style.background = `linear-gradient(180deg, ${scopeVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
+                            scope.style.boxShadow = `inset 0 0 0 1px ${scopeVisual.accent}12`;
+                        }
+                        const scopeHead = scope.createEl("div", { cls: "workspace-panel-head" });
+                        const scopeLeft = scopeHead.createEl("div", { attr: { style: "display:flex;align-items:flex-start;gap:8px;min-width:0;flex:1 1 auto;" } });
+                        const collapseBtn = scopeLeft.createEl("span", {
+                            text: hasScopeChildren ? (isCollapsed ? "▶" : "▼") : "•",
+                            cls: `workspace-paradigm-collapse ${hasScopeChildren ? "clickable" : "dot"}`
+                        });
+                        if (isCollapsed) collapseBtn.classList.add("is-collapsed");
+                        if (hasScopeChildren) {
+                            collapseBtn.onclick = async (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                await toggleParadigmEditorScopeCollapsed(paradigmNode.id);
+                            };
+                        }
+                        const scopeMeta = scopeLeft.createEl("div", { attr: { style: "min-width:0;flex:1 1 auto;" } });
+                        scopeMeta.createEl("div", {
+                            text: `${level === 0 ? "当前范式" : "子范式"}：${getParadigmNodeLabel(paradigmNode)}`,
+                            cls: "workspace-panel-title"
+                        });
+                        scopeMeta.createEl("div", {
+                            text: `${paradigmNode.id}${isParadigmCopy(paradigmNode) ? ` · 本体位置 ${sourcePathLabel}` : " · 定义源"}${hostParadigm ? ` · 挂在 ${getParadigmNodeLabel(hostParadigm)} (${hostParadigm.id}) 下` : " · 根层"} · 子范式 ${childNodeIds.length} 个`,
+                            cls: "workspace-subtitle"
+                        });
+                        if (isParadigmCopy(paradigmNode)) {
+                            scopeMeta.createEl("div", {
+                                cls: "workspace-panel-row-hint",
+                                text: "这个节点是引用副本：这里展示和编辑的条目会写回定义源"
+                            });
+                        }
+                        const scopeActions = scopeHead.createEl("div", { cls: "workspace-main-actions" });
+                        const addRoot = scopeActions.createEl("button", { text: "＋ 根条目", cls: "workspace-sub-btn" });
+                        addRoot.onclick = async () => { await addParadigmItem(targetParadigmId, null); };
+                        if (isCollapsed) {
+                            scopeHead.createEl("span", {
+                                text: "已折叠",
+                                cls: "workspace-origin-badge collapsed",
+                                attr: { title: "该范式条目段当前处于折叠状态" }
+                            });
+                        }
+                        if (!isCollapsed) {
+                            const paradigmRootDropZone = scope.createEl("div", {
+                                cls: "workspace-root-drop-zone",
+                                text: `↥ 拖拽到这里设为 ${sourceParadigm.name} 的根条目（顶层）`
+                            });
+                            paradigmRootDropZone.addEventListener("dragover", (e) => {
+                                e.preventDefault();
+                                if (!window.workspaceParadigmCurrentDragId) return;
+                                if (window.workspaceParadigmDragParadigmId !== targetParadigmId) return;
+                                paradigmRootDropZone.classList.add("drag-over");
+                            });
+                            paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
+                            paradigmRootDropZone.addEventListener("drop", async (e) => {
+                                e.preventDefault();
+                                paradigmRootDropZone.classList.remove("drag-over");
+                                if (!window.workspaceParadigmCurrentDragId) return;
+                                if (window.workspaceParadigmDragParadigmId !== targetParadigmId) return;
+                                await moveParadigmItemToRoot(window.workspaceParadigmCurrentDragId, targetParadigmId);
+                            });
+                            const tree = scope.createEl("div");
+                            if (roots.length === 0) tree.createEl("div", { text: "_暂无范式条目_", cls: "workspace-empty" });
+                            else renderParadigmTree(tree, targetParadigmId, null, 0, new Set());
+                            if (childNodeIds.length > 0) {
+                                const childWrap = scope.createEl("div", { cls: "workspace-paradigm-editor-children" });
+                                childNodeIds.forEach((childId) => renderParadigmEditorScope(childWrap, childId, level + 1, nextChain));
+                            }
+                        }
+                    };
+                    renderParadigmEditorScope(editorTree, editingParadigm.id, 0, new Set());
                 }
             }
 
@@ -5078,180 +5305,7 @@
 })();
 ```
 
-## Workspace V2（多 Tab + 范式 + 快照）改造规范
 
-> 目标：在保留扁平字典 JSON 结构的前提下，引入多 Tab、范式（父子条目）、范式挂载同步、命名快照，并保证对旧数据非破坏升级。
-
-### 1) 核心模型（保持扁平字典）
-
-```json
-{
-  "schemaVersion": "2.2",
-  "lastModified": "2026-03-05 17:00:00",
-  "activeTabId": "tab_xxx",
-  "tabsById": {
-    "tab_xxx": {
-      "id": "tab_xxx",
-      "name": "项目A",
-      "kind": "project",
-      "boundParadigmIds": ["pg_xxx", "pg_yyy"],
-      "boundParadigmItemKeys": [],
-      "boundParadigmId": "pg_xxx",
-      "createdAt": "2026-03-05 16:50:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "tabOrder": ["tab_xxx"],
-  "itemsById": {
-    "item_x1": {
-      "id": "item_x1",
-      "title": "需求澄清",
-      "parentId": null,
-      "tabId": "tab_xxx",
-      "sourceType": "tab",
-      "sourceParadigmId": null,
-      "sourceParadigmItemId": null,
-      "isCollapsed": false,
-      "imageRef": "",
-      "comment": "",
-      "noteBinding": null,
-      "createdAt": "2026-03-05 16:55:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    },
-    "item_p1_in_tab_xxx": {
-      "id": "item_p1_in_tab_xxx",
-      "title": "范式：目标定义",
-      "parentId": null,
-      "tabId": "tab_xxx",
-      "sourceType": "paradigm",
-      "sourceParadigmId": "pg_xxx",
-      "sourceParadigmItemId": "pgItem_p1",
-      "sourceParadigmBindingRootId": "pg_xxx",
-      "sourceParadigmMountMode": "direct",
-      "isCollapsed": false,
-      "imageRef": "",
-      "comment": "",
-      "noteBinding": null,
-      "createdAt": "2026-03-05 16:56:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "childrenByParentByTab": {
-    "tab_xxx::__root__": ["item_x1", "item_p1_in_tab_xxx"],
-    "tab_xxx::item_p1_in_tab_xxx": []
-  },
-  "paradigmsById": {
-    "pg_xxx": {
-      "id": "pg_xxx",
-      "name": "任务启动范式",
-      "parentParadigmId": null,
-      "createdAt": "2026-03-05 16:40:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    },
-    "pg_yyy": {
-      "id": "pg_yyy",
-      "name": "任务启动-复盘子范式",
-      "parentParadigmId": "pg_xxx",
-      "createdAt": "2026-03-05 16:40:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "childParadigmIdsByParent": {
-    "__root__": ["pg_xxx"],
-    "pg_xxx": ["pg_yyy"]
-  },
-  "paradigmItemsById": {
-    "pgItem_p1": {
-      "id": "pgItem_p1",
-      "paradigmId": "pg_xxx",
-      "title": "目标定义",
-      "parentId": null,
-      "order": 10,
-      "imageRef": "",
-      "comment": "",
-      "noteBinding": null,
-      "createdAt": "2026-03-05 16:41:00",
-      "updatedAt": "2026-03-05 17:00:00"
-    }
-  },
-  "paradigmChildrenByParent": {
-    "pg_xxx::__root__": ["pgItem_p1"]
-  },
-  "paradigmToTabItemMapByTab": {
-    "tab_xxx::pgItem_p1": "item_p1_in_tab_xxx"
-  },
-  "collapsedById": {},
-  "snapshotsById": {},
-  "snapshotOrderByTab": {
-    "tab_xxx": []
-  }
-}
-```
-
-说明：
-- `childrenByParentByTab` 与 `paradigmChildrenByParent` 用 `tabId::parentId` / `paradigmId::parentId` 作为键，保持扁平字典。
-- `childParadigmIdsByParent` 用 `parentParadigmId -> 子范式列表` 记录范式之间的上下级，同样是扁平字典。
-- 范式挂载条目通过 `sourceType=paradigm` + `sourceParadigmItemId` 明确标注“这是范式条目”。
-- 当父范式被绑定到 Tab 时，子范式条目会一并进入视图，并通过 `sourceParadigmBindingRootId` / `sourceParadigmMountMode` 标识是“引用挂载”还是“由上级范式带入的继承挂入”。
-- 范式条目与挂载实例都支持 `imageRef`、`comment`、`noteBinding`，并按范式同步到各 Tab。
-- Tab 可表示项目/任务/对象，建议 `kind` 支持 `project | task | object`。
-
-### 2) Tab 系统规则
-
-- 多开界面：顶部 `tabOrder` 渲染 Tab 条；`activeTabId` 决定当前树。
-- Tab 条支持拖拽重排，直接更新 `tabOrder`（按前后插入）。
-- Tab 条支持自动换行（Tab 很多时折行显示）。
-- Tab 操作：新增、重命名、关闭（关闭前确认是否保留快照）。
-- 每个 Tab 独立树：渲染和拖拽只读写当前 `tabId` 对应的 `childrenByParentByTab` 关系。
-
-### 3) 范式系统规则
-
-- 范式是独立父子树：`paradigmsById + paradigmItemsById + paradigmChildrenByParent`。
-- 范式与范式之间也可形成层级：`parentParadigmId + childParadigmIdsByParent`。
-- 范式节点分两类：
-  - `定义源范式`：`sourceParadigmId = null`
-  - `引用副本范式`：`sourceParadigmId = <定义源范式ID>`
-- 引用副本不是独立内容拷贝，只复用定义源的范式条目；但它自己也可以继续挂 `真正的子范式` 或 `别的引用副本`。
-- Tab 可绑定多个“根范式”：在 Tab 上保存 `boundParadigmIds`（兼容保留 `boundParadigmId` 首项），并建立 `paradigmToTabItemMapByTab`。
-- 当根范式被绑定后，它的子范式、孙范式会自动纳入当前 Tab 视图。
-- 挂载时创建实例条目：
-  - 每个范式条目在 Tab 内有一个实例 `itemId`（可编辑显示状态，但核心标题/结构受范式驱动）。
-  - 实例条目保留 `sourceParadigmItemId`，用于后续同步定位。
-  - 视图上强区分三类身份：范式面板内显示“定义源”；Tab 内直接出现的范式实例显示“引用挂载”；由父范式带入的实例显示“继承挂入”。
-  - 在 Tab 内编辑“引用挂载 / 继承挂入”时，默认回写到定义源，再同步到全部挂载实例。
-  - 同一个定义源可因不同 `范式节点` 在同一 Tab 中出现多次，因此挂载实例索引需要区分 `挂载节点ID + 范式条目ID`。
-
-### 4) 范式编辑同步（你要求的“联动移动”）
-
-- 范式条目改名：同步所有绑定 Tab 的实例标题。
-- 范式条目移动（改 parent/order）：
-  - 在每个绑定 Tab 中找到对应实例条目并更新 `parentId` 与同级顺序。
-  - 如果该范式实例节点下挂了 Tab 私有子节点，这些子节点不变；因为父节点实例 ID 不变，随父节点整体移动。
-- 范式条目删除：对应实例条目标记为 `orphaned=true`（推荐）或按策略级联删除。
-
-### 5) 快照系统规则
-
-- 快照是“Tab 级只读历史切片”，不与当前范式冲突。
-- 保存快照（命名保存）时写入：
-  - `snapshotsById[snapshotId] = { id, tabId, name, createdAt, itemsById, childrenByParentByTab, collapsedById }`
-- 浏览快照：独立视图只读渲染快照树。
-- 恢复策略建议：`恢复为新 Tab`，避免覆盖当前 Tab 与范式同步状态。
-
-### 6) 非破坏升级与兼容
-
-- `schemaVersion 1.x -> 2.0` 迁移时：
-  - 原 `itemsById/childrenByParent` 迁移到默认 `tab_default`。
-  - 原字段保留，不做删除式重写；仅追加新字段与新索引。
-- 更新采用“复制-修改-保存”：
-  - 读取当前 JSON -> `clone` -> 在内存变更 -> `sanitize` -> 整体写回。
-  - 禁止就地破坏旧 key（尤其历史快照与旧绑定）。
-
-### 7) UI 最小落地清单
-
-- 顶部：Tab 条 + `新建Tab` + `快照`按钮。
-- 侧栏/弹窗：范式管理（新建范式、编辑范式树、绑定到当前 Tab）。
-- 主树：范式条目标识（如 `📐` 徽标）、普通条目保持原操作。
-- 快照面板：按 Tab 列出快照，支持“查看”和“恢复为新 Tab”。
 
 ```mermaid
 flowchart LR
