@@ -8,6 +8,8 @@
         const TASK_COMMENTS_SCHEMA_VERSION = "1.0";
         const ATTACHMENTS_FOLDER = "attachments";
         const WORKSPACE_SCHEMA_VERSION = "2.5";
+        const RELATIONS_PLUGIN_ID = "eva-cross-view-relations";
+        const WORKSPACE_RELATION_VIEW_TYPE = "workspace";
         const ROOT_KEY = "__root__";
         const DEFAULT_TAB_ID = "tab_default";
         const UNCATEGORIZED_PARADIGM_GROUP_ID = "__uncategorized__";
@@ -95,6 +97,9 @@
         if (window.workspaceTabCurrentDragId === undefined) window.workspaceTabCurrentDragId = null;
         if (window.workspaceCollapsedParadigmMountGroups === undefined) window.workspaceCollapsedParadigmMountGroups = {};
         if (window.workspaceCollapsedParadigmCategoryTreeIds === undefined) window.workspaceCollapsedParadigmCategoryTreeIds = {};
+        if (window.workspaceShouldRestorePinnedScrollAfterRender === undefined) window.workspaceShouldRestorePinnedScrollAfterRender = false;
+        if (!window.workspaceRelationBridgeRegistry || typeof window.workspaceRelationBridgeRegistry !== "object") window.workspaceRelationBridgeRegistry = {};
+        if (window.workspacePendingRelationFocusNodeKey === undefined) window.workspacePendingRelationFocusNodeKey = "";
 
         const defaultWorkspaceData = () => ({
             schemaVersion: WORKSPACE_SCHEMA_VERSION,
@@ -128,6 +133,7 @@
             paradigmToTabItemMapByTab: {},
             collapsedById: {},
             tabTreeCollapsedById: {},
+            pinnedScrollByViewKey: {},
             paradigmTreeCollapsedById: {},
             paradigmEditorScopeCollapsedById: {},
             paradigmCategoryCollapsedById: {},
@@ -214,6 +220,7 @@
                 ? src.childrenByParent
                 : {};
             const incomingCollapsed = src.collapsedById && typeof src.collapsedById === "object" ? src.collapsedById : {};
+            const incomingPinnedScroll = src.pinnedScrollByViewKey && typeof src.pinnedScrollByViewKey === "object" ? src.pinnedScrollByViewKey : {};
             const incomingTabTreeCollapsed = src.tabTreeCollapsedById && typeof src.tabTreeCollapsedById === "object"
                 ? src.tabTreeCollapsedById
                 : {};
@@ -724,6 +731,18 @@
             Object.keys(itemsById).forEach((id) => {
                 collapsedById[id] = !!itemsById[id].isCollapsed;
             });
+            const pinnedScrollByViewKey = {};
+            Object.keys(incomingPinnedScroll).forEach((rawKey) => {
+                const normalizedKey = String(rawKey || "").trim();
+                if (!normalizedKey) return;
+                const entry = incomingPinnedScroll[rawKey];
+                const scrollTop = Number(entry?.scrollTop);
+                if (!Number.isFinite(scrollTop) || scrollTop < 0) return;
+                pinnedScrollByViewKey[normalizedKey] = {
+                    scrollTop,
+                    updatedAt: String(entry?.updatedAt || nowString())
+                };
+            });
             const tabTreeCollapsedById = {};
             Object.keys(incomingTabTreeCollapsed).forEach((id) => {
                 const normalizedId = String(id || "").trim();
@@ -804,6 +823,7 @@
                 paradigmToTabItemMapByTab,
                 collapsedById,
                 tabTreeCollapsedById,
+                pinnedScrollByViewKey,
                 paradigmTreeCollapsedById,
                 paradigmEditorScopeCollapsedById,
                 paradigmCategoryCollapsedById,
@@ -1377,6 +1397,138 @@
                 const embedLink = `![[${finalName}]]`;
                 return { fileName: finalName, filePath: finalPath, embedLink };
             }
+            openImagePreview(imageRef) {
+                const src = resolveImageSrc(imageRef);
+                if (!src) {
+                    new Notice("⚠️ 当前图片引用无法解析为可预览图片");
+                    return;
+                }
+                const previewModal = new obsidian.Modal(this.app);
+                previewModal.modalEl.style.maxWidth = "92vw";
+                previewModal.modalEl.style.width = "92vw";
+                previewModal.modalEl.style.height = "88vh";
+                previewModal.contentEl.style.height = "100%";
+                previewModal.contentEl.style.display = "flex";
+                previewModal.contentEl.style.flexDirection = "column";
+                previewModal.contentEl.style.gap = "10px";
+                previewModal.contentEl.createEl("h3", { text: "查看图片" });
+                previewModal.contentEl.createEl("div", {
+                    text: String(imageRef || "").trim(),
+                    attr: { style: "font-size:12px;color:var(--text-muted);word-break:break-all;" }
+                });
+                const zoomRow = previewModal.contentEl.createEl("div", {
+                    attr: { style: "display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;color:var(--text-muted);" }
+                });
+                const zoomHint = zoomRow.createEl("div", { text: "滚轮缩放，按住左键可拖拽移动图片" });
+                const zoomStat = zoomRow.createEl("div", { text: "100%" });
+                const wrap = previewModal.contentEl.createEl("div", {
+                    attr: {
+                        style: "flex:1;min-height:0;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:10px;overflow:auto;cursor:grab;"
+                    }
+                });
+                const stage = wrap.createEl("div", {
+                    attr: {
+                        style: "min-width:100%;min-height:100%;display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;"
+                    }
+                });
+                const img = stage.createEl("img");
+                img.src = src;
+                img.alt = "preview";
+                img.style.display = "block";
+                img.style.userSelect = "none";
+                img.draggable = false;
+                let naturalWidth = 0;
+                let naturalHeight = 0;
+                let zoomScale = 1;
+                let stageWidth = 0;
+                let stageHeight = 0;
+                let dragState = null;
+                const clampScroll = () => {
+                    const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+                    const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+                    wrap.scrollLeft = Math.max(0, Math.min(maxLeft, wrap.scrollLeft));
+                    wrap.scrollTop = Math.max(0, Math.min(maxTop, wrap.scrollTop));
+                };
+                const applyZoom = () => {
+                    if (!naturalWidth || !naturalHeight) return;
+                    const viewportWidth = Math.max(120, wrap.clientWidth - 24);
+                    const viewportHeight = Math.max(120, wrap.clientHeight - 24);
+                    const fitScale = Math.min(viewportWidth / naturalWidth, viewportHeight / naturalHeight, 1);
+                    const displayWidth = Math.max(24, naturalWidth * fitScale * zoomScale);
+                    const displayHeight = Math.max(24, naturalHeight * fitScale * zoomScale);
+                    stageWidth = Math.max(displayWidth, viewportWidth);
+                    stageHeight = Math.max(displayHeight, viewportHeight);
+                    stage.style.width = `${stageWidth}px`;
+                    stage.style.height = `${stageHeight}px`;
+                    img.style.width = `${displayWidth}px`;
+                    img.style.height = `${displayHeight}px`;
+                    zoomStat.textContent = `${Math.round(zoomScale * 100)}%`;
+                    wrap.style.cursor = (stageWidth > wrap.clientWidth + 2 || stageHeight > wrap.clientHeight + 2) ? "grab" : "default";
+                    clampScroll();
+                };
+                const updateZoomAtPoint = (nextZoom, clientX = null, clientY = null) => {
+                    const prevStageWidth = stageWidth || wrap.clientWidth || 1;
+                    const prevStageHeight = stageHeight || wrap.clientHeight || 1;
+                    const rect = wrap.getBoundingClientRect();
+                    const anchorX = clientX === null ? (wrap.clientWidth / 2) : Math.max(0, Math.min(rect.width, clientX - rect.left));
+                    const anchorY = clientY === null ? (wrap.clientHeight / 2) : Math.max(0, Math.min(rect.height, clientY - rect.top));
+                    const relativeX = (wrap.scrollLeft + anchorX) / prevStageWidth;
+                    const relativeY = (wrap.scrollTop + anchorY) / prevStageHeight;
+                    zoomScale = Math.max(0.2, Math.min(6, Number(nextZoom.toFixed(2))));
+                    applyZoom();
+                    wrap.scrollLeft = relativeX * stageWidth - anchorX;
+                    wrap.scrollTop = relativeY * stageHeight - anchorY;
+                    clampScroll();
+                };
+                wrap.addEventListener("wheel", (e) => {
+                    e.preventDefault();
+                    const delta = e.deltaY < 0 ? 0.12 : -0.12;
+                    updateZoomAtPoint(zoomScale + delta, e.clientX, e.clientY);
+                }, { passive: false });
+                wrap.addEventListener("pointerdown", (e) => {
+                    if (e.button !== 0) return;
+                    if (!(stageWidth > wrap.clientWidth + 2 || stageHeight > wrap.clientHeight + 2)) return;
+                    dragState = {
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        scrollLeft: wrap.scrollLeft,
+                        scrollTop: wrap.scrollTop
+                    };
+                    wrap.style.cursor = "grabbing";
+                    if (typeof wrap.setPointerCapture === "function") wrap.setPointerCapture(e.pointerId);
+                    e.preventDefault();
+                });
+                wrap.addEventListener("pointermove", (e) => {
+                    if (!dragState) return;
+                    wrap.scrollLeft = dragState.scrollLeft - (e.clientX - dragState.startX);
+                    wrap.scrollTop = dragState.scrollTop - (e.clientY - dragState.startY);
+                    clampScroll();
+                });
+                const endDrag = (e) => {
+                    if (dragState && typeof wrap.releasePointerCapture === "function") {
+                        try { wrap.releasePointerCapture(e.pointerId); } catch (_) {}
+                    }
+                    dragState = null;
+                    wrap.style.cursor = (stageWidth > wrap.clientWidth + 2 || stageHeight > wrap.clientHeight + 2) ? "grab" : "default";
+                };
+                wrap.addEventListener("pointerup", endDrag);
+                wrap.addEventListener("pointercancel", endDrag);
+                const actions = previewModal.contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;" } });
+                const resetBtn = actions.createEl("button", { text: "重置缩放" });
+                resetBtn.onclick = () => {
+                    updateZoomAtPoint(1);
+                };
+                const closeBtn = actions.createEl("button", { text: "关闭", cls: "mod-cta" });
+                closeBtn.onclick = () => previewModal.close();
+                previewModal.open();
+                const onLoaded = () => {
+                    naturalWidth = img.naturalWidth || 0;
+                    naturalHeight = img.naturalHeight || 0;
+                    applyZoom();
+                };
+                if (img.complete) onLoaded();
+                else img.onload = onLoaded;
+            }
             onOpen() {
                 this.modalEl.style.maxWidth = "760px";
                 this.modalEl.style.width = "86vw";
@@ -1396,6 +1548,58 @@
                         style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:8px;"
                     }
                 });
+                const previewBox = contentEl.createEl("div", {
+                    attr: {
+                        style: "margin-bottom:8px;padding:10px;border:1px solid var(--background-modifier-border);border-radius:10px;background:var(--background-primary);"
+                    }
+                });
+                const previewTitle = previewBox.createEl("div", {
+                    text: "当前图片预览",
+                    attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:8px;" }
+                });
+                const previewStage = previewBox.createEl("div", {
+                    attr: {
+                        style: "min-height:120px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);padding:10px;"
+                    }
+                });
+                const previewActions = previewBox.createEl("div", {
+                    attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:8px;" }
+                });
+                const previewBtn = previewActions.createEl("button", { text: "查看大图" });
+                const renderPreview = () => {
+                    previewStage.empty();
+                    const imageRef = sanitizeImageInput(input.value || "");
+                    const src = resolveImageSrc(imageRef);
+                    previewBtn.disabled = !src;
+                    previewBtn.onclick = () => this.openImagePreview(imageRef);
+                    if (!imageRef) {
+                        previewTitle.textContent = "当前图片预览";
+                        previewStage.createEl("div", {
+                            text: "暂无图片引用",
+                            attr: { style: "color:var(--text-muted);font-size:12px;" }
+                        });
+                        return;
+                    }
+                    previewTitle.textContent = src ? "当前图片预览" : "当前图片预览（未解析）";
+                    if (!src) {
+                        previewStage.createEl("div", {
+                            text: "当前引用已保存，但还不能解析成可预览图片",
+                            attr: { style: "color:var(--text-muted);font-size:12px;text-align:center;" }
+                        });
+                        return;
+                    }
+                    const img = previewStage.createEl("img");
+                    img.src = src;
+                    img.alt = "preview";
+                    img.style.maxWidth = "100%";
+                    img.style.maxHeight = "220px";
+                    img.style.objectFit = "contain";
+                    img.style.borderRadius = "6px";
+                    img.style.cursor = "zoom-in";
+                    img.onclick = () => this.openImagePreview(imageRef);
+                };
+                input.addEventListener("input", renderPreview);
+                renderPreview();
                 contentEl.createEl("div", {
                     text: "粘贴区（自动保存到 /attachments 并生成 ![[Pasted image ...]]）",
                     attr: { style: "color:var(--text-muted);font-size:12px;margin-bottom:8px;" }
@@ -1430,6 +1634,7 @@
                         const saved = await this.savePastedImage(file);
                         input.value = saved.embedLink;
                         status.textContent = `已生成并填入: ${saved.embedLink}`;
+                        renderPreview();
                     } catch (err) {
                         console.error("粘贴图片保存失败:", err);
                         status.textContent = `保存失败: ${err.message}`;
@@ -1839,6 +2044,43 @@
             });
             return { explicitBoundIds, rootMap };
         };
+        const summarizeParadigmBoundTabs = (paradigmId, maxCount = 5) => {
+            const targetId = String(paradigmId || "").trim();
+            if (!targetId || !getParadigmById(targetId)) {
+                return { directText: "", includedText: "" };
+            }
+            const directEntries = [];
+            const includedEntries = [];
+            Object.values(WORKSPACE_DATA.tabsById || {}).forEach((tab) => {
+                if (!tab) return;
+                const tabId = String(tab.id || "").trim();
+                if (!tabId) return;
+                const tabName = normalizeText(tab.name || `Tab-${tabId.slice(-4)}`) || `Tab-${tabId.slice(-4)}`;
+                const { explicitBoundIds, rootMap } = getBoundParadigmRootMap(tab);
+                if (explicitBoundIds.includes(targetId)) {
+                    directEntries.push({ id: tabId, name: tabName });
+                    return;
+                }
+                const bindingRootId = rootMap.get(targetId) || null;
+                if (!bindingRootId || bindingRootId === targetId) return;
+                const bindingRoot = getParadigmById(bindingRootId);
+                includedEntries.push({
+                    id: tabId,
+                    name: tabName,
+                    viaName: bindingRoot?.name || bindingRootId
+                });
+            });
+            const directPreview = directEntries.slice(0, maxCount).map((entry) => `${entry.name} (${entry.id})`).join("、");
+            const includedPreview = includedEntries.slice(0, maxCount).map((entry) => `${entry.name}（经 ${entry.viaName}）`).join("、");
+            return {
+                directText: directEntries.length > 0
+                    ? `绑定 Tab ${directEntries.length} 个：${directPreview}${directEntries.length > maxCount ? ` 等 ${directEntries.length} 个` : ""}`
+                    : "",
+                includedText: includedEntries.length > 0
+                    ? `纳入 Tab ${includedEntries.length} 个：${includedPreview}${includedEntries.length > maxCount ? ` 等 ${includedEntries.length} 个` : ""}`
+                    : ""
+            };
+        };
         const isParadigmTreeCollapsed = (paradigmId) => !!WORKSPACE_DATA?.paradigmTreeCollapsedById?.[String(paradigmId || "").trim()];
         const toggleParadigmTreeCollapsed = async (paradigmId) => {
             const id = String(paradigmId || "").trim();
@@ -1927,6 +2169,113 @@
             const ref = getItemById(id)?.imageRef;
             return typeof ref === "string" ? ref : "";
         };
+        const getScrollPinViewKey = (tabId = getActiveTabId()) => {
+            const normalizedTabId = String(tabId || "").trim() || DEFAULT_TAB_ID;
+            const normalizedPath = String(currentFilePath || "").trim() || "__current__";
+            return `${normalizedPath}::${normalizedTabId}`;
+        };
+        const getPinnedScrollEntry = (tabId = getActiveTabId()) => WORKSPACE_DATA?.pinnedScrollByViewKey?.[getScrollPinViewKey(tabId)] || null;
+        const getWorkspaceScrollContainer = () => {
+            let node = dv.container;
+            while (node) {
+                const style = window.getComputedStyle(node);
+                const overflowY = String(style?.overflowY || "").toLowerCase();
+                if (["auto", "scroll", "overlay"].includes(overflowY) && node.scrollHeight > node.clientHeight + 8) return node;
+                node = node.parentElement;
+            }
+            return document.scrollingElement || document.documentElement || document.body || null;
+        };
+        const restorePinnedScrollPosition = (tabId = getActiveTabId()) => {
+            const entry = getPinnedScrollEntry(tabId);
+            if (!entry) return;
+            const scroller = getWorkspaceScrollContainer();
+            if (!scroller) return;
+            const maxScrollTop = Math.max(0, (scroller.scrollHeight || 0) - (scroller.clientHeight || 0));
+            const nextTop = Math.min(Math.max(0, Number(entry.scrollTop) || 0), maxScrollTop);
+            if (Math.abs((scroller.scrollTop || 0) - nextTop) < 2) return;
+            scroller.scrollTo({ top: nextTop, behavior: "auto" });
+        };
+        const schedulePinnedScrollRestore = (tabId = getActiveTabId()) => {
+            [0, 120, 360, 900, 1800, 3200].forEach((delay) => {
+                window.setTimeout(() => {
+                    if (window.workspacePendingRelationFocusNodeKey) return;
+                    window.requestAnimationFrame(() => restorePinnedScrollPosition(tabId));
+                }, delay);
+            });
+        };
+        const pinCurrentScrollPosition = async (tabId = getActiveTabId()) => {
+            const scroller = getWorkspaceScrollContainer();
+            if (!scroller) {
+                new Notice("⚠️ 未找到可记录的位置容器");
+                return;
+            }
+            const key = getScrollPinViewKey(tabId);
+            const scrollTop = Math.max(0, Math.round(Number(scroller.scrollTop) || 0));
+            await updateWorkspaceData((data) => {
+                if (!data.pinnedScrollByViewKey || typeof data.pinnedScrollByViewKey !== "object") data.pinnedScrollByViewKey = {};
+                data.pinnedScrollByViewKey[key] = {
+                    scrollTop,
+                    updatedAt: nowString()
+                };
+            });
+            new Notice(`📌 已固定当前位置：${scrollTop}px`);
+        };
+        const mountFloatingPinButton = (tabId = getActiveTabId()) => {
+            if (window.workspaceFloatingPinCleanup) {
+                try { window.workspaceFloatingPinCleanup(); } catch (e) { console.warn("清理旧 Pin 按钮失败:", e); }
+                window.workspaceFloatingPinCleanup = null;
+            }
+            document.querySelectorAll(".workspace-pin-btn").forEach((el) => {
+                try { el.remove(); } catch (e) {}
+            });
+            const paneEl = dv.container.closest(".view-content") || dv.container.closest(".markdown-reading-view") || dv.container.parentElement || dv.container;
+            if (!paneEl || !document.body) return;
+            const currentPinnedEntry = getPinnedScrollEntry(tabId);
+            const btn = document.body.createEl("button", {
+                text: currentPinnedEntry ? "📌 已固定" : "📌 Pin",
+                cls: `workspace-pin-btn ${currentPinnedEntry ? "is-active" : ""}`,
+                attr: {
+                    type: "button",
+                    title: currentPinnedEntry
+                        ? `已固定当前页面位置：${currentPinnedEntry.scrollTop}px\n点击可更新为当前位置`
+                        : "把当前页面滚动位置固定到这里；之后重渲染会自动回到这里"
+                }
+            });
+            btn.style.position = "fixed";
+            btn.style.zIndex = "120";
+            const updatePosition = () => {
+                if (!btn.isConnected) return;
+                const rect = paneEl.getBoundingClientRect();
+                const visibleWidth = Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+                const visibleHeight = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+                if (visibleWidth < 120 || visibleHeight < 120) {
+                    btn.style.display = "none";
+                    return;
+                }
+                btn.style.display = "";
+                const margin = 18;
+                const left = Math.max(rect.left + margin, Math.min(window.innerWidth - btn.offsetWidth - margin, rect.right - btn.offsetWidth - margin));
+                const top = Math.max(rect.top + margin, Math.min(window.innerHeight - btn.offsetHeight - margin, rect.bottom - btn.offsetHeight - margin));
+                btn.style.left = `${Math.round(left)}px`;
+                btn.style.top = `${Math.round(top)}px`;
+            };
+            const onClick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await pinCurrentScrollPosition(tabId);
+            };
+            btn.addEventListener("click", onClick);
+            const onWindowChange = () => updatePosition();
+            window.addEventListener("resize", onWindowChange, { passive: true });
+            window.addEventListener("scroll", onWindowChange, { passive: true, capture: true });
+            updatePosition();
+            window.workspaceFloatingPinCleanup = () => {
+                window.removeEventListener("resize", onWindowChange, { passive: true });
+                window.removeEventListener("scroll", onWindowChange, { capture: true });
+                btn.removeEventListener("click", onClick);
+                if (btn.isConnected) btn.remove();
+            };
+        };
 
         const updateWorkspaceData = async (operationFn) => {
             const next = sanitizeWorkspaceData(clone(WORKSPACE_DATA));
@@ -1960,6 +2309,149 @@
                 console.error("保存任务评论失败:", e);
                 new Notice(`❌ 保存评论失败: ${e.message}`);
             }
+        };
+
+        const escapeSelectorValue = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const getRelationsPluginApi = () => app.plugins?.plugins?.[RELATIONS_PLUGIN_ID]?.api || window.evaCrossViewRelations || null;
+        const getWorkspaceNodeKey = (itemId) => `workspace:tab_item:${String(itemId || "").trim()}`;
+        const parseWorkspaceNodeKey = (nodeKey) => {
+            const text = String(nodeKey || "").trim();
+            const prefix = "workspace:tab_item:";
+            return text.startsWith(prefix) ? text.slice(prefix.length).trim() : "";
+        };
+        const buildWorkspaceItemPathLabel = (itemId) => {
+            const item = getItemById(itemId);
+            if (!item) return String(itemId || "").trim();
+            const parts = [];
+            const tabName = getTabById(item.tabId)?.name || item.tabId || "Tab";
+            parts.push(tabName);
+            const ancestors = [];
+            let cursor = item.parentId;
+            while (cursor) {
+                const parent = getItemById(cursor);
+                if (!parent) break;
+                ancestors.unshift(parent.title);
+                cursor = parent.parentId;
+            }
+            if (ancestors.length) parts.push(...ancestors);
+            parts.push(item.title);
+            return parts.join(" / ");
+        };
+        const getWorkspaceRelationSnapshot = (itemId) => {
+            const api = getRelationsPluginApi();
+            if (!api?.getNodeRelationSnapshot) return { outgoing: [], incoming: [] };
+            return api.getNodeRelationSnapshot(getWorkspaceNodeKey(itemId)) || { outgoing: [], incoming: [] };
+        };
+        const pulseWorkspaceRelationTarget = (el) => {
+            if (!el) return;
+            el.classList.add("workspace-rel-focus-hit");
+            window.setTimeout(() => el.classList.remove("workspace-rel-focus-hit"), 1800);
+        };
+        const revealWorkspaceNodeKey = (nodeKey, options = {}) => {
+            const itemId = parseWorkspaceNodeKey(nodeKey);
+            if (!itemId) return false;
+            const item = getItemById(itemId);
+            if (!item) return false;
+            let needsRender = false;
+            if (WORKSPACE_DATA.activeTabId !== item.tabId) {
+                WORKSPACE_DATA.activeTabId = item.tabId;
+                needsRender = true;
+            }
+            let cursor = item.parentId;
+            while (cursor) {
+                const parent = getItemById(cursor);
+                if (!parent) break;
+                if (parent.isCollapsed) {
+                    parent.isCollapsed = false;
+                    needsRender = true;
+                }
+                cursor = parent.parentId;
+            }
+            if (needsRender) {
+                window.workspacePendingRelationFocusNodeKey = nodeKey;
+                renderViewFn?.();
+                return "rerender";
+            }
+            const targetEl = dv.container.querySelector(`.workspace-item-line[data-workspace-node-key="${escapeSelectorValue(nodeKey)}"]`);
+            if (!targetEl) return false;
+            targetEl.scrollIntoView({
+                behavior: options.behavior || "smooth",
+                block: "center",
+                inline: "nearest"
+            });
+            pulseWorkspaceRelationTarget(targetEl);
+            getRelationsPluginApi()?.markLastFocusedNode?.(nodeKey);
+            window.workspacePendingRelationFocusNodeKey = "";
+            return true;
+        };
+        const scheduleWorkspaceRelationFocusRestore = (nodeKey) => {
+            const key = String(nodeKey || "").trim();
+            if (!key) return;
+            window.workspacePendingRelationFocusNodeKey = key;
+            [0, 100, 260, 620, 1200].forEach((delay) => {
+                window.setTimeout(() => {
+                    if (window.workspacePendingRelationFocusNodeKey !== key) return;
+                    revealWorkspaceNodeKey(key, { behavior: delay === 0 ? "auto" : "smooth" });
+                }, delay);
+            });
+        };
+        const restorePendingWorkspaceRelationFocus = () => {
+            const api = getRelationsPluginApi();
+            const consumed = api?.consumePendingFocus?.(WORKSPACE_RELATION_VIEW_TYPE, currentFilePath);
+            const pendingKey = String(consumed?.nodeKey || window.workspacePendingRelationFocusNodeKey || "").trim();
+            if (!pendingKey) return;
+            scheduleWorkspaceRelationFocusRestore(pendingKey);
+        };
+        const openWorkspaceRelationEditor = async (itemId) => {
+            const api = getRelationsPluginApi();
+            if (!api?.openRelationEditor) {
+                new Notice("⚠️ 请先启用 EVA Cross View Relations 插件");
+                return;
+            }
+            api.markLastFocusedNode?.(getWorkspaceNodeKey(itemId));
+            await api.openRelationEditor(getWorkspaceNodeKey(itemId));
+        };
+        const registerWorkspaceRelationAdapter = async () => {
+            const api = getRelationsPluginApi();
+            if (!api?.registerAdapter || !currentFilePath) return;
+            await api.registerAdapter({
+                adapterId: `workspace::${currentFilePath}`,
+                viewType: WORKSPACE_RELATION_VIEW_TYPE,
+                notePath: currentFilePath,
+                viewLabel: currentDvFile?.name || "Workspace",
+                listItems: () => Object.values(WORKSPACE_DATA.itemsById || {}).map((item) => {
+                    const paradigm = isParadigmMountedItem(item) ? getParadigmById(item.sourceParadigmId) : null;
+                    return {
+                        nodeKey: getWorkspaceNodeKey(item.id),
+                        label: item.title,
+                        pathLabel: buildWorkspaceItemPathLabel(item.id),
+                        searchText: [
+                            item.title,
+                            getTabById(item.tabId)?.name || "",
+                            paradigm?.name || "",
+                            item.sourceType || ""
+                        ].filter(Boolean).join(" ")
+                    };
+                }),
+                openNode: async (nodeKey, context = {}) => {
+                    const activePath = app.workspace?.getActiveFile?.()?.path || "";
+                    if (activePath !== currentFilePath && context?.fromPlugin !== false) return false;
+                    const result = revealWorkspaceNodeKey(nodeKey, { behavior: "smooth" });
+                    return result === true || result === "rerender";
+                }
+            });
+        };
+        const bindWorkspaceRelationChangeListener = () => {
+            const registryKey = `workspace::${currentFilePath}`;
+            const existing = window.workspaceRelationBridgeRegistry?.[registryKey];
+            if (typeof existing === "function") {
+                try { existing(); } catch (e) {}
+            }
+            const onChanged = () => renderViewFn?.();
+            window.addEventListener("eva-cross-view-relations:changed", onChanged);
+            window.workspaceRelationBridgeRegistry[registryKey] = () => {
+                window.removeEventListener("eva-cross-view-relations:changed", onChanged);
+            };
         };
 
         const removeIdFromChildrenMap = (childrenByParentByTab, id, onlyTabId = null) => {
@@ -3813,7 +4305,10 @@
 
             const branch = container.createEl("div", {
                 cls: `workspace-item-branch ${isParadigm && hasKids ? "is-paradigm-group" : ""}`,
-                attr: { style: `margin-left:${level * 26}px;` }
+                attr: {
+                    style: `margin-left:${level * 26}px;`,
+                    "data-workspace-node-key": getWorkspaceNodeKey(item.id)
+                }
             });
             if (hasKids && item.isCollapsed) branch.classList.add("is-collapsed");
             if (isParadigm && hasKids && branchParadigmVisual) {
@@ -3829,12 +4324,16 @@
             });
             let content = null;
             line.draggable = true;
+            line.dataset.workspaceNodeKey = getWorkspaceNodeKey(item.id);
             if (isParadigm) line.classList.add("is-paradigm");
             if (hasKids && item.isCollapsed) line.classList.add("is-collapsed");
             if (isParadigm && paradigmVisual) {
                 line.style.borderLeft = `4px solid ${paradigmVisual.accent}`;
                 line.style.background = `linear-gradient(90deg, ${paradigmVisual.bg} 0%, ${levelBg} 56%)`;
             }
+            line.addEventListener("pointerdown", () => {
+                getRelationsPluginApi()?.markLastFocusedNode?.(getWorkspaceNodeKey(item.id));
+            }, { passive: true });
 
             line.addEventListener("dragstart", (e) => {
                 e.stopPropagation();
@@ -3971,6 +4470,31 @@
                     attr: { title: boundPath }
                 });
             }
+            const relationSnapshot = getWorkspaceRelationSnapshot(item.id);
+            if (relationSnapshot.outgoing.length > 0) {
+                const outgoingBadge = content.createEl("span", {
+                    text: `→ ${relationSnapshot.outgoing.length}`,
+                    cls: "workspace-origin-badge relation-outgoing",
+                    attr: { title: "我指向的跨视图条目" }
+                });
+                outgoingBadge.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await openWorkspaceRelationEditor(item.id);
+                };
+            }
+            if (relationSnapshot.incoming.length > 0) {
+                const incomingBadge = content.createEl("span", {
+                    text: `← ${relationSnapshot.incoming.length}`,
+                    cls: "workspace-origin-badge relation-incoming",
+                    attr: { title: "指向我的跨视图条目" }
+                });
+                incomingBadge.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await openWorkspaceRelationEditor(item.id);
+                };
+            }
             if (hasKids && item.isCollapsed) {
                 content.createEl("span", {
                     text: "已折叠",
@@ -4017,6 +4541,15 @@
                 attr: { title: isParadigm ? "编辑引用挂载评论（写回定义源）" : (commentText ? "编辑评论（已填写）" : "添加评论") }
             });
             commentBtn.onclick = async (e) => { e.stopPropagation(); await editTaskComment(item.id); };
+            const relationBtn = actions.createEl("span", {
+                text: "↔",
+                cls: "workspace-action-btn",
+                attr: { title: "管理跨视图引用关系" }
+            });
+            relationBtn.onclick = async (e) => {
+                e.stopPropagation();
+                await openWorkspaceRelationEditor(item.id);
+            };
             const deleteBtn = actions.createEl("span", { text: "🗑️", cls: "workspace-action-btn", attr: { title: isParadigm ? "删除引用挂载（写回定义源，影响全部挂载）" : "删除条目（含子树）" } });
             deleteBtn.onclick = async (e) => { e.stopPropagation(); await deleteItem(item.id); };
 
@@ -4443,6 +4976,9 @@
             dv.container.createEl("style", {
                 text: `
                 .workspace-wrap { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 14px; background: var(--background-primary-alt); }
+                .workspace-pin-btn { pointer-events:auto; border:1px solid rgba(211,84,0,.24); background:linear-gradient(180deg, rgba(243,156,18,.16) 0%, rgba(243,156,18,.10) 100%); color:#9c640c; border-radius:999px; padding:8px 12px; font-size:13px; font-weight:700; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.08); backdrop-filter:blur(6px); transition:transform .15s, filter .15s, box-shadow .15s; }
+                .workspace-pin-btn:hover { filter:brightness(1.03); transform:translateY(-1px); box-shadow:0 8px 20px rgba(0,0,0,.10); }
+                .workspace-pin-btn.is-active { border-color:rgba(211,84,0,.34); background:linear-gradient(180deg, rgba(243,156,18,.22) 0%, rgba(243,156,18,.12) 100%); }
                 .workspace-tabbar { display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
                 .workspace-tab-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:10px; padding:8px 12px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
                 .workspace-tab-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.12); color:var(--text-normal); }
@@ -4527,6 +5063,7 @@
                 .workspace-item-line.is-collapsed:not(.is-paradigm) { background:linear-gradient(90deg, rgba(243,156,18,.08) 0%, transparent 72%); }
                 .workspace-item-line.is-collapsed.is-paradigm { box-shadow:inset 0 0 0 1px rgba(243,156,18,.10), inset 4px 0 0 rgba(243,156,18,.16); }
                 .workspace-item-line:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
+                .workspace-item-line.workspace-rel-focus-hit { border-color:rgba(38,166,154,.72); box-shadow:0 0 0 2px rgba(38,166,154,.16), 0 12px 26px rgba(38,166,154,.12); }
                 .workspace-item-line.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
                 .workspace-item-line.drag-over-top { border-top:3px solid #2ecc71; }
                 .workspace-item-line.drag-over-bottom { border-bottom:3px solid #2ecc71; }
@@ -4547,6 +5084,8 @@
                 .workspace-origin-badge { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; }
                 .workspace-origin-badge.orphaned { color:#c0392b; border-color:#c0392b66; }
                 .workspace-origin-badge.collapsed { color:#9c640c; border-color:rgba(156,100,12,.24); background:rgba(243,156,18,.10); }
+                .workspace-origin-badge.relation-outgoing { color:#116b5a; border-color:rgba(17,107,90,.26); background:linear-gradient(180deg, rgba(26,188,156,.18) 0%, rgba(26,188,156,.08) 100%); font-weight:700; box-shadow:inset 0 0 0 1px rgba(17,107,90,.06); }
+                .workspace-origin-badge.relation-incoming { color:#9a5b00; border-color:rgba(154,91,0,.24); background:linear-gradient(180deg, rgba(243,156,18,.18) 0%, rgba(243,156,18,.08) 100%); font-weight:700; box-shadow:inset 0 0 0 1px rgba(154,91,0,.06); }
                 .workspace-bound-label { font-size:12px; color:var(--text-muted); background:var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:1px 7px; flex-shrink:0; }
                 .workspace-title-link { font-weight:600; color:var(--text-normal); min-width:0; flex:1 1 100%; white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word; }
                 .workspace-title-link:hover { color:var(--interactive-accent); text-decoration:underline; }
@@ -4842,6 +5381,7 @@
                     const hostParadigm = paradigm.parentParadigmId ? getParadigmById(paradigm.parentParadigmId) : null;
                     const sourcePathLabel = getParadigmSourcePathLabel(paradigm);
                     const incomingCopyRefSummary = !isCopyParadigm ? summarizeParadigmCopyReferences(paradigm.id) : "";
+                    const boundTabSummary = summarizeParadigmBoundTabs(paradigm.id);
                     row.draggable = true;
                     row.addEventListener("dragstart", (e) => {
                         e.stopPropagation();
@@ -4913,6 +5453,18 @@
                         left.createEl("div", {
                             cls: "workspace-panel-row-hint",
                             text: `🔁 ${incomingCopyRefSummary}`
+                        });
+                    }
+                    if (boundTabSummary.directText) {
+                        left.createEl("div", {
+                            cls: "workspace-panel-row-hint",
+                            text: `📁 ${boundTabSummary.directText}`
+                        });
+                    }
+                    if (boundTabSummary.includedText) {
+                        left.createEl("div", {
+                            cls: "workspace-panel-row-hint",
+                            text: `🧩 ${boundTabSummary.includedText}`
                         });
                     }
 
@@ -5279,6 +5831,7 @@
 
             const list = wrap.createEl("div");
             renderWorkspaceSection(list, activeTabId, 0, activeTabId);
+            mountFloatingPinButton(activeTabId);
         };
 
         let renderQueued = false;
@@ -5287,12 +5840,30 @@
             renderQueued = true;
             setTimeout(() => {
                 renderQueued = false;
+                const relationPending = String(
+                    getRelationsPluginApi()?.consumePendingFocus?.(WORKSPACE_RELATION_VIEW_TYPE, currentFilePath)?.nodeKey
+                    || window.workspacePendingRelationFocusNodeKey
+                    || ""
+                ).trim();
+                if (relationPending) window.workspacePendingRelationFocusNodeKey = relationPending;
                 renderView();
+                void registerWorkspaceRelationAdapter();
+                if (window.workspaceShouldRestorePinnedScrollAfterRender && !relationPending) {
+                    window.workspaceShouldRestorePinnedScrollAfterRender = false;
+                    schedulePinnedScrollRestore(getActiveTabId());
+                }
+                if (relationPending) restorePendingWorkspaceRelationFocus();
             }, 0);
         };
 
+        bindWorkspaceRelationChangeListener();
+        window.workspaceShouldRestorePinnedScrollAfterRender = true;
         renderViewFn();
     } catch (e) {
+        if (window.workspaceFloatingPinCleanup) {
+            try { window.workspaceFloatingPinCleanup(); } catch (cleanupErr) { console.warn("清理 Pin 按钮失败:", cleanupErr); }
+            window.workspaceFloatingPinCleanup = null;
+        }
         console.error("[Workspace] 初始化失败:", e);
         dv.container.innerHTML = "";
         dv.container.createEl("div", {
