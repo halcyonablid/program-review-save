@@ -18,7 +18,9 @@
     const VIEW_STATE_PATH = currentFolder + "/" + VIEW_STATE_FILENAME;
     const TAG_FILTER_STORAGE_KEY = `gtd.tagFilters::${DB_PATH}`;
     const TAG_FILTER_PRESETS_STORAGE_KEY = `gtd.tagFilterPresets::${DB_PATH}`;
+    const TAG_FILTER_EXPANDED_STORAGE_KEY = `gtd.tagFilterExpanded::${DB_PATH}`;
     const SCROLL_STATE_STORAGE_KEY = `gtd.scrollState::${currentNotePath}`;
+    const PIN_SCROLL_STATE_STORAGE_KEY = `gtd.pinScrollState::${currentNotePath}`;
     const VIEW_CONTEXT_STORAGE_KEY = `gtd.viewContext::${currentNotePath}`;
     const VIEW_STATE_DEBUG_ENABLED = false;
     const DISABLE_VIEW_CONTEXT_AUTOMATION = true;
@@ -26,6 +28,8 @@
     const AUTO_PERSIST_INTERVAL_MS = 8000;
     const USER_SCROLL_INTENT_WINDOW_MS = 1800;
     const TOP_OVERWRITE_GUARD_MIN_SCROLL = 160;
+    const RELATIONS_PLUGIN_ID = "eva-cross-view-relations";
+    const GTD_RELATION_VIEW_TYPE = "gtd";
 
     // 默认标签定义（首次使用或文件不存在时）
     const DEFAULT_TAG_DEFINITIONS = {
@@ -146,6 +150,34 @@
     const setTagFilterPresets = (presets) => {
         window.gtdTagFilterPresets = normalizeTagFilterPresets(presets);
         savePersistedTagFilterPresets(window.gtdTagFilterPresets);
+    };
+    const normalizeTagFilterExpandedState = (state) => {
+        const result = {};
+        if (!state || typeof state !== "object") return result;
+        Object.keys(state).forEach((id) => {
+            const key = String(id || "").trim();
+            if (!key || !TAG_DEFINITIONS[key]) return;
+            result[key] = state[id] !== false;
+        });
+        return result;
+    };
+    const loadPersistedTagFilterExpandedState = () => {
+        try {
+            const raw = localStorage.getItem(TAG_FILTER_EXPANDED_STORAGE_KEY);
+            if (!raw) return {};
+            return normalizeTagFilterExpandedState(JSON.parse(raw));
+        } catch (e) {
+            return {};
+        }
+    };
+    const savePersistedTagFilterExpandedState = (state) => {
+        try {
+            localStorage.setItem(TAG_FILTER_EXPANDED_STORAGE_KEY, JSON.stringify(normalizeTagFilterExpandedState(state)));
+        } catch (e) {}
+    };
+    const setTagFilterExpandedState = (state) => {
+        window.gtdTagFilterExpanded = normalizeTagFilterExpandedState(state);
+        savePersistedTagFilterExpandedState(window.gtdTagFilterExpanded);
     };
     const isSameFilterSet = (a, b) => {
         const aa = normalizeTagFilterList(a).slice().sort();
@@ -505,6 +537,11 @@
     }
     if (!Array.isArray(window.gtdTagFilterPresets)) window.gtdTagFilterPresets = loadPersistedTagFilterPresets();
     else setTagFilterPresets(window.gtdTagFilterPresets);
+    if (!window.gtdTagFilterExpanded || typeof window.gtdTagFilterExpanded !== "object") {
+        window.gtdTagFilterExpanded = loadPersistedTagFilterExpandedState();
+    } else {
+        setTagFilterExpandedState(window.gtdTagFilterExpanded);
+    }
     const persistedTagFilters = loadPersistedTagFilters();
     if (persistedTagFilters !== null) setTagFilters(persistedTagFilters);
     else setTagFilters(window.gtdTagFilters);
@@ -547,6 +584,12 @@
     if (!window.gtdViewDebugRegistry || typeof window.gtdViewDebugRegistry !== "object") window.gtdViewDebugRegistry = {};
     if (!window.gtdViewTraceRegistry || typeof window.gtdViewTraceRegistry !== "object") window.gtdViewTraceRegistry = {};
     if (!window.gtdUserScrollIntentRegistry || typeof window.gtdUserScrollIntentRegistry !== "object") window.gtdUserScrollIntentRegistry = {};
+    if (!window.gtdRelationBridgeRegistry || typeof window.gtdRelationBridgeRegistry !== "object") window.gtdRelationBridgeRegistry = {};
+    if (window.gtdPendingRelationFocusNodeKey === undefined) window.gtdPendingRelationFocusNodeKey = "";
+    if (!window.gtdRelationRevealState || typeof window.gtdRelationRevealState !== "object") {
+        window.gtdRelationRevealState = { archiveItemId: null };
+    }
+    if (window.gtdRelationJumpSuppressRestoreUntil === undefined) window.gtdRelationJumpSuppressRestoreUntil = 0;
 
     window.gtdCurrentDragId = null;
     window.gtdCurrentDragTagId = null;
@@ -663,6 +706,243 @@
         viewStatePath: VIEW_STATE_PATH
     });
     const escapeSelectorValue = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const getRelationsPluginApi = () => app.plugins?.plugins?.[RELATIONS_PLUGIN_ID]?.api || window.evaCrossViewRelations || null;
+    const getGtdNodeKey = (itemId) => `gtd:item:${String(itemId || "").trim()}`;
+    const parseGtdNodeKey = (nodeKey) => {
+        const text = String(nodeKey || "").trim();
+        const prefix = "gtd:item:";
+        return text.startsWith(prefix) ? text.slice(prefix.length).trim() : "";
+    };
+    const getGtdItemById = (itemId) => {
+        const key = String(itemId || "").trim();
+        if (!key) return null;
+        return (Array.isArray(gtdList) ? gtdList : []).find((item) => String(item?.id || "").trim() === key) || null;
+    };
+    const getGtdItemLabel = (item) => {
+        if (!item) return "";
+        if (item.type === "project") return String(item.project || item.content || item.id || "").trim();
+        return typeof getDisplayName === "function"
+            ? String(getDisplayName(item) || item.content || item.id || "").trim()
+            : String(item.content || item.project || item.id || "").trim();
+    };
+    const getGtdOwningProjectItemId = (itemId) => {
+        const item = getGtdItemById(itemId);
+        if (!item) return null;
+        if (item.type === "project") return item.id;
+        let cursor = item.parentId || null;
+        while (cursor) {
+            const parent = getGtdItemById(cursor);
+            if (!parent) break;
+            if (parent.type === "project") return parent.id;
+            cursor = parent.parentId || null;
+        }
+        if (item.project) {
+            const matched = (Array.isArray(gtdList) ? gtdList : []).find((entry) =>
+                entry?.type === "project"
+                && entry?.status === "active"
+                && String(entry?.project || "").trim() === String(item.project || "").trim()
+            );
+            if (matched) return matched.id;
+        }
+        return null;
+    };
+    const buildGtdItemPathLabel = (itemId) => {
+        const item = getGtdItemById(itemId);
+        if (!item) return String(itemId || "").trim();
+        const parts = [];
+        if (item.type === "project") parts.push("项目");
+        else if (item.scheduled) parts.push("日程");
+        else if (item.project) parts.push(`项目:${item.project}`);
+        else parts.push("工作篮");
+        const ancestors = [];
+        let cursor = item.parentId || null;
+        while (cursor) {
+            const parent = getGtdItemById(cursor);
+            if (!parent) break;
+            ancestors.unshift(getGtdItemLabel(parent));
+            cursor = parent.parentId || null;
+        }
+        if (ancestors.length) parts.push(...ancestors);
+        parts.push(getGtdItemLabel(item));
+        return parts.join(" / ");
+    };
+    const getGtdRelationSnapshot = (itemId) => {
+        const api = getRelationsPluginApi();
+        if (!api?.getNodeRelationSnapshot) return { outgoing: [], incoming: [] };
+        return api.getNodeRelationSnapshot(getGtdNodeKey(itemId)) || { outgoing: [], incoming: [] };
+    };
+    const ensureGtdRelationTargetStructurallyVisible = (item) => {
+        if (!item) return false;
+        let changed = false;
+        if (item.status === "completed") {
+            if (window.gtdRelationRevealState.archiveItemId !== item.id) {
+                window.gtdRelationRevealState.archiveItemId = item.id;
+                changed = true;
+            }
+        } else if (window.gtdRelationRevealState.archiveItemId) {
+            window.gtdRelationRevealState.archiveItemId = null;
+            changed = true;
+        }
+        return changed;
+    };
+    const openGtdRelationHiddenWarningModal = (item) => {
+        const targetLabel = getGtdItemLabel(item) || item?.id || "目标条目";
+        const reasons = [];
+        if (window.gtdTagManagerMode) reasons.push("当前在标签管理模式");
+        if (window.gtdKaioKenMode) reasons.push("当前在 KaioKen 模式");
+        if (window.gtdShowOnlyFirstClass) reasons.push("当前开启了“只看精选”");
+        if (window.gtdShowOnlyFocus) reasons.push("当前开启了“本次执行”");
+        if (Array.isArray(window.gtdTagFilters) && window.gtdTagFilters.length > 0) reasons.push("当前启用了标签筛选");
+        const reasonText = reasons.length > 0 ? reasons.join("、") : "当前视图状态未显示该条目";
+        const modal = new obsidian.Modal(app);
+        modal.onOpen = () => {
+            modal.modalEl.style.maxWidth = "720px";
+            modal.modalEl.style.width = "88vw";
+            modal.contentEl.createEl("h3", { text: "目标条目当前不可见" });
+            modal.contentEl.createEl("div", {
+                text: `要跳转的 GTD 条目「${targetLabel}」没有出现在当前视图里。`,
+                attr: { style: "line-height:1.7;" }
+            });
+            modal.contentEl.createEl("div", {
+                text: `原因提示：${reasonText}。`,
+                attr: { style: "margin-top:8px;color:var(--text-muted);line-height:1.7;" }
+            });
+            modal.contentEl.createEl("div", {
+                text: "当前不会自动改动你的筛选或工作模式；你可以手动调整后再跳转。",
+                attr: { style: "margin-top:8px;color:var(--text-muted);line-height:1.7;" }
+            });
+            const actions = modal.contentEl.createEl("div", {
+                attr: { style: "display:flex;justify-content:flex-end;margin-top:14px;" }
+            });
+            const okBtn = actions.createEl("button", { text: "知道了", cls: "mod-cta" });
+            okBtn.onclick = () => modal.close();
+        };
+        modal.open();
+    };
+    const pulseGtdRelationTarget = (el) => {
+        if (!el) return;
+        el.classList.add("gtd-rel-focus-hit");
+        window.setTimeout(() => el.classList.remove("gtd-rel-focus-hit"), 1800);
+    };
+    const revealGtdNodeKey = (nodeKey, options = {}) => {
+        const itemId = parseGtdNodeKey(nodeKey);
+        if (!itemId) return false;
+        const item = getGtdItemById(itemId);
+        if (!item) return false;
+        let needsRender = ensureGtdRelationTargetStructurallyVisible(item);
+        let cursor = item.parentId || null;
+        while (cursor) {
+            const parent = getGtdItemById(cursor);
+            if (!parent) break;
+            if (parent.isCollapsed) {
+                parent.isCollapsed = false;
+                needsRender = true;
+            }
+            cursor = parent.parentId || null;
+        }
+        const projectId = getGtdOwningProjectItemId(itemId);
+        if (projectId) {
+            const projectItem = getGtdItemById(projectId);
+            if (projectItem?.isCollapsed) {
+                projectItem.isCollapsed = false;
+                needsRender = true;
+            }
+        }
+        if (needsRender) {
+            window.gtdPendingRelationFocusNodeKey = nodeKey;
+            renderViewFn?.();
+            return "rerender";
+        }
+        const selector = `[data-gtd-node-key="${escapeSelectorValue(nodeKey)}"]`;
+        const targetEl = dv.container.querySelector(selector) || dv.container.querySelector(`[data-gtd-anchor-id="${escapeSelectorValue(itemId)}"]`);
+        if (!targetEl) return false;
+        targetEl.scrollIntoView({
+            behavior: options.behavior || "smooth",
+            block: "center",
+            inline: "nearest"
+        });
+        pulseGtdRelationTarget(targetEl);
+        getRelationsPluginApi()?.markLastFocusedNode?.(nodeKey);
+        if (window.gtdRelationRevealState.archiveItemId === item.id) {
+            window.gtdRelationRevealState.archiveItemId = null;
+        }
+        window.gtdPendingRelationFocusNodeKey = "";
+        return true;
+    };
+    const scheduleGtdRelationFocusRestore = (nodeKey) => {
+        const key = String(nodeKey || "").trim();
+        if (!key) return;
+        window.gtdPendingRelationFocusNodeKey = key;
+        window.gtdRelationJumpSuppressRestoreUntil = Date.now() + 5200;
+        [0, 100, 260, 620, 1200, 2200, 3600].forEach((delay, index, arr) => {
+            window.setTimeout(() => {
+                if (window.gtdPendingRelationFocusNodeKey !== key) return;
+                const result = revealGtdNodeKey(key, { behavior: delay === 0 ? "auto" : "smooth" });
+                if (result === true || result === "rerender") return;
+                if (index === arr.length - 1 && window.gtdPendingRelationFocusNodeKey === key) {
+                    const item = getGtdItemById(parseGtdNodeKey(key));
+                    window.gtdPendingRelationFocusNodeKey = "";
+                    if (item) openGtdRelationHiddenWarningModal(item);
+                }
+            }, delay);
+        });
+    };
+    const restorePendingGtdRelationFocus = () => {
+        const api = getRelationsPluginApi();
+        const consumed = api?.consumePendingFocus?.(GTD_RELATION_VIEW_TYPE, currentNotePath);
+        const pendingKey = String(consumed?.nodeKey || window.gtdPendingRelationFocusNodeKey || "").trim();
+        if (!pendingKey) return;
+        scheduleGtdRelationFocusRestore(pendingKey);
+    };
+    const openGtdRelationEditor = async (itemId) => {
+        const api = getRelationsPluginApi();
+        if (!api?.openRelationEditor) {
+            new Notice("⚠️ 请先启用 EVA Cross View Relations 插件");
+            return;
+        }
+        const nodeKey = getGtdNodeKey(itemId);
+        api.markLastFocusedNode?.(nodeKey);
+        await api.openRelationEditor(nodeKey);
+    };
+    const registerGtdRelationAdapter = async () => {
+        const api = getRelationsPluginApi();
+        if (!api?.registerAdapter || !currentNotePath) return;
+        await api.registerAdapter({
+            adapterId: `gtd::${currentNotePath}`,
+            viewType: GTD_RELATION_VIEW_TYPE,
+            notePath: currentNotePath,
+            viewLabel: dv.current()?.file?.name || "GTD",
+            listItems: () => (Array.isArray(gtdList) ? gtdList : []).map((item) => ({
+                nodeKey: getGtdNodeKey(item.id),
+                label: getGtdItemLabel(item),
+                pathLabel: buildGtdItemPathLabel(item.id),
+                searchText: [
+                    getGtdItemLabel(item),
+                    item.type || "",
+                    item.project || "",
+                    buildGtdItemPathLabel(item.id)
+                ].filter(Boolean).join(" ")
+            })),
+            openNode: async (nodeKey, context = {}) => {
+                const activePath = app.workspace?.getActiveFile?.()?.path || "";
+                if (activePath !== currentNotePath && context?.fromPlugin !== false) return false;
+                const result = revealGtdNodeKey(nodeKey, { behavior: "smooth" });
+                return result === true || result === "rerender";
+            }
+        });
+    };
+    const bindGtdRelationChangeListener = () => {
+        const registryKey = `gtd::${currentNotePath}`;
+        const existing = window.gtdRelationBridgeRegistry?.[registryKey];
+        if (typeof existing === "function") {
+            try { existing(); } catch (e) {}
+        }
+        const onChanged = () => renderViewFn?.();
+        window.addEventListener("eva-cross-view-relations:changed", onChanged);
+        window.gtdRelationBridgeRegistry[registryKey] = () => {
+            window.removeEventListener("eva-cross-view-relations:changed", onChanged);
+        };
+    };
     const loadPersistedScrollState = () => {
         try {
             const raw = localStorage.getItem(SCROLL_STATE_STORAGE_KEY);
@@ -677,6 +957,30 @@
         window.gtdScrollStateRegistry[currentNotePath] = normalized;
         try {
             localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized));
+        } catch (e) {}
+        return normalized;
+    };
+    const loadPinnedScrollState = () => {
+        try {
+            const raw = localStorage.getItem(PIN_SCROLL_STATE_STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            const scroll = normalizeScrollState(parsed?.scroll || parsed);
+            return {
+                scroll,
+                updatedAt: String(parsed?.updatedAt || "")
+            };
+        } catch (e) {
+            return null;
+        }
+    };
+    const savePinnedScrollState = (state) => {
+        const normalized = {
+            scroll: normalizeScrollState(state?.scroll || state),
+            updatedAt: moment().format("YYYY-MM-DD HH:mm:ss")
+        };
+        try {
+            localStorage.setItem(PIN_SCROLL_STATE_STORAGE_KEY, JSON.stringify(normalized));
         } catch (e) {}
         return normalized;
     };
@@ -1144,6 +1448,104 @@
         host.scrollTop = Math.min(normalized.top, maxTop);
         host.scrollLeft = Math.min(normalized.left, maxLeft);
     };
+    const restorePinnedScrollState = () => {
+        const pinned = loadPinnedScrollState();
+        if (!pinned?.scroll) return;
+        const host = findScrollHost();
+        if (!host) return;
+        applyScrollStateToHost(host, pinned.scroll);
+    };
+    const schedulePinnedScrollRestore = () => {
+        const pinned = loadPinnedScrollState();
+        if (!pinned?.scroll) return;
+        [0, 120, 360, 900, 1800, 3200].forEach((delay) => {
+            window.setTimeout(() => {
+                if (window.gtdPendingRelationFocusNodeKey) return;
+                if (Date.now() < Number(window.gtdRelationJumpSuppressRestoreUntil || 0)) return;
+                restorePinnedScrollState();
+            }, delay);
+        });
+    };
+    const pinCurrentGtdScrollPosition = () => {
+        const host = findScrollHost();
+        if (!host) {
+            new Notice("⚠️ 未找到可固定的位置容器");
+            return null;
+        }
+        const saved = savePinnedScrollState({
+            scroll: {
+                top: host.scrollTop,
+                left: host.scrollLeft
+            }
+        });
+        new Notice(`📍 已固定 GTD 位置：${saved.scroll.top}px`);
+        return saved;
+    };
+    const mountFloatingGtdPinButton = () => {
+        if (window.gtdFloatingPinCleanup) {
+            try { window.gtdFloatingPinCleanup(); } catch (e) { console.warn("清理旧 GTD Pin 按钮失败:", e); }
+            window.gtdFloatingPinCleanup = null;
+        }
+        const paneEl =
+            dv.container.closest(".workspace-leaf.mod-active")
+            || dv.container.closest(".workspace-leaf")
+            || dv.container.closest(".workspace-leaf-content")
+            || dv.container.closest(".view-content")
+            || dv.container.closest(".markdown-reading-view")
+            || dv.container.parentElement
+            || dv.container;
+        if (!paneEl || !document.body) return;
+        const pinned = loadPinnedScrollState();
+        const btn = document.body.createEl("button", {
+            text: pinned ? "📍 GTD 已固定" : "📍 GTD Pin",
+            cls: `gtd-floating-pin-btn ${pinned ? "is-active" : ""}`,
+            attr: {
+                type: "button",
+                title: pinned
+                    ? `已固定 GTD 页面位置：${pinned.scroll.top}px\n点击可更新为当前位置`
+                    : "固定 GTD 页面当前位置；之后重渲染会自动回到这里"
+            }
+        });
+        btn.style.position = "fixed";
+        btn.style.zIndex = "1000";
+        const updatePosition = () => {
+            if (!btn.isConnected) return;
+            const rect = paneEl.getBoundingClientRect();
+            const margin = 18;
+            const hasValidPaneRect =
+                Number.isFinite(rect?.width)
+                && Number.isFinite(rect?.height)
+                && rect.width >= 160
+                && rect.height >= 160;
+            btn.style.display = "";
+            const fallbackLeft = Math.max(margin, window.innerWidth - btn.offsetWidth - margin);
+            const fallbackTop = Math.max(margin, window.innerHeight - btn.offsetHeight - margin);
+            const left = hasValidPaneRect
+                ? Math.max(rect.left + margin, Math.min(window.innerWidth - btn.offsetWidth - margin, rect.right - btn.offsetWidth - margin))
+                : fallbackLeft;
+            const top = hasValidPaneRect
+                ? Math.max(rect.top + margin, Math.min(window.innerHeight - btn.offsetHeight - margin, rect.bottom - btn.offsetHeight - margin))
+                : fallbackTop;
+            btn.style.left = `${Math.round(left)}px`;
+            btn.style.top = `${Math.round(top)}px`;
+        };
+        const onClick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            pinCurrentGtdScrollPosition();
+        };
+        btn.addEventListener("click", onClick);
+        const onWindowChange = () => updatePosition();
+        window.addEventListener("resize", onWindowChange, { passive: true });
+        window.addEventListener("scroll", onWindowChange, { passive: true, capture: true });
+        updatePosition();
+        window.gtdFloatingPinCleanup = () => {
+            window.removeEventListener("resize", onWindowChange, { passive: true });
+            window.removeEventListener("scroll", onWindowChange, { capture: true });
+            btn.removeEventListener("click", onClick);
+            if (btn.isConnected) btn.remove();
+        };
+    };
     const setRestorePresentationState = (isRestoring) => {
         if (isRestoring) {
             dv.container.dataset.gtdRestoring = "1";
@@ -1538,6 +1940,78 @@
         return { fixedMissingParent, fixedInvalidParentType, fixedProjectMismatch };
     };
 
+    const repairTaskCycles = (list) => {
+        let fixedCycles = 0;
+        const idMap = new Map(list.map(i => [i.id, i]));
+        list.forEach(item => {
+            if (item.status !== "active") return;
+            if (item.type !== "next_action" && item.type !== "inbox") return;
+            let current = item;
+            const seen = new Set([item.id]);
+            while (current && current.parentId) {
+                const nextId = current.parentId;
+                if (seen.has(nextId)) {
+                    current.parentId = null;
+                    fixedCycles++;
+                    break;
+                }
+                seen.add(nextId);
+                current = idMap.get(nextId) || null;
+            }
+        });
+        return fixedCycles;
+    };
+
+    const ensureProjectBucketsExist = (list) => {
+        let fixedMissingProjectName = 0;
+        let createdProjects = 0;
+        const today = moment().format("YYYY-MM-DD");
+        const activeProjectNames = new Set(
+            list
+                .filter(i => i.type === "project" && i.status === "active" && i.project)
+                .map(i => i.project)
+        );
+        let nextSortOrder =
+            list
+                .filter(i => i.type === "project")
+                .map(i => Number(i?.sortOrder))
+                .filter(v => Number.isFinite(v))
+                .reduce((max, value) => Math.max(max, value), 0) + 10;
+
+        list.forEach(item => {
+            if (item.status !== "active") return;
+            if (item.type !== "next_action" && item.type !== "inbox") return;
+            if (item.type === "next_action" && !item.project) {
+                item.project = "未分类";
+                fixedMissingProjectName++;
+            }
+            const projectName = item.project || null;
+            if (!projectName || activeProjectNames.has(projectName)) return;
+            list.push({
+                id: `${Date.now()}${Math.random().toString().slice(2, 8)}`,
+                type: "project",
+                status: "active",
+                created: today,
+                project: projectName,
+                content: null,
+                scheduled: null,
+                deadline: null,
+                isFirstClass: false,
+                isFocusSession: false,
+                isDimmed: false,
+                isCollapsed: false,
+                tags: [],
+                parentId: null,
+                sortOrder: nextSortOrder
+            });
+            nextSortOrder += 10;
+            activeProjectNames.add(projectName);
+            createdProjects++;
+        });
+
+        return { fixedMissingProjectName, createdProjects };
+    };
+
     const loadData = async () => {
         if (!await app.vault.adapter.exists(DB_PATH)) return [];
         const content = await app.vault.adapter.read(DB_PATH);
@@ -1561,6 +2035,17 @@
             const hierarchyFixCount = hierarchyFix.fixedMissingParent + hierarchyFix.fixedInvalidParentType + hierarchyFix.fixedProjectMismatch;
             if (hierarchyFixCount > 0) {
                 new Notice(`🧩 自动修复层级异常 ${hierarchyFixCount} 处（孤儿/跨类型/项目不同步）`);
+                modified = true;
+            }
+            const cycleFixCount = repairTaskCycles(list);
+            if (cycleFixCount > 0) {
+                new Notice(`♻️ 自动断开 ${cycleFixCount} 处循环父子关系`);
+                modified = true;
+            }
+            const projectBucketFix = ensureProjectBucketsExist(list);
+            const projectBucketFixCount = projectBucketFix.fixedMissingProjectName + projectBucketFix.createdProjects;
+            if (projectBucketFixCount > 0) {
+                new Notice(`🗂️ 自动修复 ${projectBucketFixCount} 处项目归属异常`);
                 modified = true;
             }
             if (modified) {
@@ -1641,6 +2126,9 @@
         }
         window.gtdCommentDrawerState = { isOpen: false, itemId: null, mode: "preview", draft: "" };
         disposeCommentPreviewComponent();
+        document.querySelectorAll(".gtd-comment-mask, .gtd-comment-drawer").forEach((el) => {
+            try { el.remove(); } catch (e) {}
+        });
         if (renderViewFn) renderViewFn();
     };
 
@@ -1996,8 +2484,8 @@
     const addNewItem = async (type, parentId = null, defaultProject = null, insertAfterId = null) => {
         let placeholder = type === 'project' ? "例如：年度总结报告" : (type === 'inbox' ? "例如：买牛奶" : "例如：整理Excel数据");
         let title = insertAfterId
-            ? "添加同级任务"
-            : (parentId ? "添加子任务" : `添加【${type === 'project' ? '项目' : (type === 'inbox' ? '工作篮任务' : '下一步行动')}】`);
+            ? (type === 'project' ? "添加同级项目" : "添加同级任务")
+            : (parentId ? (type === 'project' ? "添加子项目" : "添加子任务") : `添加【${type === 'project' ? '项目' : (type === 'inbox' ? '工作篮任务' : '下一步行动')}】`);
         const inputName = await prompt(title, placeholder);
         if (!inputName) return;
         const newId = Date.now().toString();
@@ -2023,18 +2511,24 @@
             newItem.content = inputName;
         }
         const siblingOrders = gtdList
-            .filter(i =>
-                i.status === "active" &&
-                (i.type === "next_action" || i.type === "inbox") &&
-                (i.project || null) === (newItem.project || null) &&
-                (i.parentId || null) === (newItem.parentId || null)
-            )
+            .filter(i => {
+                if (i.status !== "active") return false;
+                if (type === "project") {
+                    return i.type === "project" && (i.parentId || null) === (newItem.parentId || null);
+                }
+                return (i.type === "next_action" || i.type === "inbox")
+                    && (i.project || null) === (newItem.project || null)
+                    && (i.parentId || null) === (newItem.parentId || null);
+            })
             .map(i => Number(i?.sortOrder))
             .filter(v => Number.isFinite(v));
         if (insertAfterId) {
             // 同级新增由下方 update 回调精确插入在锚点后
         } else if (parentId) {
             // 新增子任务默认置顶，后续需要时再手动拖拽调整
+            newItem.sortOrder = siblingOrders.length > 0 ? Math.min(...siblingOrders) - 10 : 0;
+        } else if (type === "next_action" && newItem.project) {
+            // 从项目条目直接新增的顶层下一步待办，也默认放到该项目的第一位
             newItem.sortOrder = siblingOrders.length > 0 ? Math.min(...siblingOrders) - 10 : 0;
         } else if (siblingOrders.length > 0) {
             newItem.sortOrder = Math.max(...siblingOrders) + 10;
@@ -2045,12 +2539,15 @@
 
             if (!insertAfterId) return;
             const siblingScope = list
-                .filter(i =>
-                    i.status === "active" &&
-                    (i.type === "next_action" || i.type === "inbox") &&
-                    (i.project || null) === (newItem.project || null) &&
-                    (i.parentId || null) === (newItem.parentId || null)
-                )
+                .filter(i => {
+                    if (i.status !== "active") return false;
+                    if (type === "project") {
+                        return i.type === "project" && (i.parentId || null) === (newItem.parentId || null);
+                    }
+                    return (i.type === "next_action" || i.type === "inbox")
+                        && (i.project || null) === (newItem.project || null)
+                        && (i.parentId || null) === (newItem.parentId || null);
+                })
                 .sort(compareByOrderThenName);
             const withoutNew = siblingScope.filter(i => i.id !== newId);
             const anchorPos = withoutNew.findIndex(i => i.id === insertAfterId);
@@ -2089,6 +2586,15 @@
         while (cursor) {
             if (cursor === draggedId) return true;
             const cursorItem = list.find(i => i.id === cursor);
+            cursor = cursorItem ? (cursorItem.parentId || null) : null;
+        }
+        return false;
+    };
+    const wouldCreateProjectCycle = (list, draggedId, nextParentId) => {
+        let cursor = nextParentId || null;
+        while (cursor) {
+            if (cursor === draggedId) return true;
+            const cursorItem = list.find(i => i.id === cursor && i.type === "project");
             cursor = cursorItem ? (cursorItem.parentId || null) : null;
         }
         return false;
@@ -2162,7 +2668,13 @@
         const draggedItem = gtdList.find(i => i.id === draggedId);
         if (!draggedItem) return;
         const targetItem = targetType === 'task' ? gtdList.find(i => i.id === targetId) : null;
+        const targetProjectItem = targetType === 'project'
+            ? (gtdList.find(i => i.id === targetId && i.type === 'project' && i.status === 'active')
+                || gtdList.find(i => i.type === 'project' && i.project === targetId && i.status === 'active')
+                || null)
+            : null;
         if (targetType === 'task' && !targetItem) return;
+        if (targetType === 'project' && !targetProjectItem) return;
         if (targetType === 'task') {
             if (draggedItem.type !== targetItem.type) {
                 new Notice("⚠️ 不支持 Inbox 与下一步行动 的跨类型拖拽，避免条目被隐藏");
@@ -2174,7 +2686,7 @@
                 return;
             }
         }
-        const targetName = targetType === 'project' ? targetId : targetItem.content;
+        const targetName = targetType === 'project' ? targetProjectItem.project : targetItem.content;
         await updateGTD((list) => {
             const draggedIndex = list.findIndex(i => i.id === draggedId);
             if (draggedIndex < 0) return;
@@ -2232,50 +2744,66 @@
             return {
                 rememberAnchorItemId: item.id,
                 rememberAnchorSectionId: item.type === "inbox" ? "gtd-section-inbox" : "gtd-section-projects",
-                rememberAnchorProjectId: item.project ? (list.find((i) => i.type === "project" && i.project === item.project && i.status === "active")?.id || null) : null
+                rememberAnchorProjectId: targetType === "project"
+                    ? (targetProjectItem?.id || null)
+                    : (item.project ? (list.find((i) => i.type === "project" && i.project === item.project && i.status === "active")?.id || null) : null)
             };
         });
         new Notice("✅ 移动成功");
     };
 
-    const moveProjectUnderParent = async (draggedProjectId, targetParentProjectId = null) => {
+    const moveProjectOrder = async (draggedProjectId, targetProjectId = null, position = "after") => {
         if (!draggedProjectId) return;
-        if (draggedProjectId === targetParentProjectId) return;
+        if (targetProjectId && draggedProjectId === targetProjectId) return;
 
         const draggedProject = gtdList.find(i => i.id === draggedProjectId && i.type === "project" && i.status === "active");
         if (!draggedProject) return;
 
-        const targetParent = targetParentProjectId
-            ? gtdList.find(i => i.id === targetParentProjectId && i.type === "project" && i.status === "active")
+        const targetProject = targetProjectId
+            ? gtdList.find(i => i.id === targetProjectId && i.type === "project" && i.status === "active")
             : null;
-        if (targetParentProjectId && !targetParent) return;
+        if (targetProjectId && !targetProject) return;
 
-        const currentParentId = draggedProject.parentId || null;
-        const nextParentId = targetParentProjectId || null;
-        if (currentParentId === nextParentId) return;
+        const nextParentId = !targetProjectId
+            ? null
+            : (position === "child" ? targetProjectId : (targetProject.parentId || null));
 
-        // 防止循环：不能把项目拖到自己的后代下
-        let cursor = nextParentId;
-        while (cursor) {
-            if (cursor === draggedProjectId) {
-                new Notice("⚠️ 无效操作：不能把项目拖到自己的子级下面");
-                return;
-            }
-            const cursorItem = gtdList.find(i => i.id === cursor && i.type === "project");
-            cursor = cursorItem ? (cursorItem.parentId || null) : null;
+        if (wouldCreateProjectCycle(gtdList, draggedProjectId, nextParentId)) {
+            new Notice("⚠️ 无效操作：不能把项目拖到自己的子级下面");
+            return;
         }
 
         await updateGTD((list) => {
             const idx = list.findIndex(i => i.id === draggedProjectId && i.type === "project");
             if (idx < 0) return;
-            list[idx].parentId = nextParentId;
+            const item = list[idx];
+            item.parentId = nextParentId;
+            const siblingScope = list
+                .filter(i =>
+                    i.status === "active" &&
+                    i.type === "project" &&
+                    (i.parentId || null) === nextParentId
+                )
+                .sort(compareByOrderThenName);
+            const withoutDragged = siblingScope.filter(i => i.id !== item.id);
+            let insertAt = withoutDragged.length;
+            if (!targetProjectId) {
+                insertAt = withoutDragged.length;
+            } else if (position === "child") {
+                insertAt = 0;
+            } else {
+                const targetPos = withoutDragged.findIndex(i => i.id === targetProject.id);
+                if (targetPos >= 0) insertAt = position === "before" ? targetPos : targetPos + 1;
+            }
+            withoutDragged.splice(insertAt, 0, item);
+            resequenceSiblingOrders(list, withoutDragged);
             return {
                 rememberAnchorItemId: draggedProjectId,
                 rememberAnchorSectionId: "gtd-section-projects",
                 rememberAnchorProjectId: draggedProjectId
             };
         });
-        new Notice("✅ 项目层级已更新");
+        new Notice("✅ 项目顺序已更新");
     };
 
     // ==========================================================
@@ -2885,6 +3413,28 @@
         const btnStyle = "background-color: var(--interactive-accent); color: var(--text-on-accent); padding: 6px 16px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 13px; margin-right: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);";
 
         dv.container.createEl("style", { text: `
+            .gtd-floating-pin-btn {
+                border: 1px solid rgba(22, 160, 133, 0.28);
+                background: linear-gradient(180deg, rgba(26, 188, 156, 0.20) 0%, rgba(22, 160, 133, 0.12) 100%);
+                color: #0f6b5b;
+                border-radius: 999px;
+                padding: 8px 12px;
+                font-size: 13px;
+                font-weight: 700;
+                cursor: pointer;
+                box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+                backdrop-filter: blur(6px);
+                transition: transform .15s, filter .15s, box-shadow .15s;
+            }
+            .gtd-floating-pin-btn:hover {
+                filter: brightness(1.03);
+                transform: translateY(-1px);
+                box-shadow: 0 8px 20px rgba(0,0,0,0.10);
+            }
+            .gtd-floating-pin-btn.is-active {
+                border-color: rgba(22, 160, 133, 0.38);
+                background: linear-gradient(180deg, rgba(26, 188, 156, 0.26) 0%, rgba(22, 160, 133, 0.14) 100%);
+            }
             .gtd-item-line { user-select: none; position: relative; }
             .gtd-item-line.is-first-class {
                 box-shadow: inset 3px 0 0 rgba(241, 196, 15, 0.78);
@@ -2915,6 +3465,33 @@
                 letter-spacing: 0.3px;
                 box-shadow: 0 2px 6px rgba(233, 30, 99, 0.35);
             }
+            .gtd-item-line.gtd-rel-focus-hit,
+            summary.gtd-rel-focus-hit {
+                box-shadow: 0 0 0 2px rgba(38, 166, 154, 0.18), 0 10px 24px rgba(38, 166, 154, 0.12);
+                border-radius: 8px;
+            }
+            .gtd-relation-chip {
+                display: inline-flex;
+                align-items: center;
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 11px;
+                margin-left: 6px;
+                cursor: pointer;
+                border: 1px solid var(--background-modifier-border);
+                background: var(--background-secondary);
+                font-weight: 700;
+            }
+            .gtd-relation-chip.outgoing {
+                color: #116b5a;
+                border-color: rgba(17,107,90,.26);
+                background: linear-gradient(180deg, rgba(26,188,156,.18) 0%, rgba(26,188,156,.08) 100%);
+            }
+            .gtd-relation-chip.incoming {
+                color: #9a5b00;
+                border-color: rgba(154,91,0,.24);
+                background: linear-gradient(180deg, rgba(243,156,18,.18) 0%, rgba(243,156,18,.08) 100%);
+            }
             .drag-over-top { border-top: 3px solid #2ecc71 !important; }
             .drag-over-bottom { border-bottom: 3px solid #2ecc71 !important; }
             .drag-over-child { background-color: rgba(46, 204, 113, 0.2) !important; border-left: 3px solid #2ecc71 !important; }
@@ -2934,8 +3511,11 @@
             .gtd-drag-handle:active { cursor: grabbing; }
             .proj-nav-drop-root { border: 1px dashed var(--background-modifier-border); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; color: var(--text-muted); font-size: 0.85em; text-align: center; transition: all 0.2s; }
             .proj-nav-drop-root.drag-over { border-color: #2ecc71; background: rgba(46, 204, 113, 0.15); color: var(--text-normal); }
-            .proj-nav-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; padding: 1px 2px; transition: background 0.2s; }
+            .proj-nav-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; padding: 1px 2px; transition: background 0.2s, box-shadow 0.2s; }
             .proj-nav-row.drag-over { background: rgba(46, 204, 113, 0.18); outline: 1px dashed #2ecc71; }
+            .proj-nav-row.drag-over-before { box-shadow: inset 0 2px 0 #2ecc71; }
+            .proj-nav-row.drag-over-after { box-shadow: inset 0 -2px 0 #2ecc71; }
+            .proj-nav-row.drag-over-child { background: rgba(46, 204, 113, 0.18); outline: 1px dashed #2ecc71; }
             .proj-nav-row.is-dragging { opacity: 0.45; }
             .proj-nav-toggle { width: 16px; text-align: center; color: var(--text-muted); cursor: pointer; user-select: none; font-size: 11px; }
             .proj-nav-toggle.spacer { opacity: 0.35; cursor: default; }
@@ -2971,6 +3551,8 @@
             .tag-category-group.active { box-shadow: none; }
             .tag-category-header { display: flex; align-items: center; gap: 4px; padding: 0; border-radius: 12px; }
             .tag-category-header.active { background: transparent; }
+            .tag-filter-fold-toggle { width: 16px; text-align: center; color: var(--text-muted); cursor: pointer; user-select: none; font-size: 11px; flex-shrink: 0; }
+            .tag-filter-fold-toggle:hover { color: var(--interactive-accent); }
             .tag-category-label { font-size: 13px; cursor: pointer; padding: 2px 6px; border-radius: 10px; transition: all 0.2s; font-weight: 600; border: 1px solid transparent; background: transparent; }
             .tag-category-label:hover { background: var(--background-modifier-hover); border-color: transparent; }
             .tag-category-label.active { color: white; }
@@ -3122,6 +3704,18 @@
             }
             if(renderViewFn) renderViewFn();
         };
+        const isTagBranchExpanded = (id) => {
+            const stored = window.gtdTagFilterExpanded?.[id];
+            return stored !== false;
+        };
+        const toggleTagBranchExpanded = (id) => {
+            const nextState = {
+                ...(window.gtdTagFilterExpanded && typeof window.gtdTagFilterExpanded === "object" ? window.gtdTagFilterExpanded : {}),
+                [id]: !isTagBranchExpanded(id)
+            };
+            setTagFilterExpandedState(nextState);
+            if (renderViewFn) renderViewFn();
+        };
 
         // [优化] 嵌套层级标签筛选器：有子标签的都展开到下一行显示
         const renderNestedTagFilter = (parentId, container) => {
@@ -3135,11 +3729,18 @@
                 const hasSubChildren = subChildren.length > 0;
 
                 if (hasSubChildren) {
+                    const isExpanded = isTagBranchExpanded(key);
                     const groupWrapper = container.createEl("div", { cls: `tag-category-group ${isActive ? "active" : ""}` });
                     groupWrapper.style.borderColor = def.color;
 
                     const headerRow = groupWrapper.createEl("div", { cls: `tag-category-header tag-filter-drop-target ${isActive ? "active" : ""}` });
                     bindHomepageTagDrag(headerRow, key);
+                    const foldToggle = headerRow.createEl("span", { cls: "tag-filter-fold-toggle", text: isExpanded ? "▼" : "▶" });
+                    foldToggle.title = isExpanded ? "收起子标签" : "展开子标签";
+                    foldToggle.onclick = (e) => {
+                        e.stopPropagation();
+                        toggleTagBranchExpanded(key);
+                    };
                     const iconBtn = headerRow.createEl("button", { cls: "tag-filter-icon-btn", text: def.icon || "🏷️" });
                     iconBtn.title = `管理「${def.label}」`;
                     iconBtn.setAttribute("draggable", "false");
@@ -3163,8 +3764,8 @@
 
                     const childContainer = groupWrapper.createEl("div", { cls: "tag-children-group" });
                     childContainer.style.borderColor = def.color + "80";
-
-                    renderNestedTagFilter(key, childContainer);
+                    if (isExpanded) renderNestedTagFilter(key, childContainer);
+                    else childContainer.style.display = "none";
                 } else {
                     const node = container.createEl("div", { cls: `tag-filter-node tag-filter-drop-target ${isActive ? "active" : ""}` });
                     bindHomepageTagDrag(node, key);
@@ -3304,6 +3905,9 @@
         };
 
         const renderCommentDrawer = () => {
+            document.querySelectorAll(".gtd-comment-mask, .gtd-comment-drawer").forEach((el) => {
+                try { el.remove(); } catch (e) {}
+            });
             const state = window.gtdCommentDrawerState || {};
             if (!state.isOpen || !state.itemId) return;
 
@@ -3471,9 +4075,11 @@
                 } 
             });
             if (item?.id) line.dataset.gtdAnchorId = String(item.id);
+            if (item?.id) line.dataset.gtdNodeKey = getGtdNodeKey(item.id);
             const sectionHost = container?.closest?.("[id^='gtd-section-']");
             if (sectionHost?.id) line.dataset.gtdSectionId = sectionHost.id;
             line.addEventListener("pointerdown", () => {
+                getRelationsPluginApi()?.markLastFocusedNode?.(getGtdNodeKey(item.id));
                 const projectDetails = line.closest("details[data-gtd-anchor-id]");
                 rememberAnchorTarget(item?.id, sectionHost?.id || null, projectDetails?.dataset?.gtdAnchorId || null, { immediate: true });
             }, { passive: true });
@@ -3554,6 +4160,11 @@
                     attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px;", title: commentText.trim() ? "编辑评论（已填写）" : "添加评论" }
                 });
                 if(originalIndex !== -1) commentBtn.onclick = (e) => { e.stopPropagation(); openCommentDrawer(item.id); };
+                const relationBtn = actionContainer.createEl("span", {
+                    text: "↔",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px;", title: "管理跨视图引用关系" }
+                });
+                relationBtn.onclick = async (e) => { e.stopPropagation(); await openGtdRelationEditor(item.id); };
                 const renameBtn = actionContainer.createEl("span", { text: "✏️", attr: { style: "cursor: pointer; font-size: 14px; margin-left:6px; color:var(--text-muted);" }, title: "重命名 (同步更新子级)" });
                 if(originalIndex !== -1) renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(originalIndex, item.type, displayText); };
                 const deleteBtn = actionContainer.createEl("span", { text: "✖", attr: { style: "cursor: pointer; font-size: 14px; color: var(--text-muted); margin-left: 6px;" }, title: "彻底删除" });
@@ -3577,6 +4188,11 @@
                     attr: { style: "cursor: pointer; font-size: 14px; margin-left:2px;", title: commentText.trim() ? "编辑评论（已填写）" : "添加评论" }
                 });
                 commentBtn.onclick = (e) => { e.stopPropagation(); openCommentDrawer(item.id); };
+                const relationBtn = actionContainer.createEl("span", {
+                    text: "↔",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-left:2px;", title: "管理跨视图引用关系" }
+                });
+                relationBtn.onclick = async (e) => { e.stopPropagation(); await openGtdRelationEditor(item.id); };
 
                 // [升级] 标签按钮：如果条目有标签则显示第一个标签的图标，否则显示默认🏷️
                 const firstTagDef = (item.tags && item.tags.length > 0) ? TAG_DEFINITIONS[item.tags[0]] : null;
@@ -3627,6 +4243,29 @@
             }
 
             const link = textEl.createEl("a", { text: displayText, cls: "internal-link", attr: { "data-href": displayText, "href": displayText, "target": "_blank", "rel": "noopener" } });
+            const relationSnapshot = getGtdRelationSnapshot(item.id);
+            if (!isGhost && relationSnapshot.outgoing.length > 0) {
+                const outgoingChip = contentSpan.createEl("span", {
+                    text: `→ ${relationSnapshot.outgoing.length}`,
+                    cls: "gtd-relation-chip outgoing"
+                });
+                outgoingChip.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await openGtdRelationEditor(item.id);
+                };
+            }
+            if (!isGhost && relationSnapshot.incoming.length > 0) {
+                const incomingChip = contentSpan.createEl("span", {
+                    text: `← ${relationSnapshot.incoming.length}`,
+                    cls: "gtd-relation-chip incoming"
+                });
+                incomingChip.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await openGtdRelationEditor(item.id);
+                };
+            }
             if (!isGhost && commentSummary) {
                 const commentChip = contentSpan.createEl("span", {
                     cls: "gtd-comment-chip",
@@ -3840,7 +4479,6 @@
 
         const activeProjectsForNav = gtdList.map((item, index) => ({ item, index }))
             .filter(({ item }) => item.type === 'project' && item.status === 'active')
-            .sort(nameSort)
             .filter(({ item }) => {
                 // 无任何筛选条件时显示所有项目
                 if (!window.gtdShowOnlyFirstClass && !window.gtdShowOnlyFocus && (!window.gtdTagFilters || window.gtdTagFilters.length === 0)) return true;
@@ -3886,15 +4524,43 @@
                 // 所有启用的条件都必须通过
                 return passFocus && passFirstClass && passTag;
             });
+        const visibleProjectIdSet = new Set(activeProjectsForNav.map(({ item }) => item.id));
+        const getVisibleRootProjects = () => activeProjectsForNav
+            .filter(({ item }) => {
+                const p = item.parentId || null;
+                return p === null || !visibleProjectIdSet.has(p);
+            })
+            .sort((a, b) => compareByOrderThenName(a.item, b.item));
+        const getVisibleChildren = (parentId) => {
+            return activeProjectsForNav
+                .filter(({ item }) => (item.parentId || null) === parentId)
+                .sort((a, b) => compareByOrderThenName(a.item, b.item));
+        };
+        const collectVisibleProjectsInOrder = (parentId = null, chain = new Set()) => {
+            const entries = parentId === null ? getVisibleRootProjects() : getVisibleChildren(parentId);
+            const ordered = [];
+            entries.forEach((entry) => {
+                const projectId = entry?.item?.id;
+                if (!projectId || chain.has(projectId)) return;
+                ordered.push(entry);
+                const nextChain = new Set(chain);
+                nextChain.add(projectId);
+                ordered.push(...collectVisibleProjectsInOrder(projectId, nextChain));
+            });
+            return ordered;
+        };
 
         // 填充 Quick Nav：树状项目导航（支持拖拽改父子、折叠、同级名称排序）
         if (activeProjectsForNav.length > 0) {
-            const visibleProjectIdSet = new Set(activeProjectsForNav.map(({ item }) => item.id));
-
-            const getVisibleChildren = (parentId) => {
-                return activeProjectsForNav
-                    .filter(({ item }) => (item.parentId || null) === parentId)
-                    .sort((a, b) => (a.item.project || "").localeCompare((b.item.project || ""), "zh"));
+            const getProjectRowDropPosition = (row, event) => {
+                const rect = row.getBoundingClientRect();
+                const xRatio = (event.clientX - rect.left) / Math.max(rect.width, 1);
+                if (xRatio > 0.72) return "child";
+                return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+            };
+            const applyProjectDropClass = (row, position) => {
+                row.classList.remove("drag-over", "drag-over-before", "drag-over-after", "drag-over-child");
+                row.classList.add(`drag-over-${position}`);
             };
 
             const rootDropZone = navContainer.createEl("div", { cls: "proj-nav-drop-root", text: "↥ 拖拽到这里设为顶层项目" });
@@ -3908,7 +4574,7 @@
                 e.preventDefault();
                 rootDropZone.classList.remove("drag-over");
                 if (!window.gtdCurrentDragProjectId) return;
-                await moveProjectUnderParent(window.gtdCurrentDragProjectId, null);
+                await moveProjectOrder(window.gtdCurrentDragProjectId, null, "after");
             });
 
             const jumpToProject = (projectId) => {
@@ -3976,15 +4642,16 @@
                         e.preventDefault();
                         const draggedId = window.gtdCurrentDragProjectId;
                         if (!draggedId || draggedId === item.id) return;
-                        row.classList.add("drag-over");
+                        applyProjectDropClass(row, getProjectRowDropPosition(row, e));
                     });
-                    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+                    row.addEventListener("dragleave", () => row.classList.remove("drag-over", "drag-over-before", "drag-over-after", "drag-over-child"));
                     row.addEventListener("drop", async (e) => {
                         e.preventDefault();
-                        row.classList.remove("drag-over");
+                        const position = getProjectRowDropPosition(row, e);
+                        row.classList.remove("drag-over", "drag-over-before", "drag-over-after", "drag-over-child");
                         const draggedId = window.gtdCurrentDragProjectId;
                         if (!draggedId || draggedId === item.id) return;
-                        await moveProjectUnderParent(draggedId, item.id);
+                        await moveProjectOrder(draggedId, item.id, position);
                     });
 
                     if (hasChildren) {
@@ -4018,12 +4685,7 @@
             };
 
             // 根节点：parentId为空，或父节点被筛选隐藏时也提升为根显示
-            const rootProjects = activeProjectsForNav
-                .filter(({ item }) => {
-                    const p = item.parentId || null;
-                    return p === null || !visibleProjectIdSet.has(p);
-                })
-                .sort((a, b) => (a.item.project || "").localeCompare((b.item.project || ""), "zh"));
+            const rootProjects = getVisibleRootProjects();
 
             rootProjects.forEach(({ item, index }) => {
                 const hasChildren = getVisibleChildren(item.id).length > 0;
@@ -4045,15 +4707,16 @@
                     e.preventDefault();
                     const draggedId = window.gtdCurrentDragProjectId;
                     if (!draggedId || draggedId === item.id) return;
-                    row.classList.add("drag-over");
+                    applyProjectDropClass(row, getProjectRowDropPosition(row, e));
                 });
-                row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+                row.addEventListener("dragleave", () => row.classList.remove("drag-over", "drag-over-before", "drag-over-after", "drag-over-child"));
                 row.addEventListener("drop", async (e) => {
                     e.preventDefault();
-                    row.classList.remove("drag-over");
+                    const position = getProjectRowDropPosition(row, e);
+                    row.classList.remove("drag-over", "drag-over-before", "drag-over-after", "drag-over-child");
                     const draggedId = window.gtdCurrentDragProjectId;
                     if (!draggedId || draggedId === item.id) return;
-                    await moveProjectUnderParent(draggedId, item.id);
+                    await moveProjectOrder(draggedId, item.id, position);
                 });
 
                 if (hasChildren) {
@@ -4090,7 +4753,8 @@
 
         if (activeProjectsForNav.length === 0) projectDiv.createEl("div", { text: "_暂无活跃项目_", attr: { style: "color:var(--text-faint);font-style:italic;" } });
         else {
-            activeProjectsForNav.forEach(({ item: projItem, index: projIndex }) => {
+            const orderedProjectsForDisplay = collectVisibleProjectsInOrder();
+            orderedProjectsForDisplay.forEach(({ item: projItem, index: projIndex }) => {
                 const projName = projItem.project;
                 const projCommentText = getItemCommentText(projItem);
                 const projCommentSummary = summarizeComment(projCommentText, 30);
@@ -4112,21 +4776,29 @@
                 });
                 const summary = details.createEl("summary", { attr: { style: "cursor:pointer;margin-bottom:5px;font-weight:600;color:var(--text-normal);" } });
                 summary.dataset.gtdAnchorId = String(projItem.id);
+                summary.dataset.gtdNodeKey = getGtdNodeKey(projItem.id);
                 summary.dataset.gtdSectionId = "gtd-section-projects";
                 summary.addEventListener("pointerdown", () => {
+                    getRelationsPluginApi()?.markLastFocusedNode?.(getGtdNodeKey(projItem.id));
                     rememberAnchorTarget(projItem.id, "gtd-section-projects", projItem.id, { immediate: true });
                 }, { passive: true });
                 if (projItem.isFocusSession) summary.classList.add("gtd-focus-project");
                 
                 summary.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); if (!window.gtdCurrentDragId) return; summary.classList.add("drag-over-project"); });
                 summary.addEventListener("dragleave", (e) => { e.stopPropagation(); summary.classList.remove("drag-over-project"); });
-                summary.addEventListener("drop", async (e) => { e.preventDefault(); e.stopPropagation(); summary.classList.remove("drag-over-project"); await handleDrop(window.gtdCurrentDragId, projName, null, 'project'); });
+                summary.addEventListener("drop", async (e) => { e.preventDefault(); e.stopPropagation(); summary.classList.remove("drag-over-project"); await handleDrop(window.gtdCurrentDragId, projItem.id, null, 'project'); });
 
                 const summaryContent = summary.createEl("span");
                 const projDoneBtn = summaryContent.createEl("span", { text: "⭕", attr: { style: "margin-right:6px;cursor:pointer;color:var(--interactive-accent);" }, title: "归档项目" });
                 projDoneBtn.onclick = (e) => { e.preventDefault(); completeProject(projIndex, projName); };
                 const projRenameBtn = summaryContent.createEl("span", { text: "✏️", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;" }, title: "重命名项目" });
                 projRenameBtn.onclick = (e) => { e.preventDefault(); renameItem(projIndex, 'project', projName); };
+                const projAddProjectBtn = summaryContent.createEl("span", { text: "＋", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;color:var(--text-accent);font-weight:bold;" }, title: "在后面新增同级项目" });
+                projAddProjectBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    addNewItem('project', projItem.parentId || null, null, projItem.id);
+                };
                 const projAddActionBtn = summaryContent.createEl("span", { text: "↳", attr: { style: "margin-right:6px;cursor:pointer;font-size:14px;color:var(--text-accent);font-weight:bold;" }, title: "新增下属下一步待办事项" });
                 projAddActionBtn.onclick = (e) => {
                     e.preventDefault();
@@ -4152,8 +4824,40 @@
                     e.stopPropagation();
                     openCommentDrawer(projItem.id);
                 };
+                const projRelationBtn = summaryContent.createEl("span", {
+                    text: "↔",
+                    attr: { style: "cursor: pointer; font-size: 14px; margin-right:6px;", title: "管理跨视图引用关系" }
+                });
+                projRelationBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await openGtdRelationEditor(projItem.id);
+                };
 
                 summaryContent.createEl("a", { text: projName, cls: "internal-link", attr: { "data-href": projName, "href": projName, "target": "_blank", "rel": "noopener" } });
+                const projRelationSnapshot = getGtdRelationSnapshot(projItem.id);
+                if (projRelationSnapshot.outgoing.length > 0) {
+                    const outgoingChip = summaryContent.createEl("span", {
+                        text: `→ ${projRelationSnapshot.outgoing.length}`,
+                        cls: "gtd-relation-chip outgoing"
+                    });
+                    outgoingChip.onclick = async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        await openGtdRelationEditor(projItem.id);
+                    };
+                }
+                if (projRelationSnapshot.incoming.length > 0) {
+                    const incomingChip = summaryContent.createEl("span", {
+                        text: `← ${projRelationSnapshot.incoming.length}`,
+                        cls: "gtd-relation-chip incoming"
+                    });
+                    incomingChip.onclick = async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        await openGtdRelationEditor(projItem.id);
+                    };
+                }
                 if (projCommentSummary) {
                     const projCommentChip = summaryContent.createEl("span", {
                         cls: "gtd-comment-chip",
@@ -4200,9 +4904,14 @@
             });
         }
         
-        const doneDiv = dv.el("div", "", { attr: { id: "gtd-section-archive", style: containerStyle } }); 
-        doneDiv.createEl("div", { text: "✅ 归档博物馆 (Archive)", attr: { style: headerStyle } });
-        renderCompletedTree(doneDiv);
+        const doneDiv = dv.el("details", "", { attr: { id: "gtd-section-archive", style: containerStyle } });
+        doneDiv.open = !!window.gtdRelationRevealState?.archiveItemId;
+        doneDiv.createEl("summary", {
+            text: "✅ 归档博物馆 (Archive)",
+            attr: { style: `${headerStyle} cursor:pointer; list-style:none;` }
+        });
+        const doneBody = doneDiv.createEl("div", { attr: { style: "margin-top:10px;" } });
+        renderCompletedTree(doneBody);
         renderCommentDrawer();
 
         // 最终挂载顺序：工作篮 -> 导航 -> 日程 -> 项目 -> 归档
@@ -4210,6 +4919,15 @@
     };
 
     renderViewFn = () => {
+        document.querySelectorAll(".gtd-comment-mask, .gtd-comment-drawer").forEach((el) => {
+            try { el.remove(); } catch (e) {}
+        });
+        const relationPending = String(
+            getRelationsPluginApi()?.consumePendingFocus?.(GTD_RELATION_VIEW_TYPE, currentNotePath)?.nodeKey
+            || window.gtdPendingRelationFocusNodeKey
+            || ""
+        ).trim();
+        if (relationPending) window.gtdPendingRelationFocusNodeKey = relationPending;
         const hasExistingAnchors = !!dv.container.querySelector("[data-gtd-anchor-id]");
         const queuedContext = window.gtdRenderRestoreState.nextContextOverride
             ? normalizeViewContext(window.gtdRenderRestoreState.nextContextOverride)
@@ -4233,10 +4951,15 @@
         } else {
             renderNormalView();
         }
+        mountFloatingGtdPinButton();
+        void registerGtdRelationAdapter();
         clearPendingRenderRestoreState();
-        restoreViewContext(savedViewContext, { maskDuringRestore: shouldMaskDuringRestore, delays: restoreDelays });
+        if (!relationPending) restoreViewContext(savedViewContext, { maskDuringRestore: shouldMaskDuringRestore, delays: restoreDelays });
+        restorePendingGtdRelationFocus();
     };
+    bindGtdRelationChangeListener();
     if(renderViewFn) renderViewFn();
+    schedulePinnedScrollRestore();
 })();
 
 ```
