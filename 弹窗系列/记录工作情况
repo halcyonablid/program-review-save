@@ -1,0 +1,1071 @@
+<%*
+(async () => {
+  const { Notice, Modal } = tp.obsidian;
+  try {
+  const WIDGET_ID = "timelog-floating-widget";
+  const existing = document.getElementById(WIDGET_ID);
+  if (existing) {
+    if (typeof existing.cleanup === "function") existing.cleanup();
+    existing.remove();
+    return;
+  }
+
+  const activeFile = app.workspace.getActiveFile();
+  if (!activeFile) {
+    new Notice("未找到当前笔记，无法打开记录面板。");
+    return;
+  }
+
+  let startDate = null;
+  let endDate = null;
+
+  const buildVaultPath = (folder, fileName) => folder ? `${folder}/${fileName}` : fileName;
+  const currentFolder = activeFile.parent?.path || "";
+
+  const JSON_FILENAME = "TimeLog_Database.json";
+  const DB_PATH = buildVaultPath(currentFolder, JSON_FILENAME);
+  const SETTINGS_FILENAME = "TimeLog_Settings.json";
+  const SETTINGS_PATH = buildVaultPath(currentFolder, SETTINGS_FILENAME);
+  const DEFAULT_RANGE = { start: "2025-11-01", end: "2026-12-31" };
+  const COMMENT_FIELD = "comment";
+  const ITEM_FIELD = "事项";
+  const MODAL_Z_INDEX = 10050;
+
+  const generateId = () =>
+    Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  class RecordModal extends Modal {
+    constructor(app, existingItems, onFinish, initialRecord = null, options = {}) {
+      super(app);
+      this.items = existingItems || [];
+      this.onFinish = onFinish;
+      this.submitted = false;
+      this.initialRecord = initialRecord;
+      this.options = options || {};
+    }
+
+    onOpen() {
+      const { contentEl } = this;
+      contentEl.empty();
+      const isEdit = !!this.initialRecord;
+      const allowLightSave = !!this.options.allowLightSave;
+      contentEl.createEl("h3", {
+        text: this.options.title || (isEdit ? "✏️ 修改时间记录" : "➕ 添加新的时间记录")
+      });
+      if (allowLightSave) {
+        contentEl.createEl("div", {
+          text: "可直接修改时间和记录内容后点“仅保存记录”；如果你这次想顺手补完事项、耗时和评分，也可以直接点“保存”。",
+          attr: { style: "margin-top:6px; color:var(--text-muted); line-height:1.7;" }
+        });
+      }
+
+      if (this.modalEl) {
+        this.modalEl.style.width = "720px";
+        this.modalEl.style.maxWidth = "90vw";
+        this.modalEl.style.zIndex = String(MODAL_Z_INDEX + 1);
+      }
+      if (this.bgEl) {
+        this.bgEl.style.zIndex = String(MODAL_Z_INDEX);
+      }
+      const modalContainer = this.modalEl?.closest?.(".modal-container");
+      if (modalContainer) {
+        modalContainer.style.zIndex = String(MODAL_Z_INDEX);
+      }
+
+      const form = contentEl.createEl("div", {
+        attr: { style: "display:flex; flex-direction:column; gap:12px; margin-top:10px;" }
+      });
+
+      const itemRow = form.createEl("div", { attr: { style: "display:flex; flex-direction:column; gap:6px;" } });
+      itemRow.createEl("div", { text: "事项", attr: { style: "font-weight:600;" } });
+      const itemInput = itemRow.createEl("input", {
+        type: "text",
+        value: this.initialRecord?.item || "",
+        attr: { placeholder: "例如：3-稳健执行" }
+      });
+      itemInput.style.width = "100%";
+      const dataListId = `timelog-item-list-${Date.now()}`;
+      itemInput.setAttribute("list", dataListId);
+      const itemList = itemRow.createEl("datalist", { attr: { id: dataListId } });
+      this.items.forEach(item => itemList.createEl("option", { value: item }));
+
+      form.createEl("div", { text: "comment / 评论", attr: { style: "font-weight:600;" } });
+      const commentArea = form.createEl("textarea", {
+        attr: {
+          rows: 10,
+          maxlength: "1000",
+          placeholder: "记录你做了什么、为什么、结果如何..."
+        }
+      });
+      commentArea.value = this.initialRecord?.comment || "";
+      commentArea.style.width = "100%";
+      commentArea.style.minHeight = "220px";
+      commentArea.style.resize = "vertical";
+
+      const counter = form.createEl("div", {
+        text: "0/1000",
+        attr: { style: "text-align:right; color:var(--text-muted); font-size:12px;" }
+      });
+      const updateCounter = () => {
+        counter.textContent = `${commentArea.value.length}/1000`;
+      };
+      commentArea.addEventListener("input", updateCounter);
+      updateCounter();
+
+      const metaRow = form.createEl("div", { attr: { style: "display:flex; gap:12px; flex-wrap:wrap;" } });
+
+      const timeCol = metaRow.createEl("div", { attr: { style: "flex:2 1 240px; display:flex; flex-direction:column; gap:6px;" } });
+      timeCol.createEl("div", { text: "时间 (YYYY-MM-DD HH:mm)", attr: { style: "font-weight:600;" } });
+      const timeInput = timeCol.createEl("input", {
+        type: "text",
+        value: this.initialRecord?.timestamp || moment().format("YYYY-MM-DD HH:mm"),
+        attr: { placeholder: "YYYY-MM-DD HH:mm" }
+      });
+
+      const durationCol = metaRow.createEl("div", { attr: { style: "flex:1 1 120px; display:flex; flex-direction:column; gap:6px;" } });
+      durationCol.createEl("div", { text: "耗时(分钟)", attr: { style: "font-weight:600;" } });
+      const durationInput = durationCol.createEl("input", {
+        type: "number",
+        value: this.initialRecord?.duration ? String(this.initialRecord.duration) : "",
+        attr: { placeholder: "90", min: "1" }
+      });
+
+      const scoreCol = metaRow.createEl("div", { attr: { style: "flex:1 1 120px; display:flex; flex-direction:column; gap:6px;" } });
+      scoreCol.createEl("div", { text: "评分(1-10)", attr: { style: "font-weight:600;" } });
+      const scoreInput = scoreCol.createEl("input", {
+        type: "number",
+        value: this.initialRecord?.score ? String(this.initialRecord.score) : "",
+        attr: { placeholder: "5", min: "1", max: "10" }
+      });
+
+      const actions = contentEl.createEl("div", { attr: { style: "display:flex; justify-content:flex-end; gap:10px; margin-top:14px; flex-wrap:wrap;" } });
+      const cancelBtn = actions.createEl("button", { text: "取消" });
+      const lightSaveBtn = allowLightSave ? actions.createEl("button", { text: "仅保存记录" }) : null;
+      const okBtn = actions.createEl("button", { text: "保存", cls: "mod-cta" });
+
+      const submit = () => {
+        const comment = (commentArea.value || "").trim();
+        if (!comment) {
+          new Notice("请输入 comment/评论");
+          return;
+        }
+        if (comment.length > 1000) {
+          new Notice("评论最多 1000 字");
+          return;
+        }
+
+        const item = (itemInput.value || "").trim();
+        if (!item) {
+          new Notice("请输入事项");
+          return;
+        }
+
+        const timestamp = (timeInput.value || "").trim();
+        if (!moment(timestamp, "YYYY-MM-DD HH:mm", true).isValid()) {
+          new Notice("时间格式应为 YYYY-MM-DD HH:mm");
+          return;
+        }
+
+        const duration = parseInt(durationInput.value, 10);
+        if (!duration || duration <= 0) {
+          new Notice("请输入正确的耗时（分钟）");
+          return;
+        }
+
+        const score = parseInt(scoreInput.value, 10);
+        if (!score || score < 1 || score > 10) {
+          new Notice("评分范围 1-10");
+          return;
+        }
+
+        this.submitted = true;
+        this.close();
+        this.onFinish({ mode: "full", comment, item, timestamp, duration, score });
+      };
+
+      const lightSave = () => {
+        const comment = (commentArea.value || "").trim();
+        if (!comment) {
+          new Notice("请输入记录内容");
+          return;
+        }
+        if (comment.length > 1000) {
+          new Notice("评论最多 1000 字");
+          return;
+        }
+
+        const timestamp = normalizeQuickTimestamp(timeInput.value);
+        if (!timestamp) {
+          new Notice("时间格式应为 YYYY-MM-DD HH:mm");
+          return;
+        }
+
+        this.submitted = true;
+        this.close();
+        this.onFinish({
+          mode: "light",
+          comment,
+          timestamp,
+          item: (this.initialRecord?.item || "").toString(),
+          duration: Number(this.initialRecord?.duration) || 0,
+          score: Number(this.initialRecord?.score) || 0
+        });
+      };
+
+      cancelBtn.onclick = () => {
+        this.close();
+      };
+      if (lightSaveBtn) lightSaveBtn.onclick = lightSave;
+      okBtn.onclick = submit;
+      if (this.options.preferCommentFocus) {
+        commentArea.focus();
+        commentArea.selectionStart = commentArea.value.length;
+        commentArea.selectionEnd = commentArea.value.length;
+      } else {
+        itemInput.focus();
+      }
+    }
+
+    onClose() {
+      this.contentEl.empty();
+      if (!this.submitted) this.onFinish(null);
+    }
+  }
+
+  const openRecordModal = (existingItems = [], initialRecord = null, options = null) =>
+    new Promise(resolve => new RecordModal(app, existingItems, resolve, initialRecord, options).open());
+
+  const parseRecordMoment = (value) => {
+    const text = (value || "").toString().trim();
+    if (!text) return moment.invalid();
+    const strict = moment(text, [
+      "YYYY-MM-DD HH:mm",
+      "YYYY-MM-DD HH:mm:ss",
+      "YYYY-MM-DDTHH:mm",
+      "YYYY-MM-DDTHH:mm:ss",
+      moment.ISO_8601
+    ], true);
+    return strict.isValid() ? strict : moment(text);
+  };
+
+  const normalizeRecords = (raw) => {
+    let records = {};
+    let needsSave = false;
+
+    if (Array.isArray(raw)) {
+      raw.forEach(entry => {
+        if (!entry || typeof entry !== "object") return;
+        const id = entry.id || generateId();
+        const cloned = { ...entry };
+        delete cloned.id;
+        records[id] = cloned;
+      });
+      needsSave = true;
+    } else if (raw && typeof raw === "object") {
+      if (raw.records && typeof raw.records === "object" && !Array.isArray(raw.records)) {
+        records = { ...raw.records };
+        needsSave = true;
+      } else {
+        records = { ...raw };
+      }
+    }
+
+    Object.keys(records).forEach(id => {
+      const rec = records[id];
+      if (!rec || typeof rec !== "object") {
+        delete records[id];
+        return;
+      }
+      if (rec.issue !== undefined && rec[COMMENT_FIELD] === undefined) {
+        rec[COMMENT_FIELD] = rec.issue;
+        delete rec.issue;
+        needsSave = true;
+      }
+      if (rec.category !== undefined && rec[ITEM_FIELD] === undefined) {
+        rec[ITEM_FIELD] = rec.category;
+        delete rec.category;
+        needsSave = true;
+      }
+      if (rec[COMMENT_FIELD] === undefined) {
+        rec[COMMENT_FIELD] = "";
+        needsSave = true;
+      }
+      if (rec[ITEM_FIELD] === undefined) {
+        rec[ITEM_FIELD] = "";
+        needsSave = true;
+      }
+      records[id] = rec;
+    });
+
+    return { records, needsSave };
+  };
+
+  const loadData = async () => {
+    if (!await app.vault.adapter.exists(DB_PATH)) return {};
+    const content = await app.vault.adapter.read(DB_PATH);
+    let raw = null;
+    try {
+      raw = JSON.parse(content);
+    } catch (error) {
+      return {};
+    }
+    const { records, needsSave } = normalizeRecords(raw);
+    if (needsSave) await saveData(records, true);
+    return records;
+  };
+
+  const saveData = async (newData, skipRender = false) => {
+    const file = app.vault.getAbstractFileByPath(DB_PATH);
+    const jsonString = JSON.stringify(newData, null, 2);
+    if (file) await app.vault.modify(file, jsonString);
+    else await app.vault.create(DB_PATH, jsonString);
+    if (!skipRender) await renderView();
+  };
+
+  const loadSettings = async () => {
+    if (!await app.vault.adapter.exists(SETTINGS_PATH)) return { ...DEFAULT_RANGE };
+    const content = await app.vault.adapter.read(SETTINGS_PATH);
+    try {
+      const data = JSON.parse(content);
+      return {
+        start: data?.start || DEFAULT_RANGE.start,
+        end: data?.end || DEFAULT_RANGE.end
+      };
+    } catch (error) {
+      return { ...DEFAULT_RANGE };
+    }
+  };
+
+  const saveSettings = async (settings) => {
+    const file = app.vault.getAbstractFileByPath(SETTINGS_PATH);
+    const jsonString = JSON.stringify(settings, null, 2);
+    if (file) await app.vault.modify(file, jsonString);
+    else await app.vault.create(SETTINGS_PATH, jsonString);
+  };
+
+  const collectExistingItems = (allLogs = {}, currentItem = "") => {
+    const existingItems = new Set();
+    Object.values(allLogs).forEach(log => {
+      const parsed = parseRecordMoment(log?.timestamp);
+      if (!parsed.isValid()) return;
+      const logDate = parsed.toDate();
+      if (startDate && logDate < startDate) return;
+      if (endDate && logDate > endDate) return;
+      const item = (log?.[ITEM_FIELD] ?? log?.category ?? "").toString().trim();
+      if (item) existingItems.add(item);
+    });
+    if (currentItem) existingItems.add(currentItem);
+    return Array.from(existingItems).sort((a, b) =>
+      a.localeCompare(b, "zh-CN", { numeric: true, sensitivity: "base" })
+    );
+  };
+
+  const isPendingEntry = (entry) => {
+    const item = (entry?.item || "").toString().trim();
+    const duration = Number(entry?.durationMin ?? entry?.duration) || 0;
+    const score = Number(entry?.score) || 0;
+    return !item || duration <= 0 || score < 1 || score > 10;
+  };
+
+  const normalizeQuickTimestamp = (value) => {
+    const text = (value || "").toString().trim();
+    if (!text) return "";
+    const parsed = moment(text, [
+      "YYYY-MM-DD HH:mm",
+      "YYYY-MM-DDTHH:mm",
+      "YYYY-MM-DD HH:mm:ss",
+      "YYYY-MM-DDTHH:mm:ss"
+    ], true);
+    return parsed.isValid() ? parsed.format("YYYY-MM-DD HH:mm") : "";
+  };
+
+  async function quickCaptureRecord(commentText, timestampText) {
+    const comment = (commentText || "").trim();
+    if (!comment) {
+      new Notice("请输入记录内容");
+      return false;
+    }
+
+    const timestamp = normalizeQuickTimestamp(timestampText);
+    if (!timestamp) {
+      new Notice("时间格式应为 YYYY-MM-DD HH:mm");
+      return false;
+    }
+
+    const allLogs = await loadData();
+    const newId = generateId();
+    allLogs[newId] = {
+      timestamp,
+      [COMMENT_FIELD]: comment,
+      [ITEM_FIELD]: "",
+      duration: 0,
+      score: 0
+    };
+    await saveData(allLogs);
+    new Notice(`✅ 已快速记录: ${timestamp}`);
+    return true;
+  }
+
+  async function editPendingRecord(recordId) {
+    const allLogs = await loadData();
+    const oldRecord = allLogs?.[recordId];
+    if (!oldRecord) {
+      new Notice("未找到该记录，可能已被删除");
+      return;
+    }
+
+    const initialRecord = {
+      timestamp: (oldRecord?.timestamp || "").toString(),
+      comment: (oldRecord?.[COMMENT_FIELD] ?? oldRecord?.issue ?? "").toString(),
+      item: (oldRecord?.[ITEM_FIELD] ?? oldRecord?.category ?? "").toString(),
+      duration: Number(oldRecord?.duration) || 0,
+      score: Number(oldRecord?.score) || 0
+    };
+    const itemList = collectExistingItems(allLogs, initialRecord.item);
+    const result = await openRecordModal(itemList, initialRecord, {
+      title: "✏️ 修改临时记录",
+      allowLightSave: true,
+      preferCommentFocus: true
+    });
+    if (!result) return;
+
+    allLogs[recordId] = {
+      ...oldRecord,
+      timestamp: result.timestamp,
+      [COMMENT_FIELD]: result.comment,
+      [ITEM_FIELD]: result.item,
+      duration: result.duration,
+      score: Number(result.score)
+    };
+    delete allLogs[recordId].issue;
+    delete allLogs[recordId].category;
+    await saveData(allLogs);
+    new Notice(result.mode === "light"
+      ? `✅ 临时记录已修改: ${result.timestamp}`
+      : `✅ 记录已补全并保存: ${result.timestamp}`);
+  }
+
+  async function addNewRecord() {
+    const allLogs = await loadData();
+    const itemList = collectExistingItems(allLogs);
+    const result = await openRecordModal(itemList);
+    if (!result) return;
+
+    const newId = generateId();
+    allLogs[newId] = {
+      timestamp: result.timestamp,
+      [COMMENT_FIELD]: result.comment,
+      [ITEM_FIELD]: result.item,
+      duration: result.duration,
+      score: Number(result.score)
+    };
+
+    await saveData(allLogs);
+    new Notice(`✅ 记录已添加: ${result.timestamp}`);
+  }
+
+  async function editRecord(recordId, overrideInitial = null) {
+    const allLogs = await loadData();
+    const oldRecord = allLogs?.[recordId];
+    if (!oldRecord) {
+      new Notice("未找到该记录，可能已被删除");
+      return;
+    }
+
+    const initialRecord = {
+      timestamp: (oldRecord?.timestamp || "").toString(),
+      comment: (oldRecord?.[COMMENT_FIELD] ?? oldRecord?.issue ?? "").toString(),
+      item: (oldRecord?.[ITEM_FIELD] ?? oldRecord?.category ?? "").toString(),
+      duration: Number(oldRecord?.duration) || 0,
+      score: Number(oldRecord?.score) || 0
+    };
+    if (overrideInitial && typeof overrideInitial === "object") {
+      Object.assign(initialRecord, overrideInitial);
+    }
+
+    const itemList = collectExistingItems(allLogs, initialRecord.item);
+    const result = await openRecordModal(itemList, initialRecord);
+    if (!result) return;
+
+    allLogs[recordId] = {
+      ...oldRecord,
+      timestamp: result.timestamp,
+      [COMMENT_FIELD]: result.comment,
+      [ITEM_FIELD]: result.item,
+      duration: result.duration,
+      score: Number(result.score)
+    };
+    delete allLogs[recordId].issue;
+    delete allLogs[recordId].category;
+
+    await saveData(allLogs);
+    new Notice(`✅ 记录已修改: ${result.timestamp}`);
+  }
+
+  async function deleteRecord(recordId) {
+    const allLogs = await loadData();
+    if (!allLogs?.[recordId]) {
+      new Notice("未找到该记录");
+      return;
+    }
+    delete allLogs[recordId];
+    await saveData(allLogs);
+    new Notice("🗑️ 记录已删除");
+  }
+
+  const widget = document.createElement("div");
+  widget.id = WIDGET_ID;
+  widget.style.cssText = `
+    position: fixed;
+    top: 8vh;
+    left: 5vw;
+    width: 90vw;
+    height: 90vh;
+    max-width: 1600px;
+    max-height: 1200px;
+    min-width: 620px;
+    min-height: 460px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    box-shadow: 0 10px 36px rgba(0,0,0,0.45);
+    border-radius: 10px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: var(--font-text);
+    animation: timelogPopupFade 0.2s ease;
+  `;
+
+  const styleTag = document.createElement("style");
+  styleTag.textContent = `
+    @keyframes timelogPopupFade {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    #${WIDGET_ID} .timelog-header {
+      padding: 8px 12px;
+      background: var(--background-secondary);
+      border-bottom: 1px solid var(--background-modifier-border);
+      cursor: move;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    #${WIDGET_ID} .timelog-close:hover {
+      color: var(--text-error) !important;
+    }
+    #${WIDGET_ID} .timelog-body {
+      flex: 1;
+      overflow: auto;
+      padding: 12px 14px 18px;
+    }
+  `;
+  widget.appendChild(styleTag);
+
+  const header = document.createElement("div");
+  header.className = "timelog-header";
+  const headerTitle = document.createElement("span");
+  headerTitle.style.fontWeight = "600";
+  headerTitle.textContent = "📊 时间统计与评估视图";
+  header.appendChild(headerTitle);
+
+  const headerActions = document.createElement("div");
+  headerActions.style.cssText = "display:flex; align-items:center; gap:6px;";
+  const closeBtn = document.createElement("div");
+  closeBtn.className = "timelog-close";
+  closeBtn.innerHTML = "✕";
+  closeBtn.style.cssText = "cursor:pointer; padding:0 6px; color:var(--text-muted); font-size:14px;";
+  headerActions.appendChild(closeBtn);
+  header.appendChild(headerActions);
+  widget.appendChild(header);
+
+  const body = document.createElement("div");
+  body.className = "timelog-body";
+  widget.appendChild(body);
+  document.body.appendChild(widget);
+
+  const ensureElementHelpers = (el) => {
+    if (!el.empty) {
+      el.empty = () => {
+        el.innerHTML = "";
+      };
+    }
+    if (!el.setText) {
+      el.setText = (text) => {
+        el.textContent = text ?? "";
+      };
+    }
+    if (!el.createEl) {
+      el.createEl = (tag, opts = {}) => {
+        const child = document.createElement(tag);
+        if (opts.cls) child.className = opts.cls;
+        if (opts.text !== undefined) child.textContent = opts.text;
+        if (opts.attr) {
+          Object.entries(opts.attr).forEach(([key, value]) => child.setAttribute(key, value));
+        }
+        Object.keys(opts).forEach(key => {
+          if (key === "cls" || key === "text" || key === "attr") return;
+          try {
+            child[key] = opts[key];
+          } catch (error) {
+            child.setAttribute(key, opts[key]);
+          }
+        });
+        el.appendChild(child);
+        ensureElementHelpers(child);
+        return child;
+      };
+    }
+    return el;
+  };
+  ensureElementHelpers(body);
+
+  const cleanupFns = [];
+  const cleanup = () => {
+    cleanupFns.forEach(fn => {
+      try {
+        fn();
+      } catch (error) {
+        console.error("cleanup error", error);
+      }
+    });
+  };
+  widget.cleanup = cleanup;
+
+  closeBtn.onclick = () => {
+    cleanup();
+    if (widget.isConnected) widget.remove();
+  };
+
+  const setupDrag = () => {
+    let isDragging = false;
+    let dragX = 0;
+    let dragY = 0;
+
+    const onMouseMove = (event) => {
+      if (!isDragging) return;
+      widget.style.left = `${event.clientX - dragX}px`;
+      widget.style.top = `${event.clientY - dragY}px`;
+      widget.style.right = "auto";
+      widget.style.bottom = "auto";
+    };
+
+    const onMouseUp = () => {
+      isDragging = false;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    header.onmousedown = (event) => {
+      if (event.target === closeBtn) return;
+      isDragging = true;
+      const rect = widget.getBoundingClientRect();
+      dragX = event.clientX - rect.left;
+      dragY = event.clientY - rect.top;
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    };
+
+    cleanupFns.push(() => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    });
+  };
+  setupDrag();
+
+  const renderView = async () => {
+    body.empty();
+
+    const rangeSettings = await loadSettings();
+    const startStr = rangeSettings.start || DEFAULT_RANGE.start;
+    const endStr = rangeSettings.end || DEFAULT_RANGE.end;
+    const startMoment = moment(startStr, "YYYY-MM-DD", true);
+    const endMoment = moment(endStr, "YYYY-MM-DD", true);
+    const safeStart = startMoment.isValid() ? startMoment : moment(DEFAULT_RANGE.start, "YYYY-MM-DD", true);
+    const safeEnd = endMoment.isValid() ? endMoment : moment(DEFAULT_RANGE.end, "YYYY-MM-DD", true);
+
+    startDate = safeStart.clone().startOf("day").toDate();
+    endDate = safeEnd.clone().endOf("day").toDate();
+
+    if (!startMoment.isValid() || !endMoment.isValid()) {
+      await saveSettings({
+        start: safeStart.format("YYYY-MM-DD"),
+        end: safeEnd.format("YYYY-MM-DD")
+      });
+    }
+
+    const logs = await loadData();
+    const logEntries = Object.entries(logs || {});
+
+    if (logEntries.length === 0 && !await app.vault.adapter.exists(DB_PATH)) {
+      const note = body.createEl("p");
+      note.innerHTML = `⚠️ 未找到数据库: <code>${JSON_FILENAME}</code><br>请确保文件位于当前目录。`;
+      return;
+    }
+
+    const allEntries = [];
+    for (const [recordId, log] of logEntries) {
+      const logMoment = parseRecordMoment(log?.timestamp);
+      if (!logMoment.isValid()) continue;
+      const logDate = logMoment.toDate();
+      if (logDate < startDate || logDate > endDate) continue;
+
+      allEntries.push({
+        id: recordId,
+        dateObj: logDate,
+        dateStr: logMoment.format("YYYY-MM-DD"),
+        timeStr: logMoment.format("HH:mm"),
+        comment: (log?.[COMMENT_FIELD] ?? log?.issue ?? "").toString(),
+        item: (log?.[ITEM_FIELD] ?? log?.category ?? "").toString(),
+        durationMin: Number(log.duration) || 0,
+        score: Number(log.score) || 0
+      });
+    }
+
+    const pendingEntries = allEntries
+      .filter(entry => isPendingEntry(entry))
+      .sort((a, b) => b.dateObj - a.dateObj);
+    const scoredEntries = allEntries
+      .filter(entry => !isPendingEntry(entry))
+      .sort((a, b) => a.dateObj - b.dateObj);
+
+    const formatMin = (minutes) => {
+      if (!minutes) return "0m";
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      const remain = minutes % 60;
+      return remain > 0 ? `${hours}h ${remain}m` : `${hours}h`;
+    };
+
+    const goldenAngleColor = (index) => {
+      const GOLDEN_ANGLE = 137.508;
+      const hue = (index * GOLDEN_ANGLE) % 360;
+      const satLevels = [60, 70, 80, 55, 85];
+      const lightLevels = [58, 66, 50, 72, 44];
+      const cycle = Math.floor(index / 360);
+      const sat = satLevels[cycle % satLevels.length];
+      const light = lightLevels[Math.floor(cycle / satLevels.length) % lightLevels.length];
+      return {
+        fill: `hsl(${hue},${sat}%,${light}%)`,
+        border: `hsl(${hue},${Math.min(90, sat + 10)}%,${Math.max(30, light - 18)}%)`
+      };
+    };
+
+    const quickCaptureWrap = body.createEl("div", {
+      attr: {
+        style: "margin-bottom: 18px; padding: 18px; background: linear-gradient(180deg, rgba(52,152,219,0.08) 0%, rgba(52,152,219,0.03) 100%); border: 1px solid rgba(52,152,219,0.18); border-radius: 12px;"
+      }
+    });
+    quickCaptureWrap.createEl("div", {
+      text: "🧠 快速记录",
+      attr: { style: "font-size:18px; font-weight:700; margin-bottom:6px;" }
+    });
+    quickCaptureWrap.createEl("div", {
+      text: "触发脚本后，直接在这里回忆今天做了什么。先记下来，分类和评分放到后面补。",
+      attr: { style: "color:var(--text-muted); line-height:1.7; margin-bottom:12px;" }
+    });
+    const quickTimeRow = quickCaptureWrap.createEl("div", {
+      attr: { style: "display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;" }
+    });
+    quickTimeRow.createEl("span", { text: "记录时间", attr: { style: "font-weight:600;" } });
+    const quickTimeInput = quickTimeRow.createEl("input", {
+      type: "text",
+      value: moment().format("YYYY-MM-DD HH:mm"),
+      attr: { placeholder: "YYYY-MM-DD HH:mm", style: "min-width:220px;" }
+    });
+    const quickNowBtn = quickTimeRow.createEl("button", { text: "现在" });
+    quickNowBtn.onclick = () => {
+      quickTimeInput.value = moment().format("YYYY-MM-DD HH:mm");
+    };
+    const quickTextArea = quickCaptureWrap.createEl("textarea", {
+      attr: {
+        rows: 8,
+        placeholder: "例如：上午处理了什么、推进到哪一步、和谁沟通了、卡点是什么……",
+        style: "width:100%; min-height:220px; resize:vertical; padding:12px; line-height:1.7; border-radius:8px; border:1px solid var(--background-modifier-border); background:var(--background-primary); color:var(--text-normal);"
+      }
+    });
+    const quickCounter = quickCaptureWrap.createEl("div", {
+      text: "0 字",
+      attr: { style: "text-align:right; color:var(--text-muted); font-size:12px; margin-top:6px;" }
+    });
+    quickTextArea.addEventListener("input", () => {
+      quickCounter.textContent = `${quickTextArea.value.trim().length} 字`;
+    });
+    const quickActionRow = quickCaptureWrap.createEl("div", {
+      attr: { style: "display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px;" }
+    });
+    quickActionRow.createEl("div", {
+      text: `当前范围内待整理 ${pendingEntries.length} 条`,
+      attr: { style: "color:var(--text-muted); font-size:12px;" }
+    });
+    const quickSaveBtn = quickActionRow.createEl("button", {
+      text: "➕ 先记下来",
+      cls: "mod-cta",
+      attr: { style: "padding:8px 20px; font-weight:700;" }
+    });
+    quickSaveBtn.onclick = async () => {
+      const ok = await quickCaptureRecord(quickTextArea.value, quickTimeInput.value);
+      if (!ok) return;
+      quickTextArea.value = "";
+      quickCounter.textContent = "0 字";
+      quickTimeInput.value = moment().format("YYYY-MM-DD HH:mm");
+      quickTextArea.focus();
+    };
+    window.setTimeout(() => quickTextArea.focus(), 0);
+
+    const btnContainer = body.createEl("div", {
+      attr: {
+        style: "margin-bottom: 20px; padding: 15px; background: var(--background-primary-alt); border: 1px dashed var(--background-modifier-border); border-radius: 8px;"
+      }
+    });
+
+    const rangeRow = btnContainer.createEl("div", {
+      attr: { style: "display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;" }
+    });
+    rangeRow.createEl("span", { text: "📅 展示范围:", attr: { style: "font-weight:600;" } });
+    const startInput = rangeRow.createEl("input", { type: "date", value: safeStart.format("YYYY-MM-DD") });
+    const endInput = rangeRow.createEl("input", { type: "date", value: safeEnd.format("YYYY-MM-DD") });
+    const saveRangeBtn = rangeRow.createEl("button", { text: "保存范围", cls: "mod-cta" });
+
+    saveRangeBtn.onclick = async () => {
+      if (!startInput.value || !endInput.value) {
+        new Notice("请输入开始/结束日期");
+        return;
+      }
+      if (moment(endInput.value).isBefore(moment(startInput.value))) {
+        new Notice("结束日期不能早于开始");
+        return;
+      }
+      await saveSettings({ start: startInput.value, end: endInput.value });
+      await renderView();
+    };
+
+    const addRow = btnContainer.createEl("div", { attr: { style: "text-align:center;" } });
+    const addBtn = addRow.createEl("button", {
+      text: "🧩 完整录入一条记录",
+      attr: {
+        style: "background-color: var(--interactive-accent); color: var(--text-on-accent); padding: 8px 24px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);"
+      }
+    });
+    addBtn.onclick = addNewRecord;
+
+    if (allEntries.length === 0) {
+      body.createEl("p", { text: "📝 还没有数据，直接在上方开始记录吧！" });
+      return;
+    }
+
+    if (pendingEntries.length > 0) {
+      const pendingWrap = body.createEl("div", {
+        attr: {
+          style: "margin-bottom:20px; padding:14px; border:1px solid rgba(243,156,18,.24); border-radius:10px; background:linear-gradient(180deg, rgba(243,156,18,.08) 0%, rgba(243,156,18,.03) 100%);"
+        }
+      });
+      pendingWrap.createEl("h3", { text: "🧾 待整理记录" });
+      pendingWrap.createEl("div", {
+        text: "这些记录还没补事项、耗时和评分。可以直接点“补全”，也可以拖到下方日期列后再补全。",
+        attr: { style: "color:var(--text-muted); line-height:1.7; margin-bottom:10px;" }
+      });
+      const pendingList = pendingWrap.createEl("div", {
+        attr: { style: "display:flex; flex-direction:column; gap:10px;" }
+      });
+      pendingEntries.forEach((entry) => {
+        const card = pendingList.createEl("div", {
+          attr: {
+            draggable: "true",
+            "data-pending-record-id": entry.id,
+            style: "padding:12px; border:1px dashed rgba(243,156,18,.36); border-radius:10px; background:var(--background-primary);"
+          }
+        });
+        const topRow = card.createEl("div", {
+          attr: { style: "display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;" }
+        });
+        topRow.createEl("div", {
+          text: `${entry.dateStr} ${entry.timeStr}`,
+          attr: { style: "font-weight:700; color:#9a5b00;" }
+        });
+        const actionRow = topRow.createEl("div", { attr: { style: "display:flex; gap:8px; flex-wrap:wrap;" } });
+        const editBtn = actionRow.createEl("button", { text: "修改" });
+        editBtn.onclick = async () => { await editPendingRecord(entry.id); };
+        const fillBtn = actionRow.createEl("button", { text: "补全" });
+        fillBtn.onclick = async () => { await editRecord(entry.id); };
+        const deleteBtn = actionRow.createEl("button", { text: "删除" });
+        deleteBtn.onclick = async () => { await deleteRecord(entry.id); };
+        card.createEl("div", {
+          text: entry.comment || "(无内容)",
+          attr: { style: "margin-top:8px; line-height:1.7; white-space:pre-wrap; word-break:break-word;" }
+        });
+        card.createEl("div", {
+          text: "可拖到下方日期列，进入完整补全流程",
+          attr: { style: "margin-top:8px; color:var(--text-muted); font-size:12px;" }
+        });
+        card.addEventListener("dragstart", (event) => {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", entry.id);
+        });
+      });
+    }
+
+    const group = scoredEntries.reduce((acc, entry) => {
+      if (!acc[entry.dateStr]) acc[entry.dateStr] = [];
+      acc[entry.dateStr].push(entry);
+      return acc;
+    }, {});
+
+    const allItems = Array.from(new Set(scoredEntries.map(entry => entry.item))).sort((a, b) =>
+      a.localeCompare(b, "zh-CN", { numeric: true, sensitivity: "base" })
+    );
+
+    const colorPairMap = {};
+    allItems.forEach((item, index) => {
+      colorPairMap[item] = goldenAngleColor(index);
+    });
+
+    body.createEl("h3", { text: "📊 质量评估堆叠图" });
+    body.createEl("div", {
+      text: "待整理记录可拖到某一天的日期列上，然后补全事项、耗时和评分。",
+      attr: { style: "color:var(--text-muted); line-height:1.7; margin-bottom:8px;" }
+    });
+
+    const blockHeight = 60;
+    const minChartHeight = 280;
+    const chartContainer = body.createEl("div", {
+      attr: { style: "display:flex;align-items:flex-end;gap:12px;overflow-x:auto;padding:10px 0;" }
+    });
+    if (Object.keys(group).length === 0) {
+      chartContainer.createEl("div", {
+        text: pendingEntries.length > 0
+          ? "当前范围内还没有已评估条目。先在上方记录，再把待整理条目拖到日期列里补全。"
+          : "当前范围内还没有已评估条目。",
+        attr: { style: "padding:18px 12px; color:var(--text-muted); font-style:italic;" }
+      });
+    }
+
+    const attachDayDrop = (targetEl, date) => {
+      targetEl.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        targetEl.style.outline = "2px dashed rgba(52,152,219,.6)";
+        targetEl.style.outlineOffset = "4px";
+      });
+      targetEl.addEventListener("dragleave", () => {
+        targetEl.style.outline = "";
+        targetEl.style.outlineOffset = "";
+      });
+      targetEl.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        targetEl.style.outline = "";
+        targetEl.style.outlineOffset = "";
+        const recordId = event.dataTransfer.getData("text/plain");
+        if (!recordId) return;
+        const oldRecord = logs?.[recordId];
+        if (!oldRecord) {
+          new Notice("未找到待整理记录");
+          return;
+        }
+        const currentMoment = parseRecordMoment(oldRecord.timestamp);
+        const fallbackTime = currentMoment.isValid() ? currentMoment.format("HH:mm") : moment().format("HH:mm");
+        await editRecord(recordId, {
+          timestamp: `${date} ${fallbackTime}`
+        });
+      });
+    };
+
+    Object.keys(group).sort().forEach(date => {
+      const entries = group[date].sort((a, b) => b.score - a.score);
+      const dayCol = chartContainer.createEl("div", {
+        attr: {
+          "data-drop-date": date,
+          style: `display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-height:${minChartHeight}px;padding:4px 4px 0;border-radius:8px;transition:background .12s, outline .12s;`
+        }
+      });
+      attachDayDrop(dayCol, date);
+
+      entries.forEach(entry => {
+        const color = colorPairMap[entry.item] || { fill: "#ddd", border: "#444" };
+        let shortItem = entry.item.split("-")[1] || entry.item;
+        if (shortItem.length > 4) shortItem = `${shortItem.substring(0, 4)}..`;
+        const commentTitle = (entry.comment || "").replace(/\n/g, " ");
+        const block = dayCol.createEl("div", {
+          attr: {
+            "data-record-id": entry.id,
+            title: `${entry.timeStr} | ${entry.item}\n评论: ${commentTitle}\n耗时: ${entry.durationMin}分钟\n评分: ${entry.score}\n点击可编辑`,
+            style: `width:50px;height:${blockHeight}px;background:${color.fill};border:2px solid ${color.border};border-radius:6px;margin-bottom:3px;display:flex;flex-direction:column;justify-content:center;align-items:center;cursor:pointer;box-sizing:border-box;transition:transform 0.1s;`
+          }
+        });
+        block.createEl("span", { text: String(entry.score), attr: { style: "font-size:15px;font-weight:bold;color:#222;line-height:1.2;" } });
+        block.createEl("span", { text: shortItem, attr: { style: "font-size:9px;color:#444;width:44px;text-align:center;overflow:hidden;white-space:nowrap;" } });
+        block.addEventListener("mouseenter", () => { block.style.transform = "scale(1.05)"; });
+        block.addEventListener("mouseleave", () => { block.style.transform = "scale(1)"; });
+        block.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void editRecord(entry.id);
+        });
+      });
+
+      const dayTotal = entries.reduce((sum, entry) => sum + entry.durationMin, 0);
+      dayCol.createEl("div", { text: date.slice(5), attr: { style: "margin-top:5px;font-size:12px;font-weight:bold;color:var(--text-muted);" } });
+      dayCol.createEl("div", { text: formatMin(dayTotal), attr: { style: "font-size:10px;color:var(--text-faint);" } });
+    });
+
+    let legendHtml = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;margin-bottom:30px;padding:10px;background:var(--background-secondary);border-radius:6px;">`;
+    allItems.forEach(item => {
+      const color = colorPairMap[item];
+      legendHtml += `<span style="padding:2px 8px;border-radius:4px;background:${color.fill};border:1px solid ${color.border};font-size:12px;color:var(--text-normal);">${item}</span>`;
+    });
+    legendHtml += `</div>`;
+    const legendContainer = body.createEl("div");
+    legendContainer.innerHTML = legendHtml;
+
+    const tableData = [];
+    Object.keys(group).sort().reverse().forEach(date => {
+      const entries = group[date].sort((a, b) => b.dateObj - a.dateObj);
+      const totalMin = entries.reduce((sum, entry) => sum + entry.durationMin, 0);
+
+      entries.forEach((entry, index) => {
+        tableData.push([
+          index === 0 ? `**${date}**` : "",
+          entry.timeStr,
+          entry.item,
+          entry.comment,
+          formatMin(entry.durationMin),
+          entry.score,
+          index === 0 ? formatMin(totalMin) : ""
+        ]);
+      });
+    });
+
+    const details = body.createEl("details", { attr: { style: "margin-top:6px;" } });
+    details.createEl("summary", { text: "📋 详细记录表", attr: { style: "cursor:pointer; font-weight:600;" } });
+
+    const headers = ["日期", "时刻", "事项", "comment/评论", "耗时", "评分", "日合计"];
+    const table = details.createEl("table", { cls: "dataview table-view-table" });
+    const thead = table.createEl("thead");
+    const headerRow = thead.createEl("tr");
+    headers.forEach(text => headerRow.createEl("th", { text }));
+
+    const tbody = table.createEl("tbody");
+    tableData.forEach(row => {
+      const tr = tbody.createEl("tr");
+      row.forEach(cell => {
+        const td = tr.createEl("td");
+        const text = (cell ?? "").toString();
+        const boldMatch = text.match(/^\*\*(.*)\*\*$/);
+        if (boldMatch) {
+          td.createEl("strong", { text: boldMatch[1] });
+        } else {
+          td.setText(text);
+        }
+      });
+    });
+  };
+
+  await renderView();
+  } catch (error) {
+    console.error("记录跟打分模板执行失败:", error);
+    new Notice(`记录跟打分执行失败: ${error?.message || error}`, 6000);
+  }
+})();
+%>
