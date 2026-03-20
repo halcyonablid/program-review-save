@@ -13,6 +13,19 @@
         const ROOT_KEY = "__root__";
         const DEFAULT_TAB_ID = "tab_default";
         const UNCATEGORIZED_PARADIGM_GROUP_ID = "__uncategorized__";
+        const DEFAULT_PARADIGM_TAG_COLOR = "#3498db";
+        const PARADIGM_TAG_COLOR_PALETTE = [
+            "#3498db",
+            "#1abc9c",
+            "#f39c12",
+            "#9b59b6",
+            "#e74c3c",
+            "#16a085",
+            "#d35400",
+            "#2ecc71",
+            "#34495e",
+            "#7f8c8d"
+        ];
         const EVA_NOTES_CANDIDATE_PATHS = [
             "EVA_Notes.json",
             "data/EVA_Notes.json"
@@ -58,6 +71,20 @@
             return { ownerId, parent };
         };
         const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+        const getDefaultParadigmTagColor = (seed = "") => {
+            const text = String(seed || "").trim() || "paradigm-tag";
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                hash = ((hash << 5) - hash) + text.charCodeAt(i);
+                hash |= 0;
+            }
+            return PARADIGM_TAG_COLOR_PALETTE[Math.abs(hash) % PARADIGM_TAG_COLOR_PALETTE.length] || DEFAULT_PARADIGM_TAG_COLOR;
+        };
+        const normalizeParadigmTagIds = (idsLike, tagsById = null) => ensureUniqueIds(
+            (Array.isArray(idsLike) ? idsLike : [])
+                .map((id) => String(id || "").trim())
+                .filter((id) => !tagsById || !!tagsById[id])
+        );
         const isExternalImageRef = (value) => /^(https?:\/\/|data:image\/|file:\/\/|app:\/\/)/i.test(String(value || "").trim());
         const sanitizeImageInput = (raw) => {
             let text = String(raw || "").trim();
@@ -86,6 +113,7 @@
         if (window.workspaceTreeCurrentDragId === undefined) window.workspaceTreeCurrentDragId = null;
         if (window.workspaceTreePromptBusy === undefined) window.workspaceTreePromptBusy = false;
         if (window.workspaceShowParadigmPanel === undefined) window.workspaceShowParadigmPanel = false;
+        if (window.workspaceShowParadigmTagManager === undefined) window.workspaceShowParadigmTagManager = false;
         if (window.workspaceEditingParadigmId === undefined) window.workspaceEditingParadigmId = null;
         if (window.workspaceShowSnapshotPanel === undefined) window.workspaceShowSnapshotPanel = false;
         if (window.workspaceSelectedSnapshotId === undefined) window.workspaceSelectedSnapshotId = null;
@@ -93,6 +121,8 @@
         if (window.workspaceParadigmDragParadigmId === undefined) window.workspaceParadigmDragParadigmId = null;
         if (window.workspaceParadigmNodeDragId === undefined) window.workspaceParadigmNodeDragId = null;
         if (window.workspaceParadigmCategoryDragId === undefined) window.workspaceParadigmCategoryDragId = null;
+        if (window.workspaceParadigmTagCurrentDragId === undefined) window.workspaceParadigmTagCurrentDragId = null;
+        if (window.workspaceParadigmTagFilters === undefined) window.workspaceParadigmTagFilters = [];
         if (window.workspaceCollapsedParadigmTreeIds === undefined) window.workspaceCollapsedParadigmTreeIds = {};
         if (window.workspaceTabCurrentDragId === undefined) window.workspaceTabCurrentDragId = null;
         if (window.workspaceCollapsedParadigmMountGroups === undefined) window.workspaceCollapsedParadigmMountGroups = {};
@@ -128,6 +158,7 @@
             childParadigmCopyIdsByParent: { [ROOT_KEY]: [] },
             paradigmCategoriesById: {},
             childParadigmCategoryIdsByParent: { [ROOT_KEY]: [] },
+            paradigmTagsById: {},
             paradigmItemsById: {},
             paradigmChildrenByParent: {},
             paradigmToTabItemMapByTab: {},
@@ -493,6 +524,31 @@
                 if (!childParadigmCategoryIdsByParent[scopedKey].includes(id)) childParadigmCategoryIdsByParent[scopedKey].push(id);
             });
 
+            const paradigmTagsById = {};
+            const incomingParadigmTags = src.paradigmTagsById && typeof src.paradigmTagsById === "object"
+                ? src.paradigmTagsById
+                : {};
+            Object.keys(incomingParadigmTags).forEach((rawId) => {
+                const id = String(rawId || "").trim();
+                if (!id) return;
+                const tag = incomingParadigmTags[rawId] || {};
+                const label = normalizeText(tag.label || tag.name || tag.title || id);
+                const color = typeof tag.color === "string" && String(tag.color || "").trim()
+                    ? String(tag.color || "").trim()
+                    : getDefaultParadigmTagColor(id);
+                paradigmTagsById[id] = {
+                    id,
+                    label: label || id,
+                    color,
+                    parentTagId: (tag.parentTagId !== undefined && tag.parentTagId !== null && String(tag.parentTagId).trim() !== "")
+                        ? String(tag.parentTagId).trim()
+                        : null,
+                    order: Number.isFinite(tag.order) ? Number(tag.order) : 0,
+                    createdAt: tag.createdAt || nowString(),
+                    updatedAt: tag.updatedAt || nowString()
+                };
+            });
+
             const paradigmsById = {};
             const incomingParadigms = src.paradigmsById && typeof src.paradigmsById === "object" ? src.paradigmsById : {};
             Object.keys(incomingParadigms).forEach((rawId) => {
@@ -513,6 +569,7 @@
                         ? String(pg.parentParadigmId).trim()
                         : null,
                     categoryId: categoryIdRaw && paradigmCategoriesById[categoryIdRaw] ? categoryIdRaw : null,
+                    tagIds: normalizeParadigmTagIds(pg.tagIds, paradigmTagsById),
                     createdAt: pg.createdAt || nowString(),
                     updatedAt: pg.updatedAt || nowString()
                 };
@@ -818,6 +875,7 @@
                 childParadigmCopyIdsByParent,
                 paradigmCategoriesById,
                 childParadigmCategoryIdsByParent,
+                paradigmTagsById,
                 paradigmItemsById,
                 paradigmChildrenByParent,
                 paradigmToTabItemMapByTab,
@@ -1293,6 +1351,353 @@
             }
         }
 
+        class ParadigmTagDefinitionModal extends obsidian.Modal {
+            constructor(app, options, onResolve) {
+                super(app);
+                this.options = options || {};
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            getAvailableParents() {
+                const currentTagId = String(this.options.tagId || "").trim();
+                const excluded = new Set();
+                if (currentTagId) {
+                    excluded.add(currentTagId);
+                    getParadigmTagDescendantIds(currentTagId).forEach((id) => excluded.add(id));
+                }
+                return Object.values(WORKSPACE_DATA.paradigmTagsById || {})
+                    .filter((tag) => !!tag && !excluded.has(tag.id))
+                    .sort((a, b) => getParadigmTagPathLabel(a.id).localeCompare(getParadigmTagPathLabel(b.id), "zh"));
+            }
+            onOpen() {
+                const currentTagId = String(this.options.tagId || "").trim();
+                const tag = currentTagId ? getParadigmTagById(currentTagId) : null;
+                const defaultLabel = tag?.label || normalizeText(this.options.defaultLabel || "");
+                const defaultColor = tag?.color || getDefaultParadigmTagColor(defaultLabel || currentTagId || "paradigm-tag");
+                const defaultParentId = tag?.parentTagId || this.options.presetParentTagId || null;
+                const availableParents = this.getAvailableParents();
+
+                this.modalEl.style.maxWidth = "640px";
+                this.modalEl.style.width = "88vw";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.style.display = "flex";
+                contentEl.style.flexDirection = "column";
+                contentEl.style.gap = "10px";
+
+                contentEl.createEl("h3", { text: currentTagId ? "编辑范式标签" : "新建范式标签" });
+                contentEl.createEl("div", {
+                    text: currentTagId ? `标签 ID: ${currentTagId}` : "标签会自动生成 ID；这里主要配置名称、颜色和父级。",
+                    attr: { style: "font-size:12px;color:var(--text-muted);" }
+                });
+
+                const form = contentEl.createEl("div", {
+                    attr: {
+                        style: "display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--background-modifier-border);border-radius:10px;background:var(--background-primary);"
+                    }
+                });
+                const labelRow = form.createEl("label", {
+                    attr: { style: "display:flex;flex-direction:column;gap:6px;" }
+                });
+                labelRow.createEl("span", { text: "名称", attr: { style: "font-size:12px;color:var(--text-muted);" } });
+                const labelInput = labelRow.createEl("input", {
+                    type: "text",
+                    value: defaultLabel,
+                    attr: {
+                        placeholder: "例如：学习方法、复盘框架、问题拆解",
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);color:var(--text-normal);"
+                    }
+                });
+                const colorRow = form.createEl("label", {
+                    attr: { style: "display:flex;flex-direction:column;gap:6px;" }
+                });
+                colorRow.createEl("span", { text: "颜色", attr: { style: "font-size:12px;color:var(--text-muted);" } });
+                const colorWrap = colorRow.createEl("div", {
+                    attr: { style: "display:flex;align-items:center;gap:10px;flex-wrap:wrap;" }
+                });
+                const colorInput = colorWrap.createEl("input", {
+                    type: "color",
+                    value: defaultColor,
+                    attr: { style: "width:52px;height:34px;padding:2px;border:none;background:transparent;" }
+                });
+                const preview = colorWrap.createEl("div", { cls: "workspace-paradigm-tag-chip" });
+                const previewDot = preview.createEl("span", {
+                    cls: "workspace-paradigm-tag-chip-dot",
+                    attr: { style: `background:${defaultColor};` }
+                });
+                const previewText = preview.createEl("span", { text: defaultLabel || "标签预览" });
+                const updatePreview = () => {
+                    previewDot.style.background = colorInput.value || defaultColor;
+                    previewText.textContent = normalizeText(labelInput.value) || "标签预览";
+                };
+                labelInput.addEventListener("input", updatePreview);
+                colorInput.addEventListener("input", updatePreview);
+
+                const parentRow = form.createEl("label", {
+                    attr: { style: "display:flex;flex-direction:column;gap:6px;" }
+                });
+                parentRow.createEl("span", { text: "父标签", attr: { style: "font-size:12px;color:var(--text-muted);" } });
+                const parentSelect = parentRow.createEl("select", {
+                    attr: {
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);color:var(--text-normal);"
+                    }
+                });
+                const topOption = parentSelect.createEl("option", { text: "顶层标签", value: "" });
+                if (!defaultParentId) topOption.selected = true;
+                availableParents.forEach((entry) => {
+                    const option = parentSelect.createEl("option", {
+                        text: getParadigmTagPathLabel(entry.id),
+                        value: entry.id
+                    });
+                    if (entry.id === defaultParentId) option.selected = true;
+                });
+
+                const actions = contentEl.createEl("div", {
+                    attr: { style: "display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;" }
+                });
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(null);
+                    this.close();
+                };
+                const saveBtn = actions.createEl("button", { text: currentTagId ? "保存" : "创建", cls: "mod-cta" });
+                const submit = () => {
+                    const label = normalizeText(labelInput.value);
+                    if (!label) {
+                        new Notice("⚠️ 请输入标签名称");
+                        return;
+                    }
+                    this.resolve({
+                        label,
+                        color: String(colorInput.value || "").trim() || getDefaultParadigmTagColor(label),
+                        parentTagId: String(parentSelect.value || "").trim() || null
+                    });
+                    this.close();
+                };
+                saveBtn.onclick = submit;
+                labelInput.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") submit();
+                });
+                labelInput.focus();
+                labelInput.selectionStart = labelInput.value.length;
+                labelInput.selectionEnd = labelInput.value.length;
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
+        class ParadigmTagPickerModal extends obsidian.Modal {
+            constructor(app, title, selectedIds, onResolve) {
+                super(app);
+                this.titleStr = title || "设置范式标签";
+                this.selected = new Set(normalizeParadigmTagIds(selectedIds, WORKSPACE_DATA.paradigmTagsById || {}));
+                this.onResolve = onResolve;
+                this.resolved = false;
+                this.query = "";
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            tagMatchesQuery(tagId) {
+                const tag = getParadigmTagById(tagId);
+                if (!tag) return false;
+                const q = String(this.query || "").trim().toLowerCase();
+                if (!q) return true;
+                const hay = [tag.id, tag.label, getParadigmTagPathLabel(tag.id)].filter(Boolean).join(" ").toLowerCase();
+                return hay.includes(q);
+            }
+            branchMatchesQuery(tagId) {
+                if (this.tagMatchesQuery(tagId)) return true;
+                return getSortedParadigmTagChildrenIds(tagId).some((childId) => this.branchMatchesQuery(childId));
+            }
+            toggleTag(tagId) {
+                if (!tagId || !getParadigmTagById(tagId)) return;
+                if (this.selected.has(tagId)) this.selected.delete(tagId);
+                else this.selected.add(tagId);
+                this.render();
+            }
+            renderSelectedPreview() {
+                this.previewEl.empty();
+                const selectedIds = Array.from(this.selected).filter((id) => !!getParadigmTagById(id));
+                if (selectedIds.length === 0) {
+                    this.previewEl.createEl("div", {
+                        text: "当前未选择标签",
+                        attr: { style: "font-size:12px;color:var(--text-muted);" }
+                    });
+                    return;
+                }
+                const wrap = this.previewEl.createEl("div", {
+                    attr: { style: "display:flex;flex-wrap:wrap;gap:6px;" }
+                });
+                selectedIds
+                    .sort((a, b) => getParadigmTagPathLabel(a).localeCompare(getParadigmTagPathLabel(b), "zh"))
+                    .forEach((tagId) => {
+                        const tag = getParadigmTagById(tagId);
+                        if (!tag) return;
+                        const chip = wrap.createEl("button", {
+                            cls: "workspace-paradigm-tag-chip is-filter",
+                            attr: { type: "button", title: "点击移除这个标签" }
+                        });
+                        chip.createEl("span", {
+                            cls: "workspace-paradigm-tag-chip-dot",
+                            attr: { style: `background:${tag.color || DEFAULT_PARADIGM_TAG_COLOR};` }
+                        });
+                        chip.createEl("span", { text: tag.label || tag.id });
+                        chip.onclick = () => this.toggleTag(tagId);
+                    });
+                this.previewEl.createEl("div", {
+                    text: `已选 ${selectedIds.length} 个标签`,
+                    attr: { style: "font-size:12px;color:var(--text-muted);margin-top:8px;" }
+                });
+            }
+            renderTreeBranch(container, parentTagId = null, level = 0) {
+                const childIds = getSortedParadigmTagChildrenIds(parentTagId).filter((tagId) => this.branchMatchesQuery(tagId));
+                childIds.forEach((tagId) => {
+                    const tag = getParadigmTagById(tagId);
+                    if (!tag) return;
+                    const childTagIds = getSortedParadigmTagChildrenIds(tag.id).filter((childId) => this.branchMatchesQuery(childId));
+                    const row = container.createEl("label", {
+                        attr: {
+                            style: `display:flex;align-items:flex-start;gap:10px;padding:8px 10px;margin-left:${level * 18}px;margin-bottom:8px;border:1px solid var(--background-modifier-border);border-radius:10px;background:var(--background-primary);cursor:pointer;`
+                        }
+                    });
+                    const checkbox = row.createEl("input", { type: "checkbox" });
+                    checkbox.checked = this.selected.has(tag.id);
+                    checkbox.onchange = (e) => {
+                        e.stopPropagation();
+                        this.toggleTag(tag.id);
+                    };
+                    const meta = row.createEl("div", {
+                        attr: { style: "display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 auto;" }
+                    });
+                    const title = meta.createEl("div", {
+                        attr: { style: "display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap;" }
+                    });
+                    title.createEl("span", {
+                        cls: "workspace-paradigm-tag-chip-dot",
+                        attr: { style: `background:${tag.color || DEFAULT_PARADIGM_TAG_COLOR};width:10px;height:10px;flex:0 0 10px;` }
+                    });
+                    title.createEl("span", { text: tag.label || tag.id, attr: { style: "font-weight:600;" } });
+                    meta.createEl("small", {
+                        text: `${tag.id}${childTagIds.length > 0 ? ` · 子标签 ${childTagIds.length}` : ""}`,
+                        attr: { style: "color:var(--text-muted);" }
+                    });
+                    row.addEventListener("click", (e) => {
+                        if (e.target === checkbox) return;
+                        e.preventDefault();
+                        this.toggleTag(tag.id);
+                    });
+                    if (childTagIds.length > 0) this.renderTreeBranch(container, tag.id, level + 1);
+                });
+            }
+            render() {
+                this.renderSelectedPreview();
+                this.listEl.empty();
+                const allTags = WORKSPACE_DATA.paradigmTagsById || {};
+                if (Object.keys(allTags).length === 0) {
+                    this.listEl.createEl("div", {
+                        text: "还没有范式标签，请先在范式面板里新建标签。",
+                        attr: { style: "padding:18px;color:var(--text-muted);text-align:center;" }
+                    });
+                    this.statEl.textContent = "共 0 个标签";
+                    return;
+                }
+                const visibleTopLevelIds = getSortedParadigmTagChildrenIds(null).filter((tagId) => this.branchMatchesQuery(tagId));
+                this.statEl.textContent = `显示 ${visibleTopLevelIds.length} 个顶层标签`;
+                if (visibleTopLevelIds.length === 0) {
+                    this.listEl.createEl("div", {
+                        text: "没有匹配标签",
+                        attr: { style: "padding:18px;color:var(--text-muted);text-align:center;" }
+                    });
+                    return;
+                }
+                this.renderTreeBranch(this.listEl, null, 0);
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "820px";
+                this.modalEl.style.width = "88vw";
+                this.modalEl.style.height = "78vh";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.style.display = "flex";
+                contentEl.style.flexDirection = "column";
+                contentEl.style.height = "100%";
+                contentEl.style.gap = "10px";
+
+                contentEl.createEl("h3", { text: this.titleStr });
+                contentEl.createEl("div", {
+                    text: "这里只设置范式自身的标签，不会改 Tab 里的条目显示。",
+                    attr: { style: "font-size:12px;color:var(--text-muted);" }
+                });
+                const searchInput = contentEl.createEl("input", {
+                    type: "text",
+                    attr: {
+                        placeholder: "输入标签名称或 ID 筛选",
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;"
+                    }
+                });
+                searchInput.addEventListener("input", () => {
+                    this.query = searchInput.value || "";
+                    this.render();
+                });
+                this.previewEl = contentEl.createEl("div", {
+                    attr: { style: "padding:10px;border:1px solid var(--background-modifier-border);border-radius:10px;background:var(--background-secondary);" }
+                });
+                this.statEl = contentEl.createEl("div", {
+                    text: "",
+                    attr: { style: "font-size:12px;color:var(--text-muted);" }
+                });
+                this.listEl = contentEl.createEl("div", {
+                    attr: { style: "flex:1;overflow:auto;border:1px solid var(--background-modifier-border);border-radius:10px;padding:10px;background:var(--background-secondary);" }
+                });
+                const actions = contentEl.createEl("div", {
+                    attr: { style: "display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;" }
+                });
+                const clearBtn = actions.createEl("button", { text: "清空选择" });
+                clearBtn.onclick = () => {
+                    this.selected.clear();
+                    this.render();
+                };
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(null);
+                    this.close();
+                };
+                const saveBtn = actions.createEl("button", { text: "保存标签", cls: "mod-cta" });
+                saveBtn.onclick = () => {
+                    this.resolve(Array.from(this.selected));
+                    this.close();
+                };
+                this.render();
+                searchInput.focus();
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.modalEl.style.height = "";
+                this.contentEl.style.display = "";
+                this.contentEl.style.flexDirection = "";
+                this.contentEl.style.height = "";
+                this.contentEl.style.gap = "";
+                this.contentEl.empty();
+            }
+        }
+
         class TaskCommentModal extends obsidian.Modal {
             constructor(app, title, defaultValue, onResolve) {
                 super(app);
@@ -1667,6 +2072,8 @@
         const noteSelector = (noteIndex, currentNotePath = null) => new Promise(r => new VaultNotePickerModal(app, noteIndex, currentNotePath, r).open());
         const paradigmSelector = (items, title = "选择范式", placeholder = "输入名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
         const paradigmCategorySelector = (items, title = "选择分类", placeholder = "输入分类名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
+        const paradigmTagDefinitionEditor = (options = {}) => new Promise(r => new ParadigmTagDefinitionModal(app, options, r).open());
+        const paradigmTagPicker = (title = "设置范式标签", selectedIds = []) => new Promise(r => new ParadigmTagPickerModal(app, title, selectedIds, r).open());
         const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
         const imageManagerEditor = (title, defaultValue = "") => new Promise(r => new ImageManagerModal(app, title, defaultValue, r).open());
         const runWithPromptLock = async (workFn) => {
@@ -2022,6 +2429,82 @@
             const id = String(categoryId || "").trim();
             if (!id || !getParadigmCategoryById(id)) return [];
             return [id].concat(getParadigmCategoryDescendantIds(id));
+        };
+        const getParadigmTagById = (id) => WORKSPACE_DATA.paradigmTagsById?.[String(id || "").trim()] || null;
+        const getParadigmTagChildrenIds = (parentTagId = null) => Object.values(WORKSPACE_DATA.paradigmTagsById || {})
+            .filter((tag) => !!tag && (tag.parentTagId || null) === (parentTagId || null))
+            .map((tag) => tag.id);
+        const getSortedParadigmTagChildrenIds = (parentTagId = null) => getParadigmTagChildrenIds(parentTagId)
+            .sort((a, b) => {
+                const tagA = getParadigmTagById(a);
+                const tagB = getParadigmTagById(b);
+                const orderA = Number.isFinite(tagA?.order) ? tagA.order : Number.MAX_SAFE_INTEGER;
+                const orderB = Number.isFinite(tagB?.order) ? tagB.order : Number.MAX_SAFE_INTEGER;
+                if (orderA !== orderB) return orderA - orderB;
+                return (tagA?.label || a).localeCompare(tagB?.label || b, "zh");
+            });
+        const getParadigmTagDescendantIds = (tagId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getSortedParadigmTagChildrenIds(tagId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !getParadigmTagById(current)) continue;
+                seen.add(current);
+                out.push(current);
+                getSortedParadigmTagChildrenIds(current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+        const getParadigmTagPathLabel = (tagOrId) => {
+            const tag = typeof tagOrId === "string" ? getParadigmTagById(tagOrId) : tagOrId;
+            if (!tag) return String(tagOrId || "").trim();
+            const parts = [];
+            const seen = new Set();
+            let cursor = tag;
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                parts.unshift(cursor.label || cursor.id);
+                cursor = cursor.parentTagId ? getParadigmTagById(cursor.parentTagId) : null;
+            }
+            return parts.join(" / ");
+        };
+        const getParadigmOwnTagIds = (paradigmOrId) => {
+            const paradigm = typeof paradigmOrId === "string" ? getParadigmById(paradigmOrId) : paradigmOrId;
+            if (!paradigm) return [];
+            return normalizeParadigmTagIds(paradigm.tagIds, WORKSPACE_DATA.paradigmTagsById || {});
+        };
+        const getParadigmTagIds = (paradigmOrId) => {
+            const paradigm = typeof paradigmOrId === "string" ? getParadigmById(paradigmOrId) : paradigmOrId;
+            if (!paradigm) return [];
+            const sourceParadigm = getParadigmSourceParadigm(paradigm) || paradigm;
+            return normalizeParadigmTagIds(sourceParadigm.tagIds, WORKSPACE_DATA.paradigmTagsById || {});
+        };
+        const getDirectParadigmTagUsageCount = (tagId) => Object.values(WORKSPACE_DATA.paradigmsById || {})
+            .filter((paradigm) => !!paradigm && !isParadigmCopy(paradigm))
+            .filter((paradigm) => getParadigmOwnTagIds(paradigm).includes(tagId))
+            .length;
+        const normalizeParadigmTagFilters = (filtersLike) => normalizeParadigmTagIds(filtersLike, WORKSPACE_DATA.paradigmTagsById || {});
+        const getParadigmTagFilters = () => {
+            const normalized = normalizeParadigmTagFilters(window.workspaceParadigmTagFilters);
+            if (normalized.length !== (Array.isArray(window.workspaceParadigmTagFilters) ? window.workspaceParadigmTagFilters.length : 0)) {
+                window.workspaceParadigmTagFilters = normalized.slice();
+            }
+            return normalized;
+        };
+        const setParadigmTagFilters = (filtersLike) => {
+            window.workspaceParadigmTagFilters = normalizeParadigmTagFilters(filtersLike);
+            return window.workspaceParadigmTagFilters.slice();
+        };
+        const paradigmMatchesTagFilters = (paradigmOrId, filterIds = getParadigmTagFilters()) => {
+            const normalizedFilters = normalizeParadigmTagFilters(filterIds);
+            if (normalizedFilters.length === 0) return true;
+            const tagSet = new Set(getParadigmTagIds(paradigmOrId));
+            if (tagSet.size === 0) return false;
+            return normalizedFilters.some((filterId) => {
+                if (tagSet.has(filterId)) return true;
+                return getParadigmTagDescendantIds(filterId).some((descId) => tagSet.has(descId));
+            });
         };
         const getBoundParadigmRootMap = (tabLike = getActiveTab()) => {
             const explicitBoundIds = normalizeBoundParadigmIds(tabLike || {}).filter((id) => !!getParadigmById(id));
@@ -2581,6 +3064,87 @@
             const key = paradigmCategoryTreeKey(parentCategoryId);
             return ensureUniqueIds(data.childParadigmCategoryIdsByParent?.[key] || []).filter((id) => !!data.paradigmCategoriesById?.[id]);
         };
+        const getChildParadigmTagIdsFromData = (data, parentTagId = null) => Object.values(data.paradigmTagsById || {})
+            .filter((tag) => !!tag && (tag.parentTagId || null) === (parentTagId || null))
+            .map((tag) => tag.id)
+            .sort((a, b) => {
+                const tagA = data.paradigmTagsById?.[a];
+                const tagB = data.paradigmTagsById?.[b];
+                const orderA = Number.isFinite(tagA?.order) ? tagA.order : Number.MAX_SAFE_INTEGER;
+                const orderB = Number.isFinite(tagB?.order) ? tagB.order : Number.MAX_SAFE_INTEGER;
+                if (orderA !== orderB) return orderA - orderB;
+                return (tagA?.label || a).localeCompare(tagB?.label || b, "zh");
+            });
+        const getParadigmTagDescendantIdsInData = (data, tagId) => {
+            const out = [];
+            const seen = new Set();
+            const stack = getChildParadigmTagIdsFromData(data, tagId);
+            while (stack.length > 0) {
+                const current = String(stack.pop() || "").trim();
+                if (!current || seen.has(current) || !data.paradigmTagsById?.[current]) continue;
+                seen.add(current);
+                out.push(current);
+                getChildParadigmTagIdsFromData(data, current).slice().reverse().forEach((childId) => stack.push(childId));
+            }
+            return out;
+        };
+        const normalizeParadigmTagOrdersInData = (data) => {
+            const groups = new Map();
+            Object.keys(data.paradigmTagsById || {}).forEach((tagId) => {
+                const parentId = data.paradigmTagsById?.[tagId]?.parentTagId || ROOT_KEY;
+                if (!groups.has(parentId)) groups.set(parentId, []);
+                groups.get(parentId).push(tagId);
+            });
+            groups.forEach((tagIds) => {
+                tagIds.sort((a, b) => {
+                    const tagA = data.paradigmTagsById?.[a];
+                    const tagB = data.paradigmTagsById?.[b];
+                    const orderA = Number.isFinite(tagA?.order) ? tagA.order : Number.MAX_SAFE_INTEGER;
+                    const orderB = Number.isFinite(tagB?.order) ? tagB.order : Number.MAX_SAFE_INTEGER;
+                    if (orderA !== orderB) return orderA - orderB;
+                    return (tagA?.label || a).localeCompare(tagB?.label || b, "zh");
+                });
+                tagIds.forEach((tagId, index) => {
+                    if (data.paradigmTagsById?.[tagId]) data.paradigmTagsById[tagId].order = index;
+                });
+            });
+        };
+        const ensureParadigmTagState = (data) => {
+            if (!data.paradigmTagsById || typeof data.paradigmTagsById !== "object") data.paradigmTagsById = {};
+            Object.keys(data.paradigmTagsById).forEach((tagId) => {
+                const tag = data.paradigmTagsById[tagId] || {};
+                const label = normalizeText(tag.label || tag.name || tag.title || tagId);
+                const parentTagIdRaw = (tag.parentTagId !== undefined && tag.parentTagId !== null && String(tag.parentTagId).trim() !== "")
+                    ? String(tag.parentTagId).trim()
+                    : null;
+                data.paradigmTagsById[tagId] = {
+                    id: tagId,
+                    label: label || tagId,
+                    color: typeof tag.color === "string" && String(tag.color || "").trim()
+                        ? String(tag.color || "").trim()
+                        : getDefaultParadigmTagColor(tagId),
+                    parentTagId: parentTagIdRaw && data.paradigmTagsById?.[parentTagIdRaw] ? parentTagIdRaw : null,
+                    order: Number.isFinite(tag.order) ? Number(tag.order) : 0,
+                    createdAt: tag.createdAt || nowString(),
+                    updatedAt: tag.updatedAt || nowString()
+                };
+            });
+            normalizeParadigmTagOrdersInData(data);
+            Object.values(data.paradigmsById || {}).forEach((paradigm) => {
+                if (!paradigm) return;
+                paradigm.tagIds = normalizeParadigmTagIds(paradigm.tagIds, data.paradigmTagsById || {});
+            });
+        };
+        const wouldCreateParadigmTagCycleInData = (data, draggedTagId, nextParentTagId) => {
+            let cursor = nextParentTagId;
+            const seen = new Set([draggedTagId]);
+            while (cursor) {
+                if (seen.has(cursor)) return true;
+                seen.add(cursor);
+                cursor = data.paradigmTagsById?.[cursor]?.parentTagId || null;
+            }
+            return false;
+        };
 
         const getParadigmDescendantIdsInData = (data, paradigmId) => {
             const out = [];
@@ -2640,6 +3204,7 @@
                 const categoryId = paradigm.categoryId ? String(paradigm.categoryId).trim() : null;
                 paradigm.categoryId = categoryId && data.paradigmCategoriesById?.[categoryId] ? categoryId : null;
             });
+            ensureParadigmTagState(data);
         };
 
         const wouldCreateParadigmTreeCycleInData = (data, draggedParadigmId, nextParentParadigmId) => {
@@ -3409,6 +3974,132 @@
                 delete data.paradigmsById[paradigmId];
                 syncParadigmAcrossTabsInData(data);
             });
+        };
+
+        const setParadigmTagIdsInData = (data, paradigmId, nextTagIds = []) => {
+            ensureParadigmTagState(data);
+            const sourceParadigmId = getParadigmSourceIdInData(data, paradigmId);
+            const target = data.paradigmsById?.[sourceParadigmId];
+            if (!target) return;
+            target.tagIds = normalizeParadigmTagIds(nextTagIds, data.paradigmTagsById || {});
+            target.updatedAt = nowString();
+        };
+
+        const editParadigmTagDefinition = async (options = {}) => {
+            const result = await runWithPromptLock(() => paradigmTagDefinitionEditor(options));
+            if (result === null) return;
+            const editingTagId = String(options.tagId || "").trim();
+            let cycleDetected = false;
+            await updateWorkspaceData((data) => {
+                ensureParadigmTagState(data);
+                const now = nowString();
+                const nextParentTagId = result.parentTagId && data.paradigmTagsById?.[result.parentTagId] ? result.parentTagId : null;
+                const tagId = editingTagId || `pgTag_${generateId()}`;
+                const existing = data.paradigmTagsById?.[tagId] || null;
+                if (nextParentTagId && wouldCreateParadigmTagCycleInData(data, tagId, nextParentTagId)) {
+                    cycleDetected = true;
+                    return;
+                }
+                if (!data.paradigmTagsById || typeof data.paradigmTagsById !== "object") data.paradigmTagsById = {};
+                const siblingCount = getChildParadigmTagIdsFromData(data, nextParentTagId).filter((id) => id !== tagId).length;
+                data.paradigmTagsById[tagId] = {
+                    id: tagId,
+                    label: result.label,
+                    color: result.color || getDefaultParadigmTagColor(result.label || tagId),
+                    parentTagId: nextParentTagId,
+                    order: existing && existing.parentTagId === nextParentTagId && Number.isFinite(existing.order) ? existing.order : siblingCount,
+                    createdAt: existing?.createdAt || now,
+                    updatedAt: now
+                };
+                normalizeParadigmTagOrdersInData(data);
+            });
+            if (cycleDetected) {
+                new Notice("⚠️ 不能把标签移动到自己的子标签下面");
+                return;
+            }
+            new Notice(editingTagId ? "✅ 范式标签已更新" : "✅ 范式标签已创建");
+        };
+
+        const moveParadigmTagOrder = async (draggedIdRaw, targetIdRaw = null, position = "after") => {
+            const draggedId = String(draggedIdRaw || "").trim();
+            const targetId = String(targetIdRaw || "").trim();
+            if (!draggedId || !getParadigmTagById(draggedId)) return;
+            if (targetId && (!getParadigmTagById(targetId) || targetId === draggedId)) return;
+            const nextParentTagId = !targetId
+                ? null
+                : (position === "child" ? targetId : (getParadigmTagById(targetId)?.parentTagId || null));
+            if (nextParentTagId && wouldCreateParadigmTagCycleInData(WORKSPACE_DATA, draggedId, nextParentTagId)) {
+                new Notice("⚠️ 不能把标签拖到自己的子标签下面");
+                return;
+            }
+            await updateWorkspaceData((data) => {
+                ensureParadigmTagState(data);
+                const dragged = data.paradigmTagsById?.[draggedId];
+                if (!dragged) return;
+                if (nextParentTagId && wouldCreateParadigmTagCycleInData(data, draggedId, nextParentTagId)) return;
+                const siblingIds = getChildParadigmTagIdsFromData(data, nextParentTagId).filter((id) => id !== draggedId);
+                dragged.parentTagId = nextParentTagId;
+                dragged.updatedAt = nowString();
+                if (!targetId) siblingIds.push(draggedId);
+                else if (position === "child") siblingIds.unshift(draggedId);
+                else {
+                    const targetIndex = siblingIds.indexOf(targetId);
+                    if (targetIndex < 0) siblingIds.push(draggedId);
+                    else siblingIds.splice(position === "before" ? targetIndex : targetIndex + 1, 0, draggedId);
+                }
+                siblingIds.forEach((id, idx) => {
+                    if (data.paradigmTagsById?.[id]) data.paradigmTagsById[id].order = idx;
+                });
+                normalizeParadigmTagOrdersInData(data);
+            });
+        };
+
+        const deleteParadigmTag = async (tagId) => {
+            const tag = getParadigmTagById(tagId);
+            if (!tag) return;
+            const childCount = getSortedParadigmTagChildrenIds(tag.id).length;
+            const usageCount = getDirectParadigmTagUsageCount(tag.id);
+            if (childCount > 0) {
+                new Notice("⚠️ 请先移动或删除它的子标签");
+                return;
+            }
+            if (usageCount > 0) {
+                new Notice(`⚠️ 该标签仍被 ${usageCount} 个范式使用，请先移除`);
+                return;
+            }
+            const ok = await confirm("删除范式标签", `确定删除标签 <b>${tag.label}</b> 吗？`);
+            if (!ok) return;
+            await updateWorkspaceData((data) => {
+                ensureParadigmTagState(data);
+                delete data.paradigmTagsById?.[tagId];
+                Object.values(data.paradigmsById || {}).forEach((paradigm) => {
+                    if (!paradigm) return;
+                    paradigm.tagIds = normalizeParadigmTagIds((paradigm.tagIds || []).filter((id) => id !== tagId), data.paradigmTagsById || {});
+                });
+                normalizeParadigmTagOrdersInData(data);
+            });
+            setParadigmTagFilters(getParadigmTagFilters().filter((id) => id !== tagId));
+            new Notice("🗑️ 范式标签已删除");
+        };
+
+        const setParadigmTagsForParadigm = async (paradigmId, nextTagIds = []) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            await updateWorkspaceData((data) => {
+                setParadigmTagIdsInData(data, paradigmId, nextTagIds);
+            });
+            new Notice("✅ 范式标签已更新");
+        };
+
+        const promptParadigmTagAssignment = async (paradigmId) => {
+            const paradigm = getParadigmById(paradigmId);
+            if (!paradigm) return;
+            const selected = await runWithPromptLock(() => paradigmTagPicker(
+                `设置范式标签：${getParadigmNodeLabel(paradigm)}`,
+                getParadigmTagIds(paradigm)
+            ));
+            if (selected === null) return;
+            await setParadigmTagsForParadigm(paradigm.id, selected);
         };
 
         const bindParadigmToCurrentTab = async (paradigmId) => {
@@ -4793,6 +5484,312 @@
             }).length;
         };
 
+        const renderParadigmTagChipGroup = (container, tagIds, options = {}) => {
+            const normalizedTagIds = normalizeParadigmTagIds(tagIds, WORKSPACE_DATA.paradigmTagsById || {});
+            if (normalizedTagIds.length === 0) {
+                if (options.emptyText) {
+                    container.createEl("div", {
+                        text: options.emptyText,
+                        attr: { style: "font-size:12px;color:var(--text-muted);" }
+                    });
+                }
+                return null;
+            }
+            const activeSet = options.activeSet instanceof Set
+                ? options.activeSet
+                : new Set(normalizeParadigmTagFilters(options.activeSet || []));
+            const wrapper = container.createEl("div", {
+                cls: `workspace-paradigm-tag-summary ${options.groupClass || ""}`.trim()
+            });
+            normalizedTagIds
+                .slice()
+                .sort((a, b) => getParadigmTagPathLabel(a).localeCompare(getParadigmTagPathLabel(b), "zh"))
+                .forEach((tagId) => {
+                    const tag = getParadigmTagById(tagId);
+                    if (!tag) return;
+                    const chipTag = options.onClick ? "button" : "div";
+                    const chip = wrapper.createEl(chipTag, {
+                        cls: `workspace-paradigm-tag-chip ${activeSet.has(tagId) ? "is-active" : ""} ${options.onClick ? "is-filter" : ""}`.trim(),
+                        attr: options.onClick ? { type: "button" } : {}
+                    });
+                    chip.createEl("span", {
+                        cls: "workspace-paradigm-tag-chip-dot",
+                        attr: { style: `background:${tag.color || DEFAULT_PARADIGM_TAG_COLOR};` }
+                    });
+                    chip.createEl("span", { text: options.showPath ? getParadigmTagPathLabel(tag.id) : (tag.label || tag.id) });
+                    if (options.onClick) chip.onclick = () => options.onClick(tag.id);
+                });
+            return wrapper;
+        };
+
+        const renderParadigmTagFilterTree = (container, activeFilterIds = [], onToggle = null) => {
+            const activeSet = new Set(normalizeParadigmTagFilters(activeFilterIds));
+            const topLevelTagIds = getSortedParadigmTagChildrenIds(null);
+            const getDropPosition = (wrapper, event) => {
+                const rect = wrapper.getBoundingClientRect();
+                const ratio = (event.clientX - rect.left) / Math.max(rect.width, 1);
+                if (ratio < 0.25) return "before";
+                if (ratio > 0.75) return "after";
+                return "child";
+            };
+            if (topLevelTagIds.length === 0) {
+                container.createEl("div", {
+                    cls: "workspace-paradigm-tag-filter-empty",
+                    text: "还没有范式标签，先新建几个标签再筛选。"
+                });
+                return;
+            }
+
+            const rootDropZone = container.createEl("div", {
+                cls: "workspace-paradigm-tag-root-drop",
+                text: "↥ 拖到这里设为顶层标签"
+            });
+            rootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                if (!window.workspaceParadigmTagCurrentDragId) return;
+                rootDropZone.classList.add("drag-over");
+            });
+            rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
+            rootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                rootDropZone.classList.remove("drag-over");
+                const draggedId = String(window.workspaceParadigmTagCurrentDragId || "").trim();
+                if (!draggedId) return;
+                await moveParadigmTagOrder(draggedId, null, "after");
+            });
+
+            const topWrap = container.createEl("div", { cls: "workspace-paradigm-tag-capsule-group" });
+            const renderBranch = (parent, tagId) => {
+                const tag = getParadigmTagById(tagId);
+                if (!tag) return;
+                const childTagIds = getSortedParadigmTagChildrenIds(tag.id);
+                const hasChildren = childTagIds.length > 0;
+                const isActive = activeSet.has(tag.id);
+                const wrapper = parent.createEl("div", {
+                    cls: hasChildren
+                        ? `workspace-paradigm-tag-capsule ${isActive ? "is-active" : ""}`
+                        : `workspace-paradigm-tag-leaf ${isActive ? "is-active" : ""}`
+                });
+                wrapper.draggable = true;
+                wrapper.addEventListener("dragstart", (e) => {
+                    e.stopPropagation();
+                    window.workspaceParadigmTagCurrentDragId = tag.id;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", tag.id);
+                    setTimeout(() => wrapper.classList.add("is-dragging"), 0);
+                });
+                wrapper.addEventListener("dragend", (e) => {
+                    e.stopPropagation();
+                    window.workspaceParadigmTagCurrentDragId = null;
+                    wrapper.classList.remove("is-dragging", "drag-over-before", "drag-over-after", "drag-over-child");
+                });
+                wrapper.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = String(window.workspaceParadigmTagCurrentDragId || "").trim();
+                    if (!draggedId || draggedId === tag.id) return;
+                    const position = getDropPosition(wrapper, e);
+                    wrapper.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    if (position === "before") wrapper.classList.add("drag-over-before");
+                    else if (position === "after") wrapper.classList.add("drag-over-after");
+                    else wrapper.classList.add("drag-over-child");
+                });
+                wrapper.addEventListener("dragleave", (e) => {
+                    e.stopPropagation();
+                    wrapper.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                });
+                wrapper.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = String(window.workspaceParadigmTagCurrentDragId || "").trim();
+                    wrapper.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                    if (!draggedId || draggedId === tag.id) return;
+                    const position = getDropPosition(wrapper, e);
+                    await moveParadigmTagOrder(draggedId, tag.id, position);
+                });
+
+                const head = hasChildren
+                    ? wrapper.createEl("div", { cls: "workspace-paradigm-tag-capsule-head" })
+                    : wrapper;
+                const chip = head.createEl("button", {
+                    cls: `workspace-paradigm-tag-filter-chip ${isActive ? "is-active" : ""}`,
+                    attr: { type: "button", title: `${getDirectParadigmTagUsageCount(tag.id)} 个范式` }
+                });
+                chip.createEl("span", {
+                    cls: "workspace-paradigm-tag-chip-dot",
+                    attr: { style: `background:${tag.color || DEFAULT_PARADIGM_TAG_COLOR};` }
+                });
+                chip.createEl("span", { text: tag.label || tag.id });
+                chip.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (typeof onToggle === "function") onToggle(tag.id);
+                };
+
+                const actionWrap = head.createEl("div", { cls: "workspace-paradigm-tag-inline-actions" });
+                const addSiblingBtn = actionWrap.createEl("button", { text: "＋", cls: "workspace-paradigm-tag-mini-btn", attr: { type: "button", title: "新建同级标签" } });
+                addSiblingBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await editParadigmTagDefinition({ presetParentTagId: tag.parentTagId || null });
+                };
+                const addChildBtn = actionWrap.createEl("button", { text: "↳", cls: "workspace-paradigm-tag-mini-btn", attr: { type: "button", title: "新建子标签" } });
+                addChildBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await editParadigmTagDefinition({ presetParentTagId: tag.id });
+                };
+                const editBtn = actionWrap.createEl("button", { text: "✏", cls: "workspace-paradigm-tag-mini-btn", attr: { type: "button", title: "编辑标签" } });
+                editBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await editParadigmTagDefinition({ tagId: tag.id });
+                };
+                const deleteBtn = actionWrap.createEl("button", { text: "🗑", cls: "workspace-paradigm-tag-mini-btn danger", attr: { type: "button", title: "删除标签" } });
+                deleteBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await deleteParadigmTag(tag.id);
+                };
+
+                if (hasChildren) {
+                    const childWrap = wrapper.createEl("div", { cls: "workspace-paradigm-tag-children-capsules" });
+                    childTagIds.forEach((childId) => renderBranch(childWrap, childId));
+                }
+            };
+
+            topLevelTagIds.forEach((tagId) => renderBranch(topWrap, tagId));
+        };
+
+        const renderParadigmTagManager = (container) => {
+            const wrapper = container.createEl("div", { cls: "workspace-paradigm-tag-manager" });
+            const head = wrapper.createEl("div", { cls: "workspace-paradigm-tag-manager-head" });
+            const headLeft = head.createEl("div");
+            headLeft.createEl("div", { text: "🏷️ 标签管理", cls: "workspace-panel-title" });
+            headLeft.createEl("div", {
+                text: "拖拽可调整层级；支持新建同级和子标签；这里只影响范式管理面板。",
+                cls: "workspace-subtitle"
+            });
+            const actions = head.createEl("div", { cls: "workspace-main-actions" });
+            const createBtn = actions.createEl("button", { text: "＋ 新建标签", cls: "workspace-sub-btn" });
+            createBtn.onclick = async () => { await editParadigmTagDefinition(); };
+
+            const tagCount = Object.keys(WORKSPACE_DATA.paradigmTagsById || {}).length;
+            const topLevelCount = getSortedParadigmTagChildrenIds(null).length;
+            wrapper.createEl("div", {
+                cls: "workspace-paradigm-hint",
+                text: `共 ${tagCount} 个标签；顶层 ${topLevelCount} 个。拖到顶部拖放区可设为顶层标签。`
+            });
+
+            const rootDropZone = wrapper.createEl("div", {
+                cls: "workspace-paradigm-tag-root-drop",
+                text: "↥ 拖到这里设为顶层标签"
+            });
+            rootDropZone.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                if (!window.workspaceParadigmTagCurrentDragId) return;
+                rootDropZone.classList.add("drag-over");
+            });
+            rootDropZone.addEventListener("dragleave", () => rootDropZone.classList.remove("drag-over"));
+            rootDropZone.addEventListener("drop", async (e) => {
+                e.preventDefault();
+                rootDropZone.classList.remove("drag-over");
+                const draggedId = String(window.workspaceParadigmTagCurrentDragId || "").trim();
+                if (!draggedId) return;
+                await moveParadigmTagOrder(draggedId, null, "after");
+            });
+
+            const tree = wrapper.createEl("div", { cls: "workspace-paradigm-tag-tree" });
+            const getDropPosition = (row, event) => {
+                const rect = row.getBoundingClientRect();
+                const ratioX = (event.clientX - rect.left) / Math.max(rect.width, 1);
+                if (ratioX > 0.68) return "child";
+                return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+            };
+            const renderTagBranch = (parent, tagId, level = 0) => {
+                const tag = getParadigmTagById(tagId);
+                if (!tag) return;
+                const childTagIds = getSortedParadigmTagChildrenIds(tag.id);
+                const usageCount = getDirectParadigmTagUsageCount(tag.id);
+                const branch = parent.createEl("div", {
+                    cls: "workspace-paradigm-tag-row-wrap",
+                    attr: { style: `margin-left:${level * 18}px;` }
+                });
+                const row = branch.createEl("div", { cls: "workspace-paradigm-tag-row" });
+                row.draggable = true;
+                row.addEventListener("dragstart", (e) => {
+                    e.stopPropagation();
+                    window.workspaceParadigmTagCurrentDragId = tag.id;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", tag.id);
+                    setTimeout(() => row.classList.add("is-dragging"), 0);
+                });
+                row.addEventListener("dragend", (e) => {
+                    e.stopPropagation();
+                    window.workspaceParadigmTagCurrentDragId = null;
+                    row.classList.remove("is-dragging", "drag-over-top", "drag-over-bottom", "drag-over-child");
+                });
+                row.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = String(window.workspaceParadigmTagCurrentDragId || "").trim();
+                    row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    if (!draggedId || draggedId === tag.id) return;
+                    const position = getDropPosition(row, e);
+                    if (position === "child") row.classList.add("drag-over-child");
+                    else if (position === "before") row.classList.add("drag-over-top");
+                    else row.classList.add("drag-over-bottom");
+                });
+                row.addEventListener("dragleave", (e) => {
+                    e.stopPropagation();
+                    row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                });
+                row.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = String(window.workspaceParadigmTagCurrentDragId || "").trim();
+                    row.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-child");
+                    if (!draggedId || draggedId === tag.id) return;
+                    const position = getDropPosition(row, e);
+                    await moveParadigmTagOrder(draggedId, tag.id, position);
+                });
+
+                const left = row.createEl("div", { cls: "workspace-paradigm-tag-row-left" });
+                left.createEl("span", {
+                    cls: "workspace-paradigm-tag-chip-dot",
+                    attr: { style: `background:${tag.color || DEFAULT_PARADIGM_TAG_COLOR};width:10px;height:10px;flex:0 0 10px;margin-top:6px;` }
+                });
+                const meta = left.createEl("div", { cls: "workspace-paradigm-tag-row-meta" });
+                meta.createEl("div", { text: tag.label || tag.id, cls: "workspace-paradigm-tag-row-title" });
+                meta.createEl("div", {
+                    text: `${tag.id} · 子标签 ${childTagIds.length} · 直接使用 ${usageCount} 个范式`,
+                    cls: "workspace-paradigm-tag-row-subtitle"
+                });
+
+                const rowActions = row.createEl("div", { cls: "workspace-paradigm-tag-row-actions" });
+                const addSiblingBtn = rowActions.createEl("button", { text: "＋ 同级", cls: "workspace-sub-btn" });
+                addSiblingBtn.onclick = async () => { await editParadigmTagDefinition({ presetParentTagId: tag.parentTagId || null }); };
+                const addChildBtn = rowActions.createEl("button", { text: "＋ 子标签", cls: "workspace-sub-btn" });
+                addChildBtn.onclick = async () => { await editParadigmTagDefinition({ presetParentTagId: tag.id }); };
+                const editBtn = rowActions.createEl("button", { text: "编辑", cls: "workspace-sub-btn" });
+                editBtn.onclick = async () => { await editParadigmTagDefinition({ tagId: tag.id }); };
+                const deleteBtn = rowActions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
+                deleteBtn.onclick = async () => { await deleteParadigmTag(tag.id); };
+
+                if (childTagIds.length > 0) {
+                    const childWrap = branch.createEl("div", { cls: "workspace-paradigm-tag-children" });
+                    childTagIds.forEach((childId) => renderTagBranch(childWrap, childId, level + 1));
+                }
+            };
+
+            const topLevelTagIds = getSortedParadigmTagChildrenIds(null);
+            if (topLevelTagIds.length === 0) {
+                tree.createEl("div", { text: "_暂无范式标签_", cls: "workspace-empty" });
+            } else {
+                topLevelTagIds.forEach((tagId) => renderTagBranch(tree, tagId, 0));
+            }
+        };
+
         const renderParadigmTree = (container, paradigmId, parentId = null, level = 0, chain = new Set()) => {
             const ids = getParadigmChildrenIds(paradigmId, parentId);
             ids.forEach((id) => {
@@ -5033,6 +6030,56 @@
                 .workspace-paradigm-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; margin-bottom:8px; }
                 .workspace-paradigm-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
                 .workspace-paradigm-hint { font-size:12px; color:var(--text-muted); margin-bottom:8px; }
+                .workspace-paradigm-tag-toolbar { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:8px; padding:10px; border:1px solid var(--background-modifier-border); border-radius:10px; background:var(--background-primary); }
+                .workspace-paradigm-tag-toolbar-main { min-width:0; flex:1 1 320px; display:flex; flex-direction:column; gap:6px; }
+                .workspace-paradigm-tag-toolbar-title { font-weight:700; color:var(--text-normal); }
+                .workspace-paradigm-tag-toolbar-subtitle { font-size:12px; color:var(--text-muted); }
+                .workspace-paradigm-tag-actions { display:flex; gap:8px; flex-wrap:wrap; }
+                .workspace-paradigm-tag-filter-tree { display:flex; flex-direction:column; gap:10px; margin-bottom:10px; }
+                .workspace-paradigm-tag-filter-empty { padding:10px 12px; border:1px dashed var(--background-modifier-border); border-radius:10px; color:var(--text-muted); font-size:12px; text-align:center; background:var(--background-primary); }
+                .workspace-paradigm-tag-capsule-group { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start; width:100%; }
+                .workspace-paradigm-tag-capsule { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:8px 10px 10px; border:2px solid rgba(52,152,219,.22); border-radius:16px; background:linear-gradient(135deg, rgba(52,152,219,.10) 0%, rgba(52,152,219,.04) 100%); width:max-content; max-width:100%; min-width:0; flex:0 1 auto; align-self:flex-start; transition:box-shadow .15s,border-color .15s,transform .15s; position:relative; }
+                .workspace-paradigm-tag-capsule:hover { border-color:rgba(52,152,219,.44); box-shadow:0 4px 14px rgba(52,152,219,.12); }
+                .workspace-paradigm-tag-capsule.is-active { border-color:rgba(46,204,113,.52); background:linear-gradient(135deg, rgba(46,204,113,.13) 0%, rgba(46,204,113,.05) 100%); }
+                .workspace-paradigm-tag-leaf { display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid rgba(52,152,219,.24); border-radius:16px; background:linear-gradient(135deg, rgba(52,152,219,.08) 0%, rgba(52,152,219,.03) 100%); width:fit-content; max-width:320px; min-width:0; flex:0 1 auto; align-self:flex-start; transition:box-shadow .15s,border-color .15s,transform .15s; position:relative; }
+                .workspace-paradigm-tag-leaf:hover { border-color:rgba(52,152,219,.44); box-shadow:0 4px 12px rgba(52,152,219,.10); }
+                .workspace-paradigm-tag-leaf.is-active { border-color:rgba(46,204,113,.52); background:linear-gradient(135deg, rgba(46,204,113,.13) 0%, rgba(46,204,113,.05) 100%); }
+                .workspace-paradigm-tag-capsule.is-dragging, .workspace-paradigm-tag-leaf.is-dragging { opacity:.45; transform:scale(.98); }
+                .workspace-paradigm-tag-capsule.drag-over-before, .workspace-paradigm-tag-leaf.drag-over-before { box-shadow:inset 4px 0 0 #2ecc71; }
+                .workspace-paradigm-tag-capsule.drag-over-after, .workspace-paradigm-tag-leaf.drag-over-after { box-shadow:inset -4px 0 0 #2ecc71; }
+                .workspace-paradigm-tag-capsule.drag-over-child, .workspace-paradigm-tag-leaf.drag-over-child { border-color:#2ecc71; background:linear-gradient(135deg, rgba(46,204,113,.16) 0%, rgba(46,204,113,.06) 100%); }
+                .workspace-paradigm-tag-capsule-head { display:flex; align-items:flex-start; gap:8px; min-width:0; width:max-content; max-width:100%; }
+                .workspace-paradigm-tag-children-capsules { display:flex; flex-wrap:wrap; gap:10px; width:max-content; max-width:100%; min-width:0; margin-left:0; padding-left:14px; border-left:2px solid rgba(52,152,219,.14); }
+                .workspace-paradigm-tag-filter-chip { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:999px; padding:4px 10px; cursor:pointer; font-size:12px; display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:100%; white-space:normal; text-align:left; line-height:1.35; flex:0 1 auto; }
+                .workspace-paradigm-tag-filter-chip.is-active { border-color:#2980b9; background:rgba(52,152,219,.14); color:#1f618d; }
+                .workspace-paradigm-tag-summary { display:flex; flex-wrap:wrap; gap:6px; }
+                .workspace-paradigm-tag-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-muted); font-size:12px; }
+                .workspace-paradigm-tag-chip.is-filter { cursor:pointer; color:var(--text-normal); }
+                .workspace-paradigm-tag-chip.is-active { border-color:#2980b9; background:rgba(52,152,219,.14); color:#1f618d; }
+                .workspace-paradigm-tag-chip-dot { width:8px; height:8px; border-radius:999px; display:inline-block; flex:0 0 8px; }
+                .workspace-paradigm-tag-inline-actions { display:flex; gap:4px; flex-wrap:wrap; margin-left:auto; opacity:0; pointer-events:none; transition:opacity .15s; }
+                .workspace-paradigm-tag-capsule:hover .workspace-paradigm-tag-inline-actions, .workspace-paradigm-tag-leaf:hover .workspace-paradigm-tag-inline-actions { opacity:1; pointer-events:auto; }
+                .workspace-paradigm-tag-mini-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-muted); border-radius:999px; min-width:24px; height:24px; padding:0 6px; cursor:pointer; font-size:12px; line-height:1; display:inline-flex; align-items:center; justify-content:center; }
+                .workspace-paradigm-tag-mini-btn:hover { color:var(--text-normal); border-color:var(--interactive-accent); }
+                .workspace-paradigm-tag-mini-btn.danger:hover { color:#c0392b; border-color:#c0392b66; }
+                .workspace-paradigm-tag-manager { margin-top:10px; border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:10px; background:var(--background-primary); }
+                .workspace-paradigm-tag-manager-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+                .workspace-paradigm-tag-root-drop { margin-bottom:10px; border:1px dashed var(--background-modifier-border); border-radius:8px; padding:8px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
+                .workspace-paradigm-tag-root-drop.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
+                .workspace-paradigm-tag-tree { display:flex; flex-direction:column; gap:8px; }
+                .workspace-paradigm-tag-row-wrap { margin-bottom:8px; }
+                .workspace-paradigm-tag-row { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; border:1px solid var(--background-modifier-border); border-radius:10px; padding:8px 10px; background:var(--background-primary); transition:filter .15s,border-color .15s,transform .15s; user-select:none; }
+                .workspace-paradigm-tag-row:hover { filter:brightness(1.03); border-color:var(--interactive-accent); }
+                .workspace-paradigm-tag-row.is-dragging { opacity:.45; background:var(--background-modifier-hover); transform:scale(.995); }
+                .workspace-paradigm-tag-row.drag-over-top { border-top:3px solid #2ecc71; }
+                .workspace-paradigm-tag-row.drag-over-bottom { border-bottom:3px solid #2ecc71; }
+                .workspace-paradigm-tag-row.drag-over-child { background:rgba(46,204,113,.15); border-left:3px solid #2ecc71; }
+                .workspace-paradigm-tag-row-left { display:flex; align-items:flex-start; gap:10px; min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-tag-row-meta { min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-tag-row-title { font-weight:600; color:var(--text-normal); }
+                .workspace-paradigm-tag-row-subtitle { font-size:12px; color:var(--text-muted); margin-top:3px; }
+                .workspace-paradigm-tag-row-actions { display:flex; gap:6px; flex-wrap:wrap; }
+                .workspace-paradigm-tag-children { margin-top:8px; display:flex; flex-direction:column; gap:8px; }
                 .workspace-root-drop-zone { margin-bottom:10px; border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
                 .workspace-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
                 .workspace-item-branch { position:relative; margin-bottom:4px; }
@@ -5303,6 +6350,129 @@
                     cls: "workspace-paradigm-hint",
                     text: `当前Tab引用挂载 ${boundParadigmIds.length} 个根范式；实际纳入 ${includedParadigmIds.length} 个范式：${includedParadigmText}`
                 });
+                const activeParadigmTagFilters = getParadigmTagFilters();
+                const activeParadigmTagFilterSet = new Set(activeParadigmTagFilters);
+                const togglePanelParadigmTagFilter = (tagId) => {
+                    const normalizedId = String(tagId || "").trim();
+                    if (!normalizedId || !getParadigmTagById(normalizedId)) return;
+                    const next = activeParadigmTagFilterSet.has(normalizedId)
+                        ? activeParadigmTagFilters.filter((id) => id !== normalizedId)
+                        : activeParadigmTagFilters.concat(normalizedId);
+                    setParadigmTagFilters(next);
+                    renderViewFn?.();
+                };
+                const paradigmDirectTagMatchMemo = new Map();
+                const paradigmDescendantTagMatchMemo = new Map();
+                const paradigmAncestorTagMatchMemo = new Map();
+                const paradigmVisibilityMemo = new Map();
+                const paradigmDirectTagMatchInPanel = (paradigmId) => {
+                    const normalizedId = String(paradigmId || "").trim();
+                    if (!normalizedId || !getParadigmById(normalizedId)) return false;
+                    if (activeParadigmTagFilters.length === 0) return true;
+                    if (paradigmDirectTagMatchMemo.has(normalizedId)) return paradigmDirectTagMatchMemo.get(normalizedId);
+                    const matched = paradigmMatchesTagFilters(normalizedId, activeParadigmTagFilters);
+                    paradigmDirectTagMatchMemo.set(normalizedId, matched);
+                    return matched;
+                };
+                const paradigmHasMatchingDescendantInPanel = (paradigmId, chain = new Set()) => {
+                    const normalizedId = String(paradigmId || "").trim();
+                    const currentParadigm = getParadigmById(normalizedId);
+                    if (!normalizedId || !currentParadigm) return false;
+                    if (activeParadigmTagFilters.length === 0) return false;
+                    if (paradigmDescendantTagMatchMemo.has(normalizedId)) return paradigmDescendantTagMatchMemo.get(normalizedId);
+                    if (chain.has(normalizedId)) return false;
+                    const nextChain = new Set(chain);
+                    nextChain.add(normalizedId);
+                    const ownCategoryId = currentParadigm.categoryId || null;
+                    const matched = getEffectiveChildParadigmIds(normalizedId).some((childId) => {
+                        const childParadigm = getParadigmById(childId);
+                        return !!childParadigm
+                            && (childParadigm.categoryId || null) === ownCategoryId
+                            && (
+                                paradigmDirectTagMatchInPanel(childId)
+                                || paradigmHasMatchingDescendantInPanel(childId, nextChain)
+                            );
+                    });
+                    paradigmDescendantTagMatchMemo.set(normalizedId, matched);
+                    return matched;
+                };
+                const paradigmHasMatchingAncestorInPanel = (paradigmId) => {
+                    const normalizedId = String(paradigmId || "").trim();
+                    const currentParadigm = getParadigmById(normalizedId);
+                    if (!normalizedId || !currentParadigm) return false;
+                    if (activeParadigmTagFilters.length === 0) return false;
+                    if (paradigmAncestorTagMatchMemo.has(normalizedId)) return paradigmAncestorTagMatchMemo.get(normalizedId);
+                    const seen = new Set([normalizedId]);
+                    let cursor = currentParadigm.parentParadigmId || null;
+                    let matched = false;
+                    while (cursor && !seen.has(cursor)) {
+                        seen.add(cursor);
+                        if (paradigmDirectTagMatchInPanel(cursor)) {
+                            matched = true;
+                            break;
+                        }
+                        cursor = getParadigmById(cursor)?.parentParadigmId || null;
+                    }
+                    paradigmAncestorTagMatchMemo.set(normalizedId, matched);
+                    return matched;
+                };
+                const paradigmVisibleInPanel = (paradigmId, chain = new Set()) => {
+                    const normalizedId = String(paradigmId || "").trim();
+                    const currentParadigm = getParadigmById(normalizedId);
+                    if (!normalizedId || !currentParadigm) return false;
+                    if (activeParadigmTagFilters.length === 0) return true;
+                    if (paradigmVisibilityMemo.has(normalizedId)) return paradigmVisibilityMemo.get(normalizedId);
+                    if (chain.has(normalizedId)) return false;
+                    const nextChain = new Set(chain);
+                    nextChain.add(normalizedId);
+                    const visible = paradigmDirectTagMatchInPanel(normalizedId)
+                        || paradigmHasMatchingAncestorInPanel(normalizedId)
+                        || paradigmHasMatchingDescendantInPanel(normalizedId, nextChain);
+                    paradigmVisibilityMemo.set(normalizedId, visible);
+                    return visible;
+                };
+                const categoryVisibilityMemo = new Map();
+                const categoryVisibleInPanel = (categoryId) => {
+                    const normalizedId = String(categoryId || "").trim();
+                    if (!normalizedId || !getParadigmCategoryById(normalizedId)) return false;
+                    if (activeParadigmTagFilters.length === 0) return true;
+                    if (categoryVisibilityMemo.has(normalizedId)) return categoryVisibilityMemo.get(normalizedId);
+                    const visible = getCategoryParadigmRootIds(normalizedId).some((paradigmId) => paradigmVisibleInPanel(paradigmId))
+                        || getChildParadigmCategoryIds(normalizedId).some((childId) => categoryVisibleInPanel(childId));
+                    categoryVisibilityMemo.set(normalizedId, visible);
+                    return visible;
+                };
+                const tagToolbar = panel.createEl("div", { cls: "workspace-paradigm-tag-toolbar" });
+                const tagToolbarMain = tagToolbar.createEl("div", { cls: "workspace-paradigm-tag-toolbar-main" });
+                tagToolbarMain.createEl("div", { text: "🏷️ 范式标签筛选", cls: "workspace-paradigm-tag-toolbar-title" });
+                tagToolbarMain.createEl("div", {
+                    text: activeParadigmTagFilters.length > 0
+                        ? `当前在范式管理面板内按 ${activeParadigmTagFilters.length} 个标签筛选；拖拽下方胶囊可直接管理标签层级；不会影响 Tab 里的条目显示。`
+                        : "这里只筛选范式管理面板里的范式；拖拽下方胶囊可直接管理标签层级，不影响 Tab 里的条目显示。",
+                    cls: "workspace-paradigm-tag-toolbar-subtitle"
+                });
+                if (activeParadigmTagFilters.length > 0) {
+                    renderParadigmTagChipGroup(tagToolbarMain, activeParadigmTagFilters, {
+                        activeSet: activeParadigmTagFilterSet,
+                        onClick: togglePanelParadigmTagFilter
+                    });
+                } else {
+                    tagToolbarMain.createEl("div", {
+                        text: "未开启标签筛选",
+                        attr: { style: "font-size:12px;color:var(--text-muted);" }
+                    });
+                }
+                const tagToolbarActions = tagToolbar.createEl("div", { cls: "workspace-paradigm-tag-actions" });
+                const createTagQuickBtn = tagToolbarActions.createEl("button", { text: "＋ 标签", cls: "workspace-sub-btn" });
+                createTagQuickBtn.onclick = async () => { await editParadigmTagDefinition(); };
+                const clearFilterBtn = tagToolbarActions.createEl("button", { text: "清空筛选", cls: "workspace-sub-btn" });
+                clearFilterBtn.onclick = () => {
+                    setParadigmTagFilters([]);
+                    renderViewFn?.();
+                };
+                clearFilterBtn.disabled = activeParadigmTagFilters.length === 0;
+                const tagFilterTree = panel.createEl("div", { cls: "workspace-paradigm-tag-filter-tree" });
+                renderParadigmTagFilterTree(tagFilterTree, activeParadigmTagFilters, togglePanelParadigmTagFilter);
                 const paradigmRootDropZone = panel.createEl("div", {
                     cls: "workspace-paradigm-root-drop-zone",
                     text: "↥ 拖分类到这里设为顶层；拖范式到这里移出分类"
@@ -5354,13 +6524,21 @@
                     const sourceParadigm = getParadigmSourceParadigm(paradigm) || paradigm;
                     const isCopyParadigm = isParadigmCopy(paradigm);
                     const currentCategoryId = paradigm.categoryId || null;
-                    const childParadigmIds = getEffectiveChildParadigmIds(paradigm.id).filter((childId) => {
+                    const filteredChildParadigmIds = getEffectiveChildParadigmIds(paradigm.id).filter((childId) => {
                         const childParadigm = getParadigmById(childId);
-                        return !!childParadigm && (childParadigm.categoryId || null) === currentCategoryId;
+                        return !!childParadigm
+                            && (childParadigm.categoryId || null) === currentCategoryId
+                            && paradigmVisibleInPanel(childId);
                     });
+                    const directTagMatch = paradigmDirectTagMatchInPanel(paradigm.id);
+                    const descendantTagMatch = paradigmHasMatchingDescendantInPanel(paradigm.id);
+                    const ancestorTagMatch = paradigmHasMatchingAncestorInPanel(paradigm.id);
+                    if (activeParadigmTagFilters.length > 0 && !directTagMatch && !ancestorTagMatch && filteredChildParadigmIds.length === 0) return;
+                    const childParadigmIds = filteredChildParadigmIds;
                     const isCollapsed = childParadigmIds.length > 0 ? isParadigmTreeCollapsed(paradigm.id) : false;
                     const paradigmVisual = getParadigmVisual(getParadigmSourceId(paradigm) || paradigm.id);
                     const category = currentCategoryId ? getParadigmCategoryById(currentCategoryId) : null;
+                    const paradigmTagIds = getParadigmTagIds(paradigm);
                     let left = null;
                     const branch = container.createEl("div", {
                         cls: `workspace-paradigm-branch ${childParadigmIds.length > 0 ? "has-children" : ""}`,
@@ -5443,12 +6621,27 @@
                         text: `${paradigm.id}${isCopyParadigm ? ` · 本体位置 ${sourcePathLabel}` : ""} · 分类 ${category?.name || "未分类"} · 子范式 ${childParadigmIds.length} · ${scopeLabel}`,
                         attr: { style: "color:var(--text-muted);" }
                     });
+                    if (paradigmTagIds.length > 0) {
+                        renderParadigmTagChipGroup(left, paradigmTagIds);
+                    }
                     left.createEl("div", {
                         cls: "workspace-panel-row-hint",
                         text: isCopyParadigm
                             ? `这是引用副本：内容回写定义源，但它也可以继续挂子范式${hostParadigm ? ` · 当前挂在 ${getParadigmNodeLabel(hostParadigm)} (${hostParadigm.id}) 下` : " · 当前挂在根层"}`
                             : "向右拖入可设为子范式；拖到分类行可归类"
                     });
+                    if (activeParadigmTagFilters.length > 0 && !directTagMatch && descendantTagMatch) {
+                        left.createEl("div", {
+                            cls: "workspace-panel-row-hint",
+                            text: "当前范式本身未命中筛选，因为其子范式命中标签筛选而保留显示"
+                        });
+                    }
+                    if (activeParadigmTagFilters.length > 0 && !directTagMatch && !descendantTagMatch && ancestorTagMatch) {
+                        left.createEl("div", {
+                            cls: "workspace-panel-row-hint",
+                            text: "当前范式本身未命中筛选，因为其上级范式命中标签筛选而保留显示"
+                        });
+                    }
                     if (!isCopyParadigm && incomingCopyRefSummary) {
                         left.createEl("div", {
                             cls: "workspace-panel-row-hint",
@@ -5485,6 +6678,8 @@
                     copyBtn.onclick = async () => { await createParadigmCopy(paradigm.id, ""); };
                     const categoryBtn = actions.createEl("button", { text: "分类", cls: "workspace-sub-btn" });
                     categoryBtn.onclick = async () => { await promptParadigmCategoryAssignment(paradigm.id); };
+                    const tagBtn = actions.createEl("button", { text: paradigmTagIds.length > 0 ? `标签 ${paradigmTagIds.length}` : "标签", cls: "workspace-sub-btn" });
+                    tagBtn.onclick = async () => { await promptParadigmTagAssignment(paradigm.id); };
                     const renameBtn = actions.createEl("button", { text: "重命名", cls: "workspace-sub-btn" });
                     renameBtn.onclick = async () => { await renameParadigm(isCopyParadigm ? sourceParadigm.id : paradigm.id); };
                     const deleteBtn = actions.createEl("button", { text: isCopyParadigm ? "删副本" : "删除", cls: "workspace-sub-btn" });
@@ -5499,8 +6694,9 @@
                 const renderParadigmCategoryRow = (container, categoryId, level = 0) => {
                     const category = getParadigmCategoryById(categoryId);
                     if (!category) return;
-                    const childCategoryIds = getChildParadigmCategoryIds(category.id);
-                    const paradigmRootIds = getCategoryParadigmRootIds(category.id);
+                    const childCategoryIds = getChildParadigmCategoryIds(category.id).filter((childId) => categoryVisibleInPanel(childId));
+                    const paradigmRootIds = getCategoryParadigmRootIds(category.id).filter((paradigmId) => paradigmVisibleInPanel(paradigmId));
+                    if (activeParadigmTagFilters.length > 0 && childCategoryIds.length === 0 && paradigmRootIds.length === 0) return;
                     const totalParadigmCount = getParadigmCountForCategoryScope(category.id);
                     const isCollapsed = (childCategoryIds.length > 0 || paradigmRootIds.length > 0)
                         ? isParadigmCategoryTreeCollapsed(category.id)
@@ -5608,7 +6804,8 @@
                 };
 
                 const renderUncategorizedParadigmGroup = (container) => {
-                    const paradigmRootIds = getCategoryParadigmRootIds(null);
+                    const paradigmRootIds = getCategoryParadigmRootIds(null).filter((paradigmId) => paradigmVisibleInPanel(paradigmId));
+                    if (activeParadigmTagFilters.length > 0 && paradigmRootIds.length === 0) return;
                     const isCollapsed = paradigmRootIds.length > 0 ? isParadigmCategoryTreeCollapsed(UNCATEGORIZED_PARADIGM_GROUP_ID) : false;
                     const branch = container.createEl("div", {
                         cls: `workspace-paradigm-category-branch uncategorized ${paradigmRootIds.length > 0 ? "has-children" : ""}`
@@ -5648,9 +6845,15 @@
                     }
                 };
 
-                const rootCategoryIds = getChildParadigmCategoryIds(null);
+                const rootCategoryIds = getChildParadigmCategoryIds(null).filter((categoryId) => categoryVisibleInPanel(categoryId));
                 rootCategoryIds.forEach((categoryId) => renderParadigmCategoryRow(list, categoryId, 0));
                 renderUncategorizedParadigmGroup(list);
+                if (activeParadigmTagFilters.length > 0 && rootCategoryIds.length === 0 && getCategoryParadigmRootIds(null).filter((paradigmId) => paradigmVisibleInPanel(paradigmId)).length === 0) {
+                    list.createEl("div", {
+                        text: "_当前标签筛选下没有命中的范式_",
+                        cls: "workspace-empty"
+                    });
+                }
 
                 const editingParadigmId = window.workspaceEditingParadigmId;
                 const editingParadigm = editingParadigmId ? getParadigmById(editingParadigmId) : null;
