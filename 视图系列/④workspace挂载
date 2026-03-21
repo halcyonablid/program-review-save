@@ -72,6 +72,7 @@
         };
         const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
         const normalizeTabEmoji = (value) => String(value || "").trim().slice(0, 8);
+        const normalizeShortcutLabel = (value) => normalizeText(value || "");
         const normalizeTabAccentColor = (value) => {
             const raw = String(value || "").trim();
             if (!raw) return "";
@@ -106,6 +107,17 @@
                 .filter((id) => !tagsById || !!tagsById[id])
         );
         const isExternalImageRef = (value) => /^(https?:\/\/|data:image\/|file:\/\/|app:\/\/)/i.test(String(value || "").trim());
+        const sanitizeShortcutTargetInput = (raw) => {
+            let text = String(raw || "").trim();
+            if (!text) return "";
+            const markdownLinkMatch = text.match(/^!?\[[^\]]*]\((.*?)\)$/);
+            if (markdownLinkMatch && markdownLinkMatch[1]) text = markdownLinkMatch[1].trim();
+            if (/^!?\[\[.*\]\]$/.test(text)) text = text.replace(/^!?\[\[/, "").replace(/\]\]$/, "").trim();
+            if (text.startsWith("<") && text.endsWith(">")) text = text.slice(1, -1).trim();
+            const cleaned = text.split("|")[0].split("#")[0].trim();
+            if (/^(?:[a-zA-Z]:[\\/]|\\\\|\/(?!\/)|https?:\/\/|file:\/\/|obsidian:\/\/)/i.test(cleaned)) return cleaned;
+            return cleaned.replace(/^\/+/, "");
+        };
         const sanitizeImageInput = (raw) => {
             let text = String(raw || "").trim();
             if (!text) return "";
@@ -209,6 +221,27 @@
                 if (!id || seen.has(id)) continue;
                 out.push(id);
                 seen.add(id);
+            }
+            return out;
+        };
+        const normalizeShortcutEntries = (entriesLike) => {
+            const out = [];
+            const seen = new Set();
+            for (const raw of Array.isArray(entriesLike) ? entriesLike : []) {
+                const entry = raw && typeof raw === "object" ? raw : {};
+                const path = sanitizeShortcutTargetInput(entry.path || entry.targetPath || entry.filePath || entry.file_path || entry.href || "");
+                if (!path) continue;
+                const pathKey = path.toLowerCase();
+                if (seen.has(pathKey)) continue;
+                seen.add(pathKey);
+                out.push({
+                    id: String(entry.id || `shortcut_${generateId()}`).trim() || `shortcut_${generateId()}`,
+                    path,
+                    label: normalizeShortcutLabel(entry.label || entry.name || ""),
+                    ctime: Number.isFinite(entry.ctime) ? Number(entry.ctime) : null,
+                    createdAt: entry.createdAt || nowString(),
+                    updatedAt: entry.updatedAt || nowString()
+                });
             }
             return out;
         };
@@ -356,6 +389,7 @@
                     sourceParadigmMountMode: sourceType === "paradigm" ? sourceParadigmMountMode : "direct",
                     isCollapsed: hasItemCollapsed ? !!item.isCollapsed : collapsedFromMap,
                     imageRef: sanitizeImageInput(item.imageRef || item.image || ""),
+                    shortcuts: normalizeShortcutEntries(item.shortcuts || item.shortcutEntries || []),
                     comment: typeof item.comment === "string" ? item.comment : "",
                     noteBinding: normalizeBindingValue(item.noteBinding),
                     orphaned: !!item.orphaned,
@@ -726,6 +760,7 @@
                         : String(item.parentId).trim(),
                     order: Number.isFinite(item.order) ? Number(item.order) : 0,
                     imageRef: sanitizeImageInput(item.imageRef || item.image || ""),
+                    shortcuts: normalizeShortcutEntries(item.shortcuts || item.shortcutEntries || []),
                     comment: typeof item.comment === "string" ? item.comment : "",
                     noteBinding: normalizeBindingValue(item.noteBinding),
                     createdAt: item.createdAt || nowString(),
@@ -1785,10 +1820,11 @@
         }
 
         class ImageManagerModal extends obsidian.Modal {
-            constructor(app, title, defaultValue, onResolve) {
+            constructor(app, title, defaultValue, shortcutEntries, onResolve) {
                 super(app);
                 this.titleStr = title;
                 this.defaultValue = defaultValue || "";
+                this.shortcutEntries = normalizeShortcutEntries(shortcutEntries || []);
                 this.onResolve = onResolve;
                 this.resolved = false;
             }
@@ -2073,18 +2109,180 @@
                     }
                 });
 
+                const shortcutWrap = contentEl.createEl("div", {
+                    attr: {
+                        style: "margin-top:12px;padding:10px;border:1px solid var(--background-modifier-border);border-radius:10px;background:var(--background-primary);"
+                    }
+                });
+                shortcutWrap.createEl("div", {
+                    text: "快捷方式",
+                    attr: { style: "font-size:12px;font-weight:700;margin-bottom:4px;" }
+                });
+                shortcutWrap.createEl("div", {
+                    text: "把笔记链接/条目拖到下面区域，就会作为这个条目的快捷方式一起保存。",
+                    attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:8px;" }
+                });
+                const shortcutStatus = shortcutWrap.createEl("div", {
+                    text: this.shortcutEntries.length > 0 ? `当前已挂 ${this.shortcutEntries.length} 个快捷方式` : "当前还没有快捷方式",
+                    attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:8px;" }
+                });
+                const shortcutDropZone = shortcutWrap.createEl("div", {
+                    text: "拖拽快捷方式到这里",
+                    attr: {
+                        style: "min-height:72px;border:1px dashed var(--background-modifier-border);border-radius:10px;padding:12px;background:var(--background-secondary);display:flex;align-items:center;justify-content:center;text-align:center;color:var(--text-muted);transition:all .15s;margin-bottom:8px;"
+                    }
+                });
+                const shortcutList = shortcutWrap.createEl("div", {
+                    attr: { style: "display:flex;flex-direction:column;gap:6px;" }
+                });
+                const renderShortcutList = () => {
+                    shortcutList.empty();
+                    shortcutStatus.textContent = this.shortcutEntries.length > 0
+                        ? `当前已挂 ${this.shortcutEntries.length} 个快捷方式`
+                        : "当前还没有快捷方式";
+                    if (this.shortcutEntries.length === 0) {
+                        shortcutList.createEl("div", {
+                            text: "暂无快捷方式",
+                            attr: { style: "font-size:12px;color:var(--text-muted);padding:6px 2px;" }
+                        });
+                        return;
+                    }
+                    this.shortcutEntries.forEach((entry) => {
+                        const row = shortcutList.createEl("div", {
+                            attr: {
+                                style: "display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);"
+                            }
+                        });
+                        const meta = row.createEl("div", { attr: { style: "min-width:0;flex:1 1 auto;" } });
+                        meta.createEl("div", {
+                            text: `↗ ${getShortcutDisplayLabel(entry)}`,
+                            attr: { style: "font-weight:600;word-break:break-word;" }
+                        });
+                        meta.createEl("div", {
+                            text: entry.path,
+                            attr: { style: "font-size:12px;color:var(--text-muted);word-break:break-all;" }
+                        });
+                        const removeBtn = row.createEl("button", { text: "移除" });
+                        removeBtn.onclick = () => {
+                            this.shortcutEntries = this.shortcutEntries.filter((it) => it.id !== entry.id);
+                            renderShortcutList();
+                        };
+                    });
+                };
+                shortcutDropZone.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    shortcutDropZone.style.borderColor = "#2ecc71";
+                    shortcutDropZone.style.background = "rgba(46,204,113,.12)";
+                    shortcutDropZone.style.color = "var(--text-normal)";
+                });
+                shortcutDropZone.addEventListener("dragleave", () => {
+                    shortcutDropZone.style.borderColor = "var(--background-modifier-border)";
+                    shortcutDropZone.style.background = "var(--background-secondary)";
+                    shortcutDropZone.style.color = "var(--text-muted)";
+                });
+                shortcutDropZone.addEventListener("drop", (e) => {
+                    e.preventDefault();
+                    shortcutDropZone.style.borderColor = "var(--background-modifier-border)";
+                    shortcutDropZone.style.background = "var(--background-secondary)";
+                    shortcutDropZone.style.color = "var(--text-muted)";
+                    const entry = resolveShortcutEntryFromDrop(e.dataTransfer);
+                    if (!entry) {
+                        const typeText = Array.from(e.dataTransfer?.types || []).join(", ") || "unknown";
+                        console.warn("[Workspace Shortcut] unresolved drop payload types:", typeText);
+                        shortcutStatus.textContent = `没有识别到可用的快捷方式。拖拽类型: ${typeText}`;
+                        return;
+                    }
+                    const next = normalizeShortcutEntries(this.shortcutEntries.concat([entry]));
+                    if (next.length === this.shortcutEntries.length) {
+                        shortcutStatus.textContent = `已存在同一路径快捷方式：${getShortcutDisplayLabel(entry)}`;
+                        return;
+                    }
+                    this.shortcutEntries = next;
+                    shortcutStatus.textContent = `已添加快捷方式：${getShortcutDisplayLabel(entry)}`;
+                    renderShortcutList();
+                });
+                renderShortcutList();
+
                 const actions = contentEl.createEl("div", { attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:10px;" } });
                 const clearBtn = actions.createEl("button", { text: "清除图片" });
-                clearBtn.onclick = () => { this.resolve({ action: "clear" }); this.close(); };
+                clearBtn.onclick = () => { this.resolve({ action: "clear", shortcuts: this.shortcutEntries.slice() }); this.close(); };
                 const cancelBtn = actions.createEl("button", { text: "取消" });
                 cancelBtn.onclick = () => { this.resolve(null); this.close(); };
                 const saveBtn = actions.createEl("button", { text: "保存", cls: "mod-cta" });
-                const submitSave = () => { this.resolve({ action: "save", value: input.value }); this.close(); };
+                const submitSave = () => { this.resolve({ action: "save", value: input.value, shortcuts: this.shortcutEntries.slice() }); this.close(); };
                 saveBtn.onclick = submitSave;
                 input.addEventListener("keydown", (e) => { if (e.key === "Enter") submitSave(); });
                 input.focus();
                 input.selectionStart = input.value.length;
                 input.selectionEnd = input.value.length;
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.contentEl.empty();
+            }
+        }
+
+        class ShortcutLauncherModal extends obsidian.Modal {
+            constructor(app, title, shortcutEntries, onResolve) {
+                super(app);
+                this.titleStr = title;
+                this.shortcutEntries = normalizeShortcutEntries(shortcutEntries || []);
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "640px";
+                this.modalEl.style.width = "84vw";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.createEl("h3", { text: this.titleStr });
+                if (this.shortcutEntries.length === 0) {
+                    contentEl.createEl("div", {
+                        text: "当前还没有快捷方式。请先打开图片弹窗，把快捷方式拖进去保存。",
+                        attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:10px;" }
+                    });
+                } else {
+                    contentEl.createEl("div", {
+                        text: `选择要激活的快捷方式（共 ${this.shortcutEntries.length} 个）`,
+                        attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:10px;" }
+                    });
+                    const list = contentEl.createEl("div", {
+                        attr: { style: "display:flex;flex-direction:column;gap:8px;" }
+                    });
+                    this.shortcutEntries.forEach((entry) => {
+                        const row = list.createEl("button", {
+                            cls: "mod-cta",
+                            attr: {
+                                type: "button",
+                                style: "display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:10px 12px;border-radius:10px;text-align:left;"
+                            }
+                        });
+                        row.createEl("div", { text: `↗ ${getShortcutDisplayLabel(entry)}` });
+                        row.createEl("div", {
+                            text: entry.path,
+                            attr: { style: "font-size:12px;opacity:.85;word-break:break-all;" }
+                        });
+                        row.onclick = () => {
+                            this.resolve(entry);
+                            this.close();
+                        };
+                    });
+                }
+                const actions = contentEl.createEl("div", {
+                    attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:12px;" }
+                });
+                const closeBtn = actions.createEl("button", { text: "关闭" });
+                closeBtn.onclick = () => {
+                    this.resolve(null);
+                    this.close();
+                };
             }
             onClose() {
                 if (!this.resolved) this.resolve(null);
@@ -2234,7 +2432,8 @@
         const paradigmTagDefinitionEditor = (options = {}) => new Promise(r => new ParadigmTagDefinitionModal(app, options, r).open());
         const paradigmTagPicker = (title = "设置范式标签", selectedIds = []) => new Promise(r => new ParadigmTagPickerModal(app, title, selectedIds, r).open());
         const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
-        const imageManagerEditor = (title, defaultValue = "") => new Promise(r => new ImageManagerModal(app, title, defaultValue, r).open());
+        const imageManagerEditor = (title, defaultValue = "", shortcutEntries = []) => new Promise(r => new ImageManagerModal(app, title, defaultValue, shortcutEntries, r).open());
+        const shortcutLauncher = (title, shortcutEntries = []) => new Promise(r => new ShortcutLauncherModal(app, title, shortcutEntries, r).open());
         const tabAppearanceEditor = (tab) => new Promise(r => new TabAppearanceModal(app, tab, r).open());
         const runWithPromptLock = async (workFn) => {
             if (window.workspaceTreePromptBusy) return null;
@@ -2394,6 +2593,252 @@
             const file = resolveExistingNoteFile(rawPath);
             return file ? file.path : null;
         };
+        const getVaultBasePath = () => String(app.vault?.adapter?.basePath || "").trim();
+        const getPathModule = () => {
+            try {
+                return window.require?.("path") || null;
+            } catch (_) {
+                return null;
+            }
+        };
+        const getElectronShell = () => {
+            try {
+                return window.require?.("electron")?.shell || null;
+            } catch (_) {
+                return null;
+            }
+        };
+        const isVaultFileLike = (file) => !!file && typeof file.path === "string" && typeof file.name === "string" && typeof file.extension === "string";
+        const isLikelyAbsoluteFsPath = (value) => /^(?:[a-zA-Z]:[\\/]|\\\\|\/(?!\/))/.test(String(value || "").trim());
+        const isLikelyExternalUrl = (value) => /^(?:https?:\/\/|file:\/\/)/i.test(String(value || "").trim());
+        const decodeFileUriToFsPath = (rawValue) => {
+            const text = String(rawValue || "").trim();
+            if (!/^file:\/\//i.test(text)) return text;
+            try {
+                return decodeURIComponent(text.replace(/^file:\/\/\/?/i, ""));
+            } catch (_) {
+                return text.replace(/^file:\/\/\/?/i, "");
+            }
+        };
+        const getVaultFileLookup = () => {
+            const now = Date.now();
+            if (window.workspaceVaultFileLookupCache && (now - window.workspaceVaultFileLookupCache.builtAt) <= 30000) {
+                return window.workspaceVaultFileLookupCache;
+            }
+            const exactMap = new Map();
+            const basenameGroups = new Map();
+            app.vault.getFiles().forEach((file) => {
+                if (!isVaultFileLike(file)) return;
+                const normalizedPath = String(file.path || "").trim().replace(/^\/+/, "");
+                if (!normalizedPath) return;
+                exactMap.set(normalizedPath.toLowerCase(), file);
+                const baseName = String(file.name || normalizedPath.split("/").pop() || "").trim().toLowerCase();
+                if (!baseName) return;
+                if (!basenameGroups.has(baseName)) basenameGroups.set(baseName, []);
+                basenameGroups.get(baseName).push(file);
+            });
+            window.workspaceVaultFileLookupCache = {
+                builtAt: now,
+                exactMap,
+                basenameGroups
+            };
+            return window.workspaceVaultFileLookupCache;
+        };
+        const resolveExistingVaultFile = (rawPath) => {
+            const clean = sanitizeShortcutTargetInput(decodeFileUriToFsPath(rawPath));
+            if (!clean) return null;
+            const normalizedClean = clean.replace(/^\/+/, "");
+            const currentFolderPath = currentFolder ? `${currentFolder}/${normalizedClean}`.replace(/^\/+/, "") : "";
+            const sourcePath = currentFilePath;
+            const lookup = getVaultFileLookup();
+            const basename = String(normalizedClean.split(/[\\/]/).pop() || "").trim().toLowerCase();
+            const basenameHits = basename ? (lookup.basenameGroups.get(basename) || []) : [];
+            const resolved = app.vault.getAbstractFileByPath(normalizedClean)
+                || (currentFolderPath ? app.vault.getAbstractFileByPath(currentFolderPath) : null)
+                || lookup.exactMap.get(normalizedClean.toLowerCase())
+                || (currentFolderPath ? lookup.exactMap.get(currentFolderPath.toLowerCase()) : null)
+                || app.metadataCache.getFirstLinkpathDest(normalizedClean, sourcePath)
+                || (basenameHits.length === 1 ? basenameHits[0] : null)
+                || null;
+            return isVaultFileLike(resolved) ? resolved : null;
+        };
+        const resolveVaultAbsolutePath = (vaultPath) => {
+            const basePath = getVaultBasePath();
+            const clean = String(vaultPath || "").trim().replace(/^[/\\]+/, "");
+            if (!basePath || !clean) return "";
+            const pathModule = getPathModule();
+            if (pathModule?.join) return pathModule.join(basePath, ...clean.split(/[\\/]+/).filter(Boolean));
+            return `${basePath.replace(/[\\/]+$/, "")}/${clean.replace(/\\/g, "/")}`;
+        };
+        const getShortcutDisplayLabel = (entryLike) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
+            const explicit = normalizeShortcutLabel(entry.label || "");
+            if (explicit) return explicit;
+            const cleanPath = sanitizeShortcutTargetInput(entry.path || "");
+            if (!cleanPath) return "未命名快捷方式";
+            const last = cleanPath.split(/[\\/]/).pop() || cleanPath;
+            return last.replace(/\.(md|lnk|url)$/i, "") || cleanPath;
+        };
+        const buildShortcutEntryFromFile = (file, previous = null) => {
+            if (!file?.path) return null;
+            return {
+                id: String(previous?.id || `shortcut_${generateId()}`).trim() || `shortcut_${generateId()}`,
+                path: file.path,
+                label: normalizeShortcutLabel(previous?.label || file.basename || ""),
+                ctime: Number.isFinite(file?.stat?.ctime) ? Number(file.stat.ctime) : null,
+                createdAt: previous?.createdAt || nowString(),
+                updatedAt: nowString()
+            };
+        };
+        const buildShortcutEntryFromExternalPath = (rawPath, previous = null) => {
+            const clean = String(decodeFileUriToFsPath(rawPath) || "").trim();
+            if (!clean) return null;
+            const last = clean.split(/[\\/]/).pop() || clean;
+            return {
+                id: String(previous?.id || `shortcut_${generateId()}`).trim() || `shortcut_${generateId()}`,
+                path: clean,
+                label: normalizeShortcutLabel(previous?.label || last.replace(/\.(lnk|url)$/i, "")),
+                ctime: null,
+                createdAt: previous?.createdAt || nowString(),
+                updatedAt: nowString()
+            };
+        };
+        const resolveShortcutNoteFile = (rawValue) => {
+            let text = String(rawValue || "").trim();
+            if (!text) return null;
+            if (/^obsidian:\/\/open\?/i.test(text)) {
+                try {
+                    const url = new URL(text);
+                    const fileParam = url.searchParams.get("file") || url.searchParams.get("path") || "";
+                    if (fileParam) text = decodeURIComponent(fileParam);
+                } catch (_) {}
+            }
+            if (/^file:\/\//i.test(text)) {
+                try {
+                    text = decodeURIComponent(text.replace(/^file:\/\/\/?/i, ""));
+                } catch (_) {
+                    text = text.replace(/^file:\/\/\/?/i, "");
+                }
+            }
+            return resolveExistingNoteFile(sanitizeShortcutTargetInput(text));
+        };
+        const extractShortcutCandidatesFromHtml = (html) => {
+            const out = [];
+            const text = String(html || "").trim();
+            if (!text) return out;
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, "text/html");
+                doc.querySelectorAll("[href],[data-href],[src],[data-path]").forEach((node) => {
+                    ["data-href", "href", "data-path", "src"].forEach((attr) => {
+                        const value = String(node.getAttribute?.(attr) || "").trim();
+                        if (value) out.push(value);
+                    });
+                    const nodeText = String(node.textContent || "").trim();
+                    if (nodeText) out.push(nodeText);
+                });
+                const plain = String(doc.body?.textContent || "").trim();
+                if (plain) out.push(plain);
+            } catch (_) {
+                const hrefMatches = Array.from(text.matchAll(/(?:data-href|href|src|data-path)\s*=\s*["']([^"']+)["']/gi)).map((m) => m[1]);
+                out.push(...hrefMatches);
+            }
+            return ensureUniqueIds(out);
+        };
+        const collectShortcutDropTexts = (dataTransfer) => {
+            if (!dataTransfer) return [];
+            const values = [];
+            const tryPush = (value) => {
+                const text = String(value || "").trim();
+                if (!text) return;
+                text.split(/\r?\n/).forEach((part) => {
+                    const clean = String(part || "").trim();
+                    if (!clean || clean.startsWith("#")) return;
+                    if (/<[a-z][\s\S]*>/i.test(clean)) {
+                        extractShortcutCandidatesFromHtml(clean).forEach((hit) => values.push(hit));
+                        return;
+                    }
+                    if (clean) values.push(clean);
+                });
+            };
+            const baseTypes = ["text/plain", "text/uri-list", "text/x-obsidian-link", "text/html"];
+            const dynamicTypes = Array.from(dataTransfer.types || []).map((type) => String(type || "").trim()).filter(Boolean);
+            ensureUniqueIds(baseTypes.concat(dynamicTypes)).forEach((type) => {
+                try { tryPush(dataTransfer.getData(type)); } catch (_) {}
+            });
+            Array.from(dataTransfer.files || []).forEach((file) => {
+                const path = String(file?.path || file?.name || "").trim();
+                if (path) values.push(path);
+            });
+            Array.from(dataTransfer.items || []).forEach((item) => {
+                try {
+                    const file = item?.getAsFile?.();
+                    const path = String(file?.path || file?.name || "").trim();
+                    if (path) values.push(path);
+                } catch (_) {}
+            });
+            return ensureUniqueIds(values);
+        };
+        const resolveShortcutEntryFromDrop = (dataTransfer) => {
+            const candidates = collectShortcutDropTexts(dataTransfer);
+            for (const candidate of candidates) {
+                const noteFile = resolveShortcutNoteFile(candidate);
+                if (noteFile) return buildShortcutEntryFromFile(noteFile);
+                const vaultFile = resolveExistingVaultFile(candidate);
+                if (vaultFile) return buildShortcutEntryFromFile(vaultFile);
+                if (isLikelyExternalUrl(candidate) || isLikelyAbsoluteFsPath(candidate)) {
+                    const externalEntry = buildShortcutEntryFromExternalPath(candidate);
+                    if (externalEntry) return externalEntry;
+                }
+            }
+            return null;
+        };
+        const openExternalShortcutTarget = async (entryLike) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
+            const rawPath = String(entry.path || "").trim();
+            if (!rawPath) return false;
+            const shell = getElectronShell();
+            const decoded = decodeFileUriToFsPath(rawPath);
+            if (isLikelyExternalUrl(rawPath) && !/^file:\/\//i.test(rawPath)) {
+                if (shell?.openExternal) {
+                    await shell.openExternal(rawPath);
+                    return true;
+                }
+                window.open?.(rawPath, "_blank", "noopener");
+                return true;
+            }
+            const vaultFile = resolveExistingVaultFile(decoded);
+            const openPathTarget = vaultFile ? resolveVaultAbsolutePath(vaultFile.path) : decoded;
+            if (shell?.openPath && openPathTarget) {
+                const result = await shell.openPath(openPathTarget);
+                if (!result) return true;
+                console.warn("[Workspace Shortcut] shell.openPath failed:", openPathTarget, result);
+            }
+            if (vaultFile && typeof app.openWithDefaultApp === "function") {
+                try {
+                    await app.openWithDefaultApp(vaultFile);
+                    return true;
+                } catch (_) {}
+            }
+            return false;
+        };
+        const activateShortcutEntry = async (entryLike) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : null;
+            if (!entry?.path) {
+                new Notice("⚠️ 快捷方式缺少目标路径");
+                return false;
+            }
+            const noteFile = resolveShortcutNoteFile(entry.path);
+            if (noteFile) {
+                await app.workspace.getLeaf(true).openFile(noteFile);
+                return true;
+            }
+            if (await openExternalShortcutTarget(entry)) return true;
+            new Notice(`⚠️ 快捷方式已失效或当前环境无法打开：${entry.path}`);
+            return false;
+        };
+        const getItemShortcutEntriesById = (id) => normalizeShortcutEntries(getItemById(id)?.shortcuts || []);
+        const getParadigmItemShortcutEntriesById = (id) => normalizeShortcutEntries(getParadigmItemById(id)?.shortcuts || []);
         const resolveImageSrc = (rawRef) => {
             const clean = sanitizeImageInput(rawRef);
             if (!clean) return null;
@@ -2493,6 +2938,19 @@
                 cursor = cursor.parentParadigmId ? getParadigmById(cursor.parentParadigmId) : null;
             }
             return parts.concat(paradigmParts).filter(Boolean).join(" - ");
+        };
+        const getParadigmMountPathLabel = (paradigmOrId) => {
+            const paradigm = typeof paradigmOrId === "string" ? getParadigmById(paradigmOrId) : paradigmOrId;
+            if (!paradigm) return String(paradigmOrId || "").trim();
+            const parts = [];
+            const seen = new Set();
+            let cursor = paradigm;
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                parts.unshift(getParadigmNodeLabel(cursor));
+                cursor = cursor.parentParadigmId ? getParadigmById(cursor.parentParadigmId) : null;
+            }
+            return parts.filter(Boolean).join(" / ");
         };
         const getParadigmCopyReferenceEntries = (sourceParadigmId) => {
             const sourceId = String(sourceParadigmId || "").trim();
@@ -2785,6 +3243,19 @@
             if (!isParadigmMountedItem(mounted)) return null;
             return getParadigmItemById(mounted.sourceParadigmItemId) || null;
         };
+        const getMountedParadigmOwnerInfo = (itemOrId) => {
+            const mounted = typeof itemOrId === "string" ? getItemById(itemOrId) : itemOrId;
+            if (!isParadigmMountedItem(mounted)) return { sourceItem: null, paradigm: null, paradigmId: "", paradigmPath: "" };
+            const sourceItem = getMountedParadigmSourceItem(mounted);
+            const paradigmId = String(sourceItem?.paradigmId || mounted.sourceParadigmId || "").trim();
+            const paradigm = paradigmId ? getParadigmById(paradigmId) : null;
+            return {
+                sourceItem,
+                paradigm,
+                paradigmId,
+                paradigmPath: paradigm ? getParadigmMountPathLabel(paradigm.id) : ""
+            };
+        };
         const normalizeTaskBinding = (raw) => normalizeBindingValue(raw);
         const getTaskBindingById = (id) => {
             const key = String(id || "").trim();
@@ -2961,6 +3432,7 @@
             window.setTimeout(() => el.classList.remove("workspace-paradigm-mount-focus-hit"), 1800);
         };
         const focusPendingParadigmMountTarget = (options = {}) => {
+            if (window.workspacePendingRelationFocusNodeKey) return false;
             const pending = window.workspacePendingParadigmMountFocus;
             if (!pending || typeof pending !== "object") return false;
             const tabId = String(pending.tabId || "").trim();
@@ -3054,20 +3526,51 @@
         const buildWorkspaceItemPathLabel = (itemId) => {
             const item = getItemById(itemId);
             if (!item) return String(itemId || "").trim();
-            const parts = [];
             const tabName = getTabById(item.tabId)?.name || item.tabId || "Tab";
-            parts.push(tabName);
-            const ancestors = [];
+            const itemPathParts = [];
             let cursor = item.parentId;
             while (cursor) {
                 const parent = getItemById(cursor);
                 if (!parent) break;
-                ancestors.unshift(parent.title);
+                itemPathParts.unshift(parent.title);
                 cursor = parent.parentId;
             }
-            if (ancestors.length) parts.push(...ancestors);
-            parts.push(item.title);
+            itemPathParts.push(item.title);
+            const parts = [`Tab：${tabName}`];
+            if (isParadigmMountedItem(item)) {
+                const paradigmPath = getParadigmMountPathLabel(item.sourceParadigmMountScopeId || item.sourceParadigmId || "");
+                if (paradigmPath) parts.push(`范式：${paradigmPath}`);
+            }
+            parts.push(`条目：${itemPathParts.join(" / ")}`);
+            return parts.join(" ｜ ");
+        };
+        const getParadigmItemPathLabel = (paradigmItemId) => {
+            const item = getParadigmItemById(paradigmItemId);
+            if (!item) return String(paradigmItemId || "").trim();
+            const parts = [];
+            const seen = new Set();
+            let cursor = item;
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                parts.unshift(cursor.title || cursor.id);
+                cursor = cursor.parentId ? getParadigmItemById(cursor.parentId) : null;
+            }
             return parts.join(" / ");
+        };
+        const buildWorkspaceRelationMetaFields = (itemId) => {
+            const item = getItemById(itemId);
+            if (!item) return [];
+            const tabName = getTabById(item.tabId)?.name || item.tabId || "";
+            const mountedOwnerInfo = getMountedParadigmOwnerInfo(item);
+            const paradigmName = mountedOwnerInfo.paradigmPath || "";
+            const paradigmItemPath = mountedOwnerInfo.sourceItem
+                ? getParadigmItemPathLabel(mountedOwnerInfo.sourceItem.id)
+                : "";
+            return [
+                { label: "所属Tab", value: tabName || "未知" },
+                { label: "范式名", value: paradigmName || "未识别所属范式" },
+                { label: "范式条目", value: paradigmItemPath || "当前Tab自有条目" }
+            ];
         };
         const getWorkspaceRelationSnapshot = (itemId) => {
             const api = getRelationsPluginApi();
@@ -3089,6 +3592,25 @@
                 WORKSPACE_DATA.activeTabId = item.tabId;
                 needsRender = true;
             }
+            if (isParadigmMountedItem(item)) {
+                const mountParadigmId = String(item.sourceParadigmMountScopeId || item.sourceParadigmId || "").trim();
+                const ancestorIds = getParadigmMountAncestorIdsForTab(item.tabId, mountParadigmId);
+                if (isParadigmMountCollectionCollapsed(item.tabId)) {
+                    if (!WORKSPACE_DATA.paradigmMountCollectionCollapsedByTab || typeof WORKSPACE_DATA.paradigmMountCollectionCollapsedByTab !== "object") {
+                        WORKSPACE_DATA.paradigmMountCollectionCollapsedByTab = {};
+                    }
+                    WORKSPACE_DATA.paradigmMountCollectionCollapsedByTab[item.tabId] = false;
+                    needsRender = true;
+                }
+                ancestorIds.concat(mountParadigmId ? [mountParadigmId] : []).forEach((paradigmId) => {
+                    if (!paradigmId || !isParadigmMountGroupCollapsed(item.tabId, paradigmId)) return;
+                    if (!WORKSPACE_DATA.paradigmMountGroupCollapsedByKey || typeof WORKSPACE_DATA.paradigmMountGroupCollapsedByKey !== "object") {
+                        WORKSPACE_DATA.paradigmMountGroupCollapsedByKey = {};
+                    }
+                    WORKSPACE_DATA.paradigmMountGroupCollapsedByKey[getParadigmMountGroupKey(item.tabId, paradigmId)] = false;
+                    needsRender = true;
+                });
+            }
             let cursor = item.parentId;
             while (cursor) {
                 const parent = getItemById(cursor);
@@ -3104,7 +3626,8 @@
                 renderViewFn?.();
                 return "rerender";
             }
-            const targetEl = dv.container.querySelector(`.workspace-item-line[data-workspace-node-key="${escapeSelectorValue(nodeKey)}"]`);
+            const selector = `[data-workspace-node-key="${escapeSelectorValue(nodeKey)}"]`;
+            const targetEl = dv.container.querySelector(`.workspace-item-line${selector}`) || dv.container.querySelector(`.workspace-item-branch${selector}`);
             if (!targetEl) return false;
             targetEl.scrollIntoView({
                 behavior: options.behavior || "smooth",
@@ -3119,6 +3642,7 @@
         const scheduleWorkspaceRelationFocusRestore = (nodeKey) => {
             const key = String(nodeKey || "").trim();
             if (!key) return;
+            window.workspacePendingParadigmMountFocus = null;
             window.workspacePendingRelationFocusNodeKey = key;
             [0, 100, 260, 620, 1200].forEach((delay) => {
                 window.setTimeout(() => {
@@ -3152,15 +3676,19 @@
                 notePath: currentFilePath,
                 viewLabel: currentDvFile?.name || "Workspace",
                 listItems: () => Object.values(WORKSPACE_DATA.itemsById || {}).map((item) => {
-                    const paradigm = isParadigmMountedItem(item) ? getParadigmById(item.sourceParadigmId) : null;
+                    const mountedOwnerInfo = getMountedParadigmOwnerInfo(item);
+                    const mountedParadigmPath = mountedOwnerInfo.paradigmPath || "";
                     return {
                         nodeKey: getWorkspaceNodeKey(item.id),
                         label: item.title,
                         pathLabel: buildWorkspaceItemPathLabel(item.id),
+                        metaFields: buildWorkspaceRelationMetaFields(item.id),
                         searchText: [
                             item.title,
                             getTabById(item.tabId)?.name || "",
-                            paradigm?.name || "",
+                            mountedParadigmPath,
+                            mountedOwnerInfo.paradigm?.name || "",
+                            mountedOwnerInfo.sourceItem ? getParadigmItemPathLabel(mountedOwnerInfo.sourceItem.id) : "",
                             item.sourceType || ""
                         ].filter(Boolean).join(" ")
                     };
@@ -3643,6 +4171,7 @@
                         sourceParadigmMountMode: entry.mountMode,
                         isCollapsed: false,
                         imageRef: sanitizeImageInput(entry.pgItem.imageRef || ""),
+                        shortcuts: normalizeShortcutEntries(entry.pgItem.shortcuts || []),
                         comment: typeof entry.pgItem.comment === "string" ? entry.pgItem.comment : "",
                         noteBinding: normalizeBindingValue(entry.pgItem.noteBinding),
                         orphaned: false,
@@ -3662,6 +4191,7 @@
                 mounted.sourceParadigmCopyRefId = entry.isCopyScope ? entry.mountNodeId : null;
                 mounted.sourceParadigmMountMode = entry.mountMode;
                 mounted.imageRef = sanitizeImageInput(entry.pgItem.imageRef || "");
+                mounted.shortcuts = normalizeShortcutEntries(entry.pgItem.shortcuts || []);
                 mounted.comment = typeof entry.pgItem.comment === "string" ? entry.pgItem.comment : "";
                 mounted.noteBinding = normalizeBindingValue(entry.pgItem.noteBinding);
                 mounted.orphaned = false;
@@ -4450,6 +4980,7 @@
                     parentId: parentParadigmItemId,
                     order: Date.now(),
                     imageRef: "",
+                    shortcuts: [],
                     comment: "",
                     noteBinding: null,
                     createdAt: nowString(),
@@ -4573,17 +5104,20 @@
             const paradigmItem = getParadigmItemById(paradigmItemId);
             if (!paradigmItem) return;
             const currentImageRef = sanitizeImageInput(paradigmItem.imageRef || "");
-            const result = await runWithPromptLock(() => imageManagerEditor(`🖼️ 范式图片：${paradigmItem.title}`, currentImageRef));
+            const currentShortcuts = getParadigmItemShortcutEntriesById(paradigmItemId);
+            const result = await runWithPromptLock(() => imageManagerEditor(`🖼️ 范式图片：${paradigmItem.title}`, currentImageRef, currentShortcuts));
             if (!result) return;
+            const nextShortcuts = normalizeShortcutEntries(result.shortcuts || []);
             await updateWorkspaceData((data) => {
                 const target = data.paradigmItemsById?.[paradigmItemId];
                 if (!target) return;
                 if (result.action === "clear") target.imageRef = "";
                 if (result.action === "save") target.imageRef = sanitizeImageInput(result.value || "");
+                target.shortcuts = nextShortcuts;
                 target.updatedAt = nowString();
                 syncParadigmAcrossTabsInData(data, target.paradigmId);
             });
-            new Notice("🖼️ 范式图片已更新");
+            new Notice(`🖼️ 范式图片/快捷方式已更新（${nextShortcuts.length} 个快捷方式）`);
         };
 
         const collectParadigmSubtreeIds = (data, paradigmId, startId) => {
@@ -4838,6 +5372,7 @@
                     sourceParadigmCopyRefId: null,
                     isCollapsed: false,
                     imageRef: "",
+                    shortcuts: [],
                     comment: "",
                     noteBinding: null,
                     orphaned: false,
@@ -5092,16 +5627,19 @@
                 return;
             }
             const currentImageRef = getItemImageRefById(id);
-            const result = await runWithPromptLock(() => imageManagerEditor(`🖼️ 图片设置：${item.title}`, currentImageRef));
+            const currentShortcuts = getItemShortcutEntriesById(id);
+            const result = await runWithPromptLock(() => imageManagerEditor(`🖼️ 图片设置：${item.title}`, currentImageRef, currentShortcuts));
             if (!result) return;
+            const nextShortcuts = normalizeShortcutEntries(result.shortcuts || []);
             if (result.action === "clear") {
                 await updateWorkspaceData((data) => {
                     const target = data.itemsById[id];
                     if (!target) return;
                     target.imageRef = "";
+                    target.shortcuts = nextShortcuts;
                     target.updatedAt = nowString();
                 });
-                new Notice("🧹 已清除条目图片");
+                new Notice(`🧹 已清除条目图片，快捷方式保留 ${nextShortcuts.length} 个`);
                 return;
             }
             const imageRef = sanitizeImageInput(result.value || "");
@@ -5110,19 +5648,54 @@
                     const target = data.itemsById[id];
                     if (!target) return;
                     target.imageRef = "";
+                    target.shortcuts = nextShortcuts;
                     target.updatedAt = nowString();
                 });
-                new Notice("🧹 图片为空，已清除");
+                new Notice(`🧹 图片为空，已清除；快捷方式 ${nextShortcuts.length} 个`);
                 return;
             }
             await updateWorkspaceData((data) => {
                 const target = data.itemsById[id];
                 if (!target) return;
                 target.imageRef = imageRef;
+                target.shortcuts = nextShortcuts;
                 target.updatedAt = nowString();
             });
-            if (resolveImageSrc(imageRef)) new Notice("🖼️ 图片已设置");
-            else new Notice("⚠️ 图片引用已保存，但未解析到文件；请检查路径");
+            if (resolveImageSrc(imageRef)) new Notice(`🖼️ 图片已设置；快捷方式 ${nextShortcuts.length} 个`);
+            else new Notice(`⚠️ 图片引用已保存，但未解析到文件；快捷方式 ${nextShortcuts.length} 个`);
+        };
+        const activateShortcutEntries = async (title, shortcutEntries) => {
+            const entries = normalizeShortcutEntries(shortcutEntries || []);
+            if (entries.length === 0) {
+                new Notice("ℹ️ 这个条目还没有快捷方式，请先到图片弹窗里拖入");
+                return;
+            }
+            if (entries.length === 1) {
+                await activateShortcutEntry(entries[0]);
+                return;
+            }
+            const selected = await shortcutLauncher(title, entries);
+            if (!selected) return;
+            await activateShortcutEntry(selected);
+        };
+        const activateParadigmItemShortcuts = async (paradigmItemId) => {
+            const item = getParadigmItemById(paradigmItemId);
+            if (!item) return;
+            await activateShortcutEntries(`快捷方式：${item.title}`, getParadigmItemShortcutEntriesById(paradigmItemId));
+        };
+        const activateItemShortcuts = async (id) => {
+            const item = getItemById(id);
+            if (!item) return;
+            if (isParadigmMountedItem(item)) {
+                const sourceItem = getMountedParadigmSourceItem(item);
+                if (!sourceItem) {
+                    new Notice("⚠️ 未找到引用挂载对应的定义源");
+                    return;
+                }
+                await activateParadigmItemShortcuts(sourceItem.id);
+                return;
+            }
+            await activateShortcutEntries(`快捷方式：${item.title}`, getItemShortcutEntriesById(id));
         };
 
         const moveItem = async (draggedIdRaw, targetIdRaw, position) => {
@@ -5274,6 +5847,7 @@
             const levelBg = getLevelBackground(level);
             const imageRef = sanitizeImageInput(item.imageRef || "");
             const imageSrc = resolveImageSrc(imageRef);
+            const shortcutEntries = normalizeShortcutEntries(item.shortcuts || []);
             const isParadigm = isParadigmMountedItem(item);
             const paradigm = isParadigm ? getParadigmById(item.sourceParadigmId) : null;
             const paradigmName = paradigm?.name || item.sourceParadigmId || "范式";
@@ -5451,6 +6025,13 @@
                     attr: { title: boundPath }
                 });
             }
+            if (shortcutEntries.length > 0) {
+                content.createEl("span", {
+                    text: `↗ ${shortcutEntries.length}`,
+                    cls: "workspace-origin-badge",
+                    attr: { title: `已挂 ${shortcutEntries.length} 个快捷方式` }
+                });
+            }
             const relationSnapshot = getWorkspaceRelationSnapshot(item.id);
             if (relationSnapshot.outgoing.length > 0) {
                 const outgoingBadge = content.createEl("span", {
@@ -5510,6 +6091,12 @@
                 attr: { title: isParadigm ? "编辑引用挂载图片（写回定义源）" : "图片设置（弹窗内可粘贴/修改/清除）" }
             });
             imageBtn.onclick = async (e) => { e.stopPropagation(); await editItemImage(item.id); };
+            const shortcutBtn = actions.createEl("span", {
+                text: "↗",
+                cls: "workspace-action-btn",
+                attr: { title: shortcutEntries.length > 0 ? `激活快捷方式（${shortcutEntries.length} 个）` : "激活快捷方式（当前为空）" }
+            });
+            shortcutBtn.onclick = async (e) => { e.stopPropagation(); await activateItemShortcuts(item.id); };
             const bindBtn = actions.createEl("span", {
                 text: boundPath ? "🔗" : "📝",
                 cls: "workspace-action-btn",
@@ -6138,6 +6725,7 @@
                 const binding = normalizeTaskBinding(item.noteBinding);
                 const boundPath = binding?.path || null;
                 const boundFile = boundPath ? resolveExistingNoteFile(boundPath) : null;
+                const shortcutEntries = normalizeShortcutEntries(item.shortcuts || []);
                 const line = container.createEl("div", {
                     cls: "workspace-paradigm-item-line",
                     attr: { style: `margin-left:${level * 22}px;` }
@@ -6199,6 +6787,7 @@
                 if (commentSummary) info.createEl("span", { text: `💬 ${commentSummary}`, cls: "workspace-comment-summary", attr: { title: commentText } });
                 if (boundPath) info.createEl("span", { text: `🔗 ${boundFile ? boundFile.basename : "绑定失效"}`, cls: "workspace-bound-label", attr: { title: boundPath } });
                 if (imageRef) info.createEl("span", { text: "🖼️", cls: "workspace-origin-badge", attr: { title: imageRef } });
+                if (shortcutEntries.length > 0) info.createEl("span", { text: `↗ ${shortcutEntries.length}`, cls: "workspace-origin-badge", attr: { title: `已挂 ${shortcutEntries.length} 个快捷方式` } });
                 const actions = line.createEl("div", { cls: "workspace-line-actions" });
                 const dragBtn = actions.createEl("span", { text: "⋮⋮", cls: "workspace-action-btn", attr: { title: "拖拽调整层级" } });
                 dragBtn.style.cursor = "grab";
@@ -6208,6 +6797,8 @@
                 renameBtn.onclick = async () => { await renameParadigmItem(item.id); };
                 const imageBtn = actions.createEl("span", { text: imageRef ? "🖼️" : "🖼", cls: "workspace-action-btn", attr: { title: "范式图片设置" } });
                 imageBtn.onclick = async () => { await editParadigmItemImage(item.id); };
+                const shortcutBtn = actions.createEl("span", { text: "↗", cls: "workspace-action-btn", attr: { title: shortcutEntries.length > 0 ? `激活快捷方式（${shortcutEntries.length} 个）` : "激活快捷方式（当前为空）" } });
+                shortcutBtn.onclick = async () => { await activateParadigmItemShortcuts(item.id); };
                 const bindBtn = actions.createEl("span", { text: boundPath ? "🔗" : "📝", cls: "workspace-action-btn", attr: { title: "范式笔记绑定" } });
                 bindBtn.onclick = async () => { await bindParadigmItemNote(item.id); };
                 const openBtn = actions.createEl("span", { text: "📂", cls: "workspace-action-btn", attr: { title: "打开范式绑定笔记" } });
@@ -7512,9 +8103,10 @@
             const list = wrap.createEl("div");
             renderWorkspaceSection(list, activeTabId, 0, activeTabId);
             mountFloatingPinButton(activeTabId);
-            if (window.workspacePendingParadigmMountFocus) {
+            if (window.workspacePendingParadigmMountFocus && !window.workspacePendingRelationFocusNodeKey) {
                 [0, 120, 320].forEach((delay) => {
                     window.setTimeout(() => {
+                        if (window.workspacePendingRelationFocusNodeKey) return;
                         window.requestAnimationFrame(() => focusPendingParadigmMountTarget());
                     }, delay);
                 });
