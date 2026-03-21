@@ -71,6 +71,26 @@
             return { ownerId, parent };
         };
         const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+        const normalizeTabEmoji = (value) => String(value || "").trim().slice(0, 8);
+        const normalizeTabAccentColor = (value) => {
+            const raw = String(value || "").trim();
+            if (!raw) return "";
+            const prefixed = raw.startsWith("#") ? raw : `#${raw}`;
+            if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(prefixed)) return prefixed.toLowerCase();
+            return "";
+        };
+        const getReadableTextColor = (hexColor) => {
+            const normalized = normalizeTabAccentColor(hexColor);
+            if (!normalized) return "var(--text-on-accent)";
+            const full = normalized.length === 4
+                ? `#${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}${normalized[3]}${normalized[3]}`
+                : normalized;
+            const r = parseInt(full.slice(1, 3), 16);
+            const g = parseInt(full.slice(3, 5), 16);
+            const b = parseInt(full.slice(5, 7), 16);
+            const luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
+            return luminance >= 150 ? "#1f2328" : "#ffffff";
+        };
         const getDefaultParadigmTagColor = (seed = "") => {
             const text = String(seed || "").trim() || "paradigm-tag";
             let hash = 0;
@@ -142,6 +162,8 @@
                 [DEFAULT_TAB_ID]: {
                     id: DEFAULT_TAB_ID,
                     name: "默认工作区",
+                    emoji: "",
+                    accentColor: "",
                     kind: "project",
                     parentTabId: null,
                     boundParadigmIds: [],
@@ -270,6 +292,8 @@
                 tabsById[id] = {
                     id,
                     name: name || `Tab-${id.slice(-4)}`,
+                    emoji: normalizeTabEmoji(tab.emoji || tab.icon || ""),
+                    accentColor: normalizeTabAccentColor(tab.accentColor || tab.color || ""),
                     kind: ["project", "task", "object"].includes(tab.kind) ? tab.kind : "project",
                     parentTabId: (tab.parentTabId !== undefined && tab.parentTabId !== null && String(tab.parentTabId).trim() !== "")
                         ? String(tab.parentTabId).trim()
@@ -2070,6 +2094,138 @@
             }
         }
 
+        class TabAppearanceModal extends obsidian.Modal {
+            constructor(app, tab, onResolve) {
+                super(app);
+                this.tab = tab || {};
+                this.onResolve = onResolve;
+                this.resolved = false;
+            }
+            resolve(result) {
+                if (this.resolved) return;
+                this.resolved = true;
+                this.onResolve(result);
+            }
+            onOpen() {
+                this.modalEl.style.maxWidth = "560px";
+                this.modalEl.style.width = "86vw";
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.createEl("h3", { text: `Tab 特征化 · ${this.tab.name || "未命名 Tab"}` });
+                contentEl.createEl("div", {
+                    text: "设置这个 Tab 的 emoji 和选中态颜色。未选中时保持白色胶囊，选中时使用你指定的颜色。",
+                    attr: { style: "color:var(--text-muted);font-size:12px;margin-bottom:10px;" }
+                });
+
+                const form = contentEl.createEl("div", {
+                    attr: { style: "display:flex;flex-direction:column;gap:10px;" }
+                });
+
+                const emojiWrap = form.createEl("div");
+                emojiWrap.createEl("div", {
+                    text: "Emoji",
+                    attr: { style: "font-size:12px;font-weight:700;margin-bottom:4px;" }
+                });
+                const emojiInput = emojiWrap.createEl("input", {
+                    type: "text",
+                    value: normalizeTabEmoji(this.tab.emoji || ""),
+                    attr: {
+                        placeholder: "例如 📚 / 🚀 / 🧠",
+                        style: "width:100%;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;"
+                    }
+                });
+
+                const colorWrap = form.createEl("div");
+                colorWrap.createEl("div", {
+                    text: "选中态颜色",
+                    attr: { style: "font-size:12px;font-weight:700;margin-bottom:4px;" }
+                });
+                const colorRow = colorWrap.createEl("div", {
+                    attr: { style: "display:flex;align-items:center;gap:8px;flex-wrap:wrap;" }
+                });
+                const normalizedColor = normalizeTabAccentColor(this.tab.accentColor || "") || "#2ecc71";
+                const colorPicker = colorRow.createEl("input", { type: "color", value: normalizedColor });
+                colorPicker.style.width = "54px";
+                colorPicker.style.height = "38px";
+                colorPicker.style.padding = "0";
+                colorPicker.style.border = "none";
+                colorPicker.style.background = "transparent";
+                const colorText = colorRow.createEl("input", {
+                    type: "text",
+                    value: normalizeTabAccentColor(this.tab.accentColor || ""),
+                    attr: {
+                        placeholder: "#2ecc71",
+                        style: "flex:1 1 160px;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;"
+                    }
+                });
+
+                const previewWrap = form.createEl("div");
+                previewWrap.createEl("div", {
+                    text: "预览",
+                    attr: { style: "font-size:12px;font-weight:700;margin-bottom:4px;" }
+                });
+                const preview = previewWrap.createEl("div", {
+                    attr: {
+                        style: "display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;border:1px solid var(--background-modifier-border);background:var(--background-secondary);font-weight:700;"
+                    }
+                });
+
+                const renderPreview = () => {
+                    const emoji = normalizeTabEmoji(emojiInput.value || "");
+                    const accentColor = normalizeTabAccentColor(colorText.value || colorPicker.value || "");
+                    const effectiveColor = accentColor || "#2ecc71";
+                    preview.textContent = `${emoji ? `${emoji} ` : ""}${this.tab.name || "Tab 预览"}`;
+                    preview.style.background = effectiveColor;
+                    preview.style.borderColor = effectiveColor;
+                    preview.style.color = getReadableTextColor(effectiveColor);
+                };
+                colorPicker.addEventListener("input", () => {
+                    colorText.value = normalizeTabAccentColor(colorPicker.value || "");
+                    renderPreview();
+                });
+                colorText.addEventListener("input", () => {
+                    const normalized = normalizeTabAccentColor(colorText.value || "");
+                    if (normalized) colorPicker.value = normalized;
+                    renderPreview();
+                });
+                emojiInput.addEventListener("input", renderPreview);
+                renderPreview();
+
+                const actions = contentEl.createEl("div", {
+                    attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:12px;flex-wrap:wrap;" }
+                });
+                const resetBtn = actions.createEl("button", { text: "清除特征" });
+                resetBtn.onclick = () => {
+                    this.resolve({ action: "clear" });
+                    this.close();
+                };
+                const cancelBtn = actions.createEl("button", { text: "取消" });
+                cancelBtn.onclick = () => {
+                    this.resolve(null);
+                    this.close();
+                };
+                const saveBtn = actions.createEl("button", { text: "保存特征", cls: "mod-cta" });
+                saveBtn.onclick = () => {
+                    this.resolve({
+                        action: "save",
+                        emoji: normalizeTabEmoji(emojiInput.value || ""),
+                        accentColor: normalizeTabAccentColor(colorText.value || "")
+                    });
+                    this.close();
+                };
+
+                emojiInput.focus();
+                emojiInput.selectionStart = emojiInput.value.length;
+                emojiInput.selectionEnd = emojiInput.value.length;
+            }
+            onClose() {
+                if (!this.resolved) this.resolve(null);
+                this.modalEl.style.maxWidth = "";
+                this.modalEl.style.width = "";
+                this.contentEl.empty();
+            }
+        }
+
         const prompt = (title, placeholder = "", defaultValue = "") => new Promise(r => new QuickPrompt(app, title, placeholder, r, defaultValue).open());
         const confirm = (title, message) => new Promise((resolve) => new ConfirmModal(app, title, message, resolve).open());
         const noteSelector = (noteIndex, currentNotePath = null) => new Promise(r => new VaultNotePickerModal(app, noteIndex, currentNotePath, r).open());
@@ -2079,6 +2235,7 @@
         const paradigmTagPicker = (title = "设置范式标签", selectedIds = []) => new Promise(r => new ParadigmTagPickerModal(app, title, selectedIds, r).open());
         const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
         const imageManagerEditor = (title, defaultValue = "") => new Promise(r => new ImageManagerModal(app, title, defaultValue, r).open());
+        const tabAppearanceEditor = (tab) => new Promise(r => new TabAppearanceModal(app, tab, r).open());
         const runWithPromptLock = async (workFn) => {
             if (window.workspaceTreePromptBusy) return null;
             window.workspaceTreePromptBusy = true;
@@ -3118,6 +3275,8 @@
             data.tabsById[tabId] = {
                 id: tabId,
                 name: name || `Tab-${tabId.slice(-4)}`,
+                emoji: "",
+                accentColor: "",
                 kind: "project",
                 parentTabId: null,
                 boundParadigmIds: [],
@@ -3592,6 +3751,25 @@
                 target.updatedAt = nowString();
             });
             new Notice("✅ Tab 已重命名");
+        };
+        const editCurrentTabAppearance = async () => {
+            const tab = getActiveTab();
+            if (!tab) return;
+            const result = await runWithPromptLock(() => tabAppearanceEditor(tab));
+            if (!result) return;
+            await updateWorkspaceData((data) => {
+                const target = data.tabsById?.[tab.id];
+                if (!target) return;
+                if (result.action === "clear") {
+                    target.emoji = "";
+                    target.accentColor = "";
+                } else {
+                    target.emoji = normalizeTabEmoji(result.emoji || "");
+                    target.accentColor = normalizeTabAccentColor(result.accentColor || "");
+                }
+                target.updatedAt = nowString();
+            });
+            new Notice(result.action === "clear" ? "🧼 已清除 Tab 特征" : "🎨 已更新 Tab 特征");
         };
 
         const switchTab = async (tabId) => {
@@ -6139,22 +6317,23 @@
                 .workspace-tab-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:10px; padding:8px 12px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; }
                 .workspace-tab-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.12); color:var(--text-normal); }
                 .workspace-tab-capsule-group { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start; }
-                .workspace-tab-capsule { display:inline-flex; flex-direction:column; gap:8px; padding:8px 10px 10px; border:2px solid rgba(52,152,219,.24); border-radius:16px; background:linear-gradient(135deg, rgba(52,152,219,.10) 0%, rgba(52,152,219,.04) 100%); min-width:220px; transition:box-shadow .15s,border-color .15s,transform .15s; position:relative; }
-                .workspace-tab-capsule:hover { border-color:rgba(52,152,219,.45); box-shadow:0 4px 14px rgba(52,152,219,.12); }
-                .workspace-tab-capsule.is-current { border-color:rgba(46,204,113,.55); background:linear-gradient(135deg, rgba(46,204,113,.12) 0%, rgba(46,204,113,.05) 100%); }
+                .workspace-tab-capsule { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:8px 10px 10px; border:2px solid var(--workspace-tab-frame-border, rgba(52,152,219,.24)); border-radius:16px; background:linear-gradient(135deg, var(--workspace-tab-frame-bg-strong, rgba(52,152,219,.10)) 0%, var(--workspace-tab-frame-bg-soft, rgba(52,152,219,.04)) 100%); width:max-content; max-width:100%; min-width:0; flex:0 1 auto; align-self:flex-start; transition:box-shadow .15s,border-color .15s,transform .15s,background .15s; position:relative; }
+                .workspace-tab-capsule:hover { border-color:var(--workspace-tab-frame-border-hover, rgba(52,152,219,.45)); box-shadow:0 4px 14px rgba(52,152,219,.12); }
+                .workspace-tab-capsule.is-current { border-color:var(--workspace-tab-frame-border-current, var(--workspace-tab-frame-border-hover, rgba(52,152,219,.45))); background:linear-gradient(135deg, var(--workspace-tab-frame-bg-strong, rgba(52,152,219,.10)) 0%, var(--workspace-tab-frame-bg-soft, rgba(52,152,219,.04)) 100%); }
                 .workspace-tab-capsule.is-dragging, .workspace-tab-leaf.is-dragging { opacity:.45; transform:scale(.98); }
                 .workspace-tab-capsule.drag-over-before, .workspace-tab-leaf.drag-over-before { box-shadow:inset 4px 0 0 #2ecc71; }
                 .workspace-tab-capsule.drag-over-after, .workspace-tab-leaf.drag-over-after { box-shadow:inset -4px 0 0 #2ecc71; }
                 .workspace-tab-capsule.drag-over-child, .workspace-tab-leaf.drag-over-child { border-color:#2ecc71; background:linear-gradient(135deg, rgba(46,204,113,.16) 0%, rgba(46,204,113,.06) 100%); }
-                .workspace-tab-leaf { display:inline-flex; flex-direction:column; gap:6px; min-width:0; transition:box-shadow .15s,border-color .15s,transform .15s; border:1px solid transparent; border-radius:16px; padding:0; }
-                .workspace-tab-capsule-head { display:flex; align-items:center; gap:6px; }
+                .workspace-tab-leaf { display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:max-content; max-width:100%; min-width:0; flex:0 1 auto; align-self:flex-start; transition:box-shadow .15s,border-color .15s,transform .15s,background .15s; border:1px solid var(--workspace-tab-frame-border, rgba(52,152,219,.24)); background:linear-gradient(135deg, var(--workspace-tab-frame-bg-strong, rgba(52,152,219,.10)) 0%, var(--workspace-tab-frame-bg-soft, rgba(52,152,219,.04)) 100%); border-radius:16px; padding:0; }
+                .workspace-tab-leaf.is-current { border-color:var(--workspace-tab-frame-border-current, var(--workspace-tab-frame-border-hover, rgba(52,152,219,.45))); background:linear-gradient(135deg, var(--workspace-tab-frame-bg-strong, rgba(52,152,219,.10)) 0%, var(--workspace-tab-frame-bg-soft, rgba(52,152,219,.04)) 100%); }
+                .workspace-tab-capsule-head { display:flex; align-items:center; gap:6px; width:max-content; max-width:100%; min-width:0; flex:0 1 auto; }
                 .workspace-tab-collapse-toggle { border:none; background:transparent; color:var(--text-muted); cursor:pointer; font-size:10px; line-height:1; padding:1px 4px; border-radius:999px; flex:0 0 auto; }
                 .workspace-tab-collapse-toggle:hover { color:var(--text-normal); background:rgba(127,127,127,.12); }
                 .workspace-tab-collapse-toggle.is-collapsed { color:#d35400; background:rgba(243, 156, 18, .16); box-shadow:inset 0 0 0 1px rgba(211, 84, 0, .18); }
                 .workspace-tab-collapse-toggle.is-collapsed:hover { color:#a84300; background:rgba(243, 156, 18, .22); }
-                .workspace-tab-btn { border:1px solid var(--background-modifier-border); background:var(--background-secondary); color:var(--text-normal); border-radius:999px; padding:6px 12px; cursor:pointer; font-size:12px; user-select:none; transition:filter .15s,border-color .15s,transform .15s; text-align:left; display:flex; align-items:center; justify-content:space-between; gap:8px; }
-                .workspace-tab-btn.active { background:var(--interactive-accent); color:var(--text-on-accent); border-color:var(--interactive-accent); font-weight:700; }
-                .workspace-tab-children { display:flex; flex-wrap:wrap; gap:10px; margin-left:18px; }
+                .workspace-tab-btn { border:1px solid var(--background-modifier-border); background:var(--background-primary); color:var(--text-normal); border-radius:999px; padding:6px 12px; cursor:pointer; font-size:12px; user-select:none; transition:filter .15s,border-color .15s,transform .15s,background .15s,color .15s; text-align:left; display:flex; align-items:center; justify-content:space-between; gap:8px; width:max-content; max-width:100%; min-width:0; flex:0 1 auto; }
+                .workspace-tab-btn.active { background:var(--workspace-tab-active-bg, var(--interactive-accent)); color:var(--workspace-tab-active-fg, var(--text-on-accent)); border-color:var(--workspace-tab-active-border, var(--interactive-accent)); font-weight:700; }
+                .workspace-tab-children { display:flex; flex-wrap:wrap; gap:10px; width:max-content; max-width:100%; min-width:0; margin-left:18px; padding-left:14px; border-left:2px solid var(--workspace-tab-frame-border, rgba(52,152,219,.16)); }
                 .workspace-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
                 .workspace-title { margin:0; font-size:1.1em; font-weight:700; color:var(--text-normal); }
                 .workspace-subtitle { color:var(--text-muted); font-size:12px; }
@@ -6495,11 +6674,19 @@
                 const childIds = getTabChildrenIds(tab.id);
                 const hasChildren = childIds.length > 0;
                 const collapsed = hasChildren ? isTabTreeCollapsed(tab.id) : false;
+                const tabEmoji = normalizeTabEmoji(tab.emoji || "");
+                const tabAccentColor = normalizeTabAccentColor(tab.accentColor || "");
+                const tabAccentTextColor = tabAccentColor ? getReadableTextColor(tabAccentColor) : "var(--text-on-accent)";
                 const wrapper = container.createEl("div", {
-                    cls: hasChildren
-                        ? `workspace-tab-capsule ${tab.id === activeTabId ? "is-current" : ""}`
-                        : "workspace-tab-leaf"
+                    cls: `${hasChildren ? "workspace-tab-capsule" : "workspace-tab-leaf"} ${tab.id === activeTabId ? "is-current" : ""}`.trim()
                 });
+                if (tabAccentColor) {
+                    wrapper.style.setProperty("--workspace-tab-frame-border", `${tabAccentColor}52`);
+                    wrapper.style.setProperty("--workspace-tab-frame-border-hover", `${tabAccentColor}88`);
+                    wrapper.style.setProperty("--workspace-tab-frame-border-current", `${tabAccentColor}78`);
+                    wrapper.style.setProperty("--workspace-tab-frame-bg-strong", `${tabAccentColor}18`);
+                    wrapper.style.setProperty("--workspace-tab-frame-bg-soft", `${tabAccentColor}08`);
+                }
                 wrapper.draggable = true;
                 wrapper.addEventListener("dragstart", (e) => {
                     e.stopPropagation();
@@ -6562,7 +6749,12 @@
                     cls: `workspace-tab-btn ${tab.id === activeTabId ? "active" : ""}`,
                     attr: { title: "点击切换；拖拽可调整为前/后/子级" }
                 });
-                tabBtn.createEl("span", { text: `${tab.id === activeTabId ? "● " : ""}${tab.name}` });
+                if (tabAccentColor) {
+                    tabBtn.style.setProperty("--workspace-tab-active-bg", tabAccentColor);
+                    tabBtn.style.setProperty("--workspace-tab-active-border", tabAccentColor);
+                    tabBtn.style.setProperty("--workspace-tab-active-fg", tabAccentTextColor);
+                }
+                tabBtn.createEl("span", { text: `${tab.id === activeTabId ? "● " : ""}${tabEmoji ? `${tabEmoji} ` : ""}${tab.name}` });
                 tabBtn.onclick = async () => { await switchTab(tab.id); };
 
                 if (hasChildren && !collapsed) {
@@ -6591,6 +6783,8 @@
             newTabBtn.onclick = async () => { await createTab(); };
             const renameTabBtn = mainActions.createEl("button", { text: "✏️ 重命名Tab", cls: "workspace-sub-btn" });
             renameTabBtn.onclick = async () => { await renameCurrentTab(); };
+            const styleTabBtn = mainActions.createEl("button", { text: "✨ Tab特征化", cls: "workspace-sub-btn" });
+            styleTabBtn.onclick = async () => { await editCurrentTabAppearance(); };
             const closeTabBtn = mainActions.createEl("button", { text: "🗑️ 关闭Tab", cls: "workspace-sub-btn" });
             closeTabBtn.onclick = async () => { await closeCurrentTab(); };
             const paradigmBtn = mainActions.createEl("button", { text: "📐 范式面板", cls: "workspace-sub-btn" });
