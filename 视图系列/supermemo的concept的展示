@@ -82,6 +82,9 @@ style.textContent = `
         margin: 4px;
         vertical-align: top;
         padding: 8px 12px;
+        gap: 6px;
+        width: fit-content;
+        max-width: 100%;
     }
 
     /* 第1层嵌套 - 蓝色 */
@@ -222,7 +225,89 @@ style.textContent = `
         box-shadow: 0 2px 8px rgba(103, 58, 183, 0.25);
     }
 
-    /* 胶囊头部 */
+    .sm-capsule-node {
+        display: inline-flex;
+        border-radius: 12px;
+        position: relative;
+        transition: box-shadow 0.15s, transform 0.15s, opacity 0.15s, background 0.15s;
+    }
+    .sm-capsule-node.drag-over-before::after,
+    .sm-capsule-node.drag-over-after::after,
+    .sm-capsule-node.drag-over-child::after,
+    .sm-mgr-item.drag-over-before::after,
+    .sm-mgr-item.drag-over-after::after,
+    .sm-mgr-item.drag-over-child::after {
+        content: attr(data-drop-label);
+        position: absolute;
+        left: 50%;
+        top: -28px;
+        transform: translateX(-50%);
+        background: var(--interactive-accent);
+        color: var(--text-on-accent);
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.2;
+        white-space: nowrap;
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.14);
+        pointer-events: none;
+        z-index: 30;
+    }
+    .sm-capsule-node.drag-over-before::before,
+    .sm-capsule-node.drag-over-after::before,
+    .sm-capsule-node.drag-over-child::before,
+    .sm-mgr-item.drag-over-before::before,
+    .sm-mgr-item.drag-over-after::before,
+    .sm-mgr-item.drag-over-child::before {
+        content: '';
+        position: absolute;
+        pointer-events: none;
+        z-index: 20;
+    }
+    .sm-capsule-node.drag-over-before {
+        box-shadow: inset 4px 0 0 var(--interactive-accent);
+    }
+    .sm-capsule-node.drag-over-before::before {
+        left: -8px;
+        top: 5px;
+        bottom: 5px;
+        width: 5px;
+        border-radius: 999px;
+        background: var(--interactive-accent);
+    }
+    .sm-capsule-node.drag-over-after {
+        box-shadow: inset -4px 0 0 var(--interactive-accent);
+    }
+    .sm-capsule-node.drag-over-after::before {
+        right: -8px;
+        top: 5px;
+        bottom: 5px;
+        width: 5px;
+        border-radius: 999px;
+        background: var(--interactive-accent);
+    }
+    .sm-capsule-node.drag-over-child {
+        box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.16);
+        background: rgba(var(--interactive-accent-rgb), 0.08);
+    }
+    .sm-capsule-node.drag-over-child::before {
+        inset: -6px;
+        border-radius: 16px;
+        border: 2px dashed var(--interactive-accent);
+        background: rgba(var(--interactive-accent-rgb), 0.06);
+    }
+    .sm-capsule-node.dragging {
+        opacity: 0.48;
+        transform: scale(0.98);
+    }
+    .sm-capsule-row {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: nowrap;
+        max-width: 100%;
+    }
     .sm-capsule-header {
         display: inline-flex;
         align-items: center;
@@ -230,20 +315,117 @@ style.textContent = `
         padding: 2px 10px;
         border-radius: 10px;
         font-size: 12px;
-        line-height: 1.4;
         font-weight: 600;
-        transition: all 0.15s;
+        line-height: 1.4;
+        border: none;
         cursor: pointer;
+        transition: all 0.15s;
+        max-width: 100%;
     }
     .sm-capsule-header:hover {
         transform: scale(1.02);
         box-shadow: 0 1px 4px rgba(0,0,0,0.1);
     }
-    .sm-capsule-icon { font-size: 10px; }
-    .sm-capsule-label { font-weight: 600; white-space: nowrap; }
-    .sm-capsule-expand { font-size: 10px; opacity: 0.7; margin-left: 2px; }
+    .sm-capsule.is-collapsed {
+        position: relative;
+        border-style: dashed;
+        border-width: 2px;
+        box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.10), 0 8px 18px rgba(0, 0, 0, 0.08);
+        background: linear-gradient(135deg, var(--sm-level-bg) 0%, rgba(var(--interactive-accent-rgb), 0.09) 100%);
+    }
+    .sm-capsule.is-collapsed::after,
+    .sm-mgr-item.is-collapsed::after {
+        content: attr(data-collapsed-label);
+        position: absolute;
+        top: -11px;
+        right: 10px;
+        background: color-mix(in srgb, var(--interactive-accent) 88%, white 12%);
+        color: var(--text-on-accent);
+        border-radius: 999px;
+        padding: 3px 9px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.2;
+        white-space: nowrap;
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+        pointer-events: none;
+        z-index: 25;
+    }
+    .sm-capsule.is-collapsed .sm-capsule-header {
+        background: rgba(var(--interactive-accent-rgb), 0.10);
+        box-shadow: inset 0 0 0 1px rgba(var(--interactive-accent-rgb), 0.18);
+    }
+    .sm-capsule-icon {
+        font-size: 10px;
+    }
+    .sm-capsule-label {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .sm-capsule-expand {
+        font-size: 10px;
+        opacity: 0.68;
+        margin-left: 2px;
+        cursor: pointer;
+        user-select: none;
+        padding: 1px 2px;
+        border-radius: 6px;
+    }
+    .sm-capsule-expand:hover {
+        background: rgba(255, 255, 255, 0.22);
+        opacity: 1;
+    }
+    .sm-capsule.is-collapsed .sm-capsule-expand {
+        opacity: 1;
+        background: rgba(var(--interactive-accent-rgb), 0.16);
+        color: var(--interactive-accent);
+    }
+    .sm-capsule-collapsed-badge {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 4px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: rgba(var(--interactive-accent-rgb), 0.14);
+        color: var(--interactive-accent);
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+    .sm-capsule-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        margin-left: 2px;
+    }
+    .sm-capsule-action {
+        font-size: 10px;
+        opacity: 0.68;
+        cursor: pointer;
+        user-select: none;
+        padding: 1px 4px;
+        border-radius: 6px;
+    }
+    .sm-capsule-action:hover {
+        background: rgba(255, 255, 255, 0.22);
+        opacity: 1;
+    }
+    .sm-capsule-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--text-muted);
+        font-size: 11px;
+        flex-shrink: 0;
+    }
+    .sm-capsule-note {
+        font-size: 11px;
+        opacity: 0.75;
+    }
 
-    /* 子胶囊容器 - 同层级横向排列 */
+    /* 子胶囊容器 */
     .sm-capsule-children {
         display: flex;
         flex-direction: row;
@@ -255,6 +437,22 @@ style.textContent = `
         border-radius: 8px;
         align-items: flex-start;
         align-content: flex-start;
+    }
+    .sm-display-drop-zone {
+        margin: 8px 0 14px;
+        padding: 8px 12px;
+        border: 1px dashed var(--background-modifier-border);
+        border-radius: 12px;
+        color: var(--text-muted);
+        font-size: 12px;
+        text-align: center;
+        transition: all 0.2s;
+        background: transparent;
+    }
+    .sm-display-drop-zone.active {
+        border-color: var(--interactive-accent);
+        background: rgba(var(--interactive-accent-rgb), 0.08);
+        color: var(--text-normal);
     }
 
     /* 统计栏 */
@@ -268,13 +466,77 @@ style.textContent = `
     .sm-mgr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--interactive-accent); }
     .sm-mgr-title { font-size: 1.5em; font-weight: 800; color: var(--text-normal); }
     .sm-mgr-stats { display: none; } /* 隐藏统计信息 */
-    .sm-mgr-item { display: flex; align-items: center; padding: 10px 12px; margin: 4px 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: grab; transition: all 0.2s; user-select: none; }
+    .sm-mgr-item { display: flex; align-items: center; padding: 10px 12px; margin: 4px 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: grab; transition: all 0.2s; user-select: none; position: relative; }
     .sm-mgr-item:hover { border-color: var(--interactive-accent); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-    .sm-mgr-item.drag-over { border: 2px dashed var(--interactive-accent); background: rgba(var(--interactive-accent-rgb), 0.1); }
+    .sm-mgr-item.drag-over-before { box-shadow: inset 0 3px 0 var(--interactive-accent); }
+    .sm-mgr-item.drag-over-before::before {
+        left: 10px;
+        right: 10px;
+        top: -4px;
+        height: 4px;
+        border-radius: 999px;
+        background: var(--interactive-accent);
+    }
+    .sm-mgr-item.drag-over-after { box-shadow: inset 0 -3px 0 var(--interactive-accent); }
+    .sm-mgr-item.drag-over-after::before {
+        left: 10px;
+        right: 10px;
+        bottom: -4px;
+        height: 4px;
+        border-radius: 999px;
+        background: var(--interactive-accent);
+    }
+    .sm-mgr-item.drag-over-child { border-color: var(--interactive-accent); background: rgba(var(--interactive-accent-rgb), 0.1); }
+    .sm-mgr-item.drag-over-child::before {
+        inset: -4px;
+        border-radius: 10px;
+        border: 2px dashed var(--interactive-accent);
+        background: rgba(var(--interactive-accent-rgb), 0.04);
+    }
     .sm-mgr-item.dragging { opacity: 0.5; transform: scale(0.98); }
+    .sm-mgr-item.is-collapsed {
+        border-style: dashed;
+        border-width: 2px;
+        background: linear-gradient(135deg, var(--background-primary) 0%, rgba(var(--interactive-accent-rgb), 0.08) 100%);
+        box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.08), 0 8px 18px rgba(0, 0, 0, 0.06);
+    }
+    .sm-mgr-item-toggle {
+        width: 26px;
+        height: 26px;
+        margin-right: 8px;
+        border: none;
+        border-radius: 7px;
+        background: var(--background-secondary);
+        color: var(--text-muted);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        flex: 0 0 26px;
+        transition: background 0.15s, color 0.15s, transform 0.15s;
+    }
+    .sm-mgr-item-toggle:hover {
+        background: var(--background-modifier-hover);
+        color: var(--text-normal);
+    }
+    .sm-mgr-item-toggle.is-placeholder {
+        cursor: default;
+        opacity: 0.35;
+    }
+    .sm-mgr-item-toggle.is-placeholder:hover {
+        background: var(--background-secondary);
+        color: var(--text-muted);
+    }
     .sm-mgr-item-icon { font-size: 1.2em; margin-right: 10px; width: 28px; text-align: center; }
     .sm-mgr-item-info { flex: 1; }
     .sm-mgr-item-label { font-weight: 600; color: var(--text-normal); }
+    .sm-mgr-item-state {
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--interactive-accent);
+    }
     /* 管理视图：移除 meta/统计信息 */
     .sm-mgr-item-meta { display: none; }
     .sm-mgr-item-actions { display: flex; gap: 6px; opacity: 0; transition: opacity 0.2s; }
@@ -327,10 +589,12 @@ if (!window._smConceptIndex) {
     window._smConceptIndex = {
         concepts: {},      // { id: { id, keyword, parentId, order, colorType, createdAt } }
         managerMode: false,
-        dragId: null
+        dragId: null,
+        collapsedIds: {}
     };
 }
 const state = window._smConceptIndex;
+if (!state.collapsedIds) state.collapsedIds = {};
 
 // ============ 数据管理 ============
 
@@ -342,7 +606,8 @@ function loadData() {
             state.concepts = loadedData.concepts || {};
             // 补齐缺失字段/排序
             Object.values(state.concepts).forEach(c => {
-                if (!c.order) c.order = 0;
+                const numericOrder = Number(c.order);
+                c.order = Number.isFinite(numericOrder) ? numericOrder : 0;
                 if (!c.colorType) c.colorType = c.parentId ? 'plus' : 'yaml';
                 if (!c.sortLetter) c.sortLetter = getSortLetter(c.keyword || '');
                 if (typeof c.note !== 'string') c.note = '';
@@ -354,6 +619,7 @@ function loadData() {
                     c.parentId = null;
                 }
             });
+            normalizeAllConceptOrders();
         }
     } catch (e) {
         console.error('加载数据失败:', e);
@@ -362,26 +628,7 @@ function loadData() {
 }
 
 async function saveData() {
-    const sortedConcepts = Object.values(state.concepts).sort((a, b) => {
-        // 优先按父级分组，顶层在前
-        if (!a.parentId && !b.parentId) {
-            return (a.order || 0) - (b.order || 0);
-        }
-        if (a.parentId === b.parentId) {
-            return (a.order || 0) - (b.order || 0);
-        }
-        return (a.parentId ? 1 : -1) - (b.parentId ? 1 : -1);
-    });
-
-    // 重新赋予order
-    sortedConcepts.forEach((c, index) => {
-        c.order = index;
-    });
-
-    state.concepts = sortedConcepts.reduce((acc, c) => {
-        acc[c.id] = c;
-        return acc;
-    }, {});
+    normalizeAllConceptOrders();
 
     const json = {
         concepts: state.concepts,
@@ -415,18 +662,27 @@ function compareConceptName(a, b) {
     return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
 }
 
+function compareConceptOrder(a, b) {
+    const orderDiff = (a.order || 0) - (b.order || 0);
+    if (orderDiff !== 0) return orderDiff;
+    return compareConceptName(a, b);
+}
+
 // ============ 层级工具函数 ============
 
-function getChildConcepts(parentId) {
+function getSiblingConcepts(parentId, excludeId = null) {
+    const normalizedParentId = parentId || null;
     return Object.values(state.concepts)
-        .filter(c => c.parentId === parentId)
-        .sort(compareConceptName);
+        .filter(c => (c.parentId || null) === normalizedParentId && c.id !== excludeId)
+        .sort(compareConceptOrder);
+}
+
+function getChildConcepts(parentId) {
+    return getSiblingConcepts(parentId);
 }
 
 function getTopLevelConcepts() {
-    return Object.values(state.concepts)
-        .filter(c => !c.parentId)
-        .sort(compareConceptName);
+    return getSiblingConcepts(null);
 }
 
 function getDescendantIds(conceptId) {
@@ -441,6 +697,161 @@ function getDescendantIds(conceptId) {
     };
     findChildren(conceptId);
     return descendants;
+}
+
+function normalizeSiblingOrders(parentId) {
+    getSiblingConcepts(parentId).forEach((concept, index) => {
+        concept.order = index;
+    });
+}
+
+function normalizeAllConceptOrders() {
+    const parentIds = new Set([null]);
+    Object.values(state.concepts).forEach(c => {
+        parentIds.add(c.parentId || null);
+    });
+    parentIds.forEach(parentId => normalizeSiblingOrders(parentId));
+}
+
+function canMoveConceptToParent(conceptId, targetParentId, { silent = false } = {}) {
+    if (!conceptId || !state.concepts[conceptId]) return false;
+    const normalizedTargetParentId = targetParentId || null;
+    if (conceptId === normalizedTargetParentId) return false;
+    if (normalizedTargetParentId) {
+        const descendants = getDescendantIds(conceptId);
+        if (descendants.includes(normalizedTargetParentId)) {
+            if (!silent) new Notice('⚠️ 不能将父级拖入其子级');
+            return false;
+        }
+    }
+    return true;
+}
+
+function getConceptDropPosition(event, element) {
+    const rect = element.getBoundingClientRect();
+    const ratio = (event.clientX - rect.left) / Math.max(rect.width, 1);
+    if (ratio < 0.25) return 'before';
+    if (ratio > 0.75) return 'after';
+    return 'child';
+}
+
+function applyConceptDropIndicator(element, position) {
+    const normalizedPosition = position === 'before' || position === 'after' || position === 'child'
+        ? position
+        : 'child';
+    const labels = {
+        before: '插到前面',
+        after: '插到后面',
+        child: '成为子级'
+    };
+    element.classList.remove('drag-over-before', 'drag-over-after', 'drag-over-child');
+    element.classList.add(`drag-over-${normalizedPosition}`);
+    element.dataset.dropLabel = labels[normalizedPosition];
+}
+
+function clearConceptDropIndicator(element) {
+    element.classList.remove('drag-over-before', 'drag-over-after', 'drag-over-child');
+    delete element.dataset.dropLabel;
+}
+
+async function moveConceptToParent(draggedId, targetParentId, successMessage) {
+    if (!draggedId || !state.concepts[draggedId]) return false;
+    const normalizedTargetParentId = targetParentId || null;
+    if (!canMoveConceptToParent(draggedId, normalizedTargetParentId)) return false;
+    const concept = state.concepts[draggedId];
+    const previousParentId = concept.parentId || null;
+    const siblings = getSiblingConcepts(normalizedTargetParentId, draggedId);
+    concept.parentId = normalizedTargetParentId;
+    concept.colorType = concept.parentId ? 'plus' : 'yaml';
+    siblings.push(concept);
+    siblings.forEach((item, index) => {
+        item.order = index;
+    });
+    if (previousParentId !== normalizedTargetParentId) {
+        normalizeSiblingOrders(previousParentId);
+    }
+    if (normalizedTargetParentId) {
+        delete state.collapsedIds[normalizedTargetParentId];
+    }
+    await saveData();
+    if (successMessage) new Notice(successMessage);
+    renderViewFn();
+    return true;
+}
+
+async function moveConceptRelative(draggedId, targetId, position = 'after', successMessage) {
+    if (!draggedId || !targetId || draggedId === targetId) return false;
+    const dragged = state.concepts[draggedId];
+    const target = state.concepts[targetId];
+    if (!dragged || !target) return false;
+
+    const normalizedPosition = position === 'before' || position === 'after' || position === 'child'
+        ? position
+        : 'after';
+    const nextParentId = normalizedPosition === 'child' ? target.id : (target.parentId || null);
+    if (!canMoveConceptToParent(dragged.id, nextParentId)) return false;
+
+    const previousParentId = dragged.parentId || null;
+    const siblings = getSiblingConcepts(nextParentId, dragged.id);
+
+    if (normalizedPosition === 'child') {
+        siblings.unshift(dragged);
+    } else {
+        const targetIndex = siblings.findIndex(item => item.id === target.id);
+        if (targetIndex < 0) siblings.push(dragged);
+        else siblings.splice(normalizedPosition === 'before' ? targetIndex : targetIndex + 1, 0, dragged);
+    }
+
+    dragged.parentId = nextParentId;
+    dragged.colorType = dragged.parentId ? 'plus' : 'yaml';
+    siblings.forEach((item, index) => {
+        item.order = index;
+    });
+    if (previousParentId !== nextParentId) {
+        normalizeSiblingOrders(previousParentId);
+    }
+    if (nextParentId) {
+        delete state.collapsedIds[nextParentId];
+    }
+    await saveData();
+    if (successMessage) new Notice(successMessage);
+    renderViewFn();
+    return true;
+}
+
+async function createConceptRecord(keyword, parentId = null) {
+    const normalizedKeyword = (keyword || '').trim();
+    const normalizedParentId = parentId || null;
+
+    if (!normalizedKeyword) {
+        new Notice('⚠️ 请输入名称');
+        return null;
+    }
+
+    const id = generateId(normalizedKeyword);
+    if (state.concepts[id]) {
+        new Notice('⚠️ 该名称已存在');
+        return null;
+    }
+
+    const sameLevelKids = Object.values(state.concepts).filter(c => c.parentId === normalizedParentId);
+    state.concepts[id] = {
+        id,
+        keyword: normalizedKeyword,
+        colorType: normalizedParentId ? 'plus' : 'yaml',
+        parentId: normalizedParentId,
+        order: sameLevelKids.length,
+        sortLetter: getSortLetter(normalizedKeyword),
+        note: '',
+        createdAt: new Date().toISOString()
+    };
+
+    if (normalizedParentId) {
+        delete state.collapsedIds[normalizedParentId];
+    }
+
+    await saveData();
+    return state.concepts[id];
 }
 
 // ============ 渲染函数引用 ============
@@ -482,6 +893,26 @@ function renderDisplayView(container) {
         return;
     }
 
+    const topDropZone = container.createEl('div', {
+        cls: 'sm-display-drop-zone',
+        text: '拖到这里可直接恢复为顶层'
+    });
+    topDropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        topDropZone.classList.add('active');
+    });
+    topDropZone.addEventListener('dragleave', () => {
+        topDropZone.classList.remove('active');
+    });
+    topDropZone.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        topDropZone.classList.remove('active');
+        const draggedId = state.dragId;
+        if (!draggedId || !state.concepts[draggedId] || state.concepts[draggedId].parentId === null) return;
+        await moveConceptToParent(draggedId, null, '✅ 已移动到顶层');
+    });
+
     // 按字母分组
     const groups = {};
     const letters = [];
@@ -515,7 +946,7 @@ function renderDisplayView(container) {
 
         // 获取该字母组的顶层概念
         const topLevelInGroup = groups[letter].filter(c => !c.parentId);
-        topLevelInGroup.sort(compareConceptName);
+        topLevelInGroup.sort(compareConceptOrder);
 
         topLevelInGroup.forEach(c => {
             renderCapsule(groupContainer, c, 1);
@@ -532,37 +963,147 @@ function renderDisplayView(container) {
 function renderCapsule(container, concept, level = 1) {
     const children = getChildConcepts(concept.id);
     const hasChildren = children.length > 0;
+    const isCollapsed = !!state.collapsedIds[concept.id];
     const colorType = concept.colorType || (concept.parentId ? 'plus' : 'yaml');
     const color = COLORS[colorType];
 
     // 限制层级颜色最多显示12层
     const displayLevel = Math.min(level, 12);
+    const levelColor = LEVEL_COLORS[displayLevel];
 
-    const capsule = container.createEl('div', { cls: `sm-capsule level-${displayLevel}` });
+    const capsule = container.createEl('div', {
+        cls: `sm-capsule level-${displayLevel}${hasChildren && isCollapsed ? ' is-collapsed' : ''}`,
+        attr: {
+            style: `
+                --sm-level-border: ${levelColor.border};
+                --sm-level-bg: ${levelColor.bg};
+                --sm-level-shadow: ${levelColor.shadow};
+                --sm-accent: ${color.text};
+            `
+        }
+    });
+    if (hasChildren && isCollapsed) {
+        capsule.dataset.collapsedLabel = `已折叠 ${children.length}`;
+    }
 
-    // 胶囊头部 - 使用基础类型颜色作为头部背景
-    const header = capsule.createEl('div', {
+    const row = capsule.createEl('div', { cls: 'sm-capsule-row' });
+    const node = row.createEl('div', {
+        cls: 'sm-capsule-node',
+        attr: { draggable: 'true', title: '左侧插到前面，中间成为子级，右侧插到后面' }
+    });
+    node.addEventListener('dragstart', (e) => {
+        state.dragId = concept.id;
+        node.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', concept.id);
+    });
+    node.addEventListener('dragend', () => {
+        state.dragId = null;
+        node.classList.remove('dragging');
+        clearConceptDropIndicator(node);
+    });
+    node.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!state.dragId || state.dragId === concept.id) return;
+        const position = getConceptDropPosition(e, node);
+        applyConceptDropIndicator(node, position);
+    });
+    node.addEventListener('dragleave', () => {
+        clearConceptDropIndicator(node);
+    });
+    node.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const position = getConceptDropPosition(e, node);
+        clearConceptDropIndicator(node);
+        const draggedId = state.dragId;
+        if (!draggedId || draggedId === concept.id) return;
+        const actionLabel = position === 'child'
+            ? `✅ 已移动到 "${concept.keyword}" 下`
+            : `✅ 已移动到 "${concept.keyword}" ${position === 'before' ? '前面' : '后面'}`;
+        await moveConceptRelative(draggedId, concept.id, position, actionLabel);
+    });
+
+    const header = node.createEl('button', {
         cls: 'sm-capsule-header',
-        attr: { style: `background: ${color.bg}; color: ${color.text};`, title: '点击记录/评论' }
+        attr: { title: '点击编辑记录/评论' }
     });
     header.onclick = (e) => {
         e.stopPropagation();
+        if (e.target?.closest?.('.sm-capsule-action')) {
+            return;
+        }
+        if (e.target?.closest?.('.sm-capsule-expand')) {
+            if (hasChildren) {
+                state.collapsedIds[concept.id] = !isCollapsed;
+                renderViewFn();
+            }
+            return;
+        }
         openNoteModal(concept.id);
     };
 
     header.createEl('span', { cls: 'sm-capsule-icon', text: color.icon, style: `color: ${color.text};` });
     header.createEl('span', { cls: 'sm-capsule-label', text: concept.keyword });
-    if (concept.note && concept.note.trim()) {
-        header.createEl('span', { cls: 'sm-capsule-note', text: '📝', attr: { title: '有记录' } });
-    }
     if (hasChildren) {
-        header.createEl('span', { cls: 'sm-capsule-expand', text: '▼' });
+        header.createEl('span', {
+            cls: 'sm-capsule-expand',
+            text: isCollapsed ? '▶' : '▼',
+            attr: { title: isCollapsed ? '展开子概念' : '收起子概念' }
+        });
+        if (isCollapsed) {
+            header.createEl('span', {
+                cls: 'sm-capsule-collapsed-badge',
+                text: `${children.length} 个子级`
+            });
+        }
     }
 
+    if (concept.note && concept.note.trim()) {
+        const noteMeta = node.createEl('span', { cls: 'sm-capsule-meta' });
+        noteMeta.createEl('span', { cls: 'sm-capsule-note', text: '📝', attr: { title: '有记录' } });
+    }
+
+    const actions = header.createEl('span', {
+        cls: 'sm-capsule-actions',
+        attr: { title: '概念操作' }
+    });
+
+    const addSiblingBtn = actions.createEl('span', {
+        cls: 'sm-capsule-action',
+        text: '+',
+        attr: { title: '添加平级概念' }
+    });
+    addSiblingBtn.onclick = (e) => {
+        e.stopPropagation();
+        openCreateModal(concept.parentId || null);
+    };
+
+    const addChildBtn = actions.createEl('span', {
+        cls: 'sm-capsule-action',
+        text: '↳',
+        attr: { title: '添加子概念' }
+    });
+    addChildBtn.onclick = (e) => {
+        e.stopPropagation();
+        openCreateModal(concept.id);
+    };
+
+    const editBtn = actions.createEl('span', {
+        cls: 'sm-capsule-action',
+        text: '✏',
+        attr: { title: '编辑当前概念' }
+    });
+    editBtn.onclick = (e) => {
+        e.stopPropagation();
+        openEditModal(concept.id);
+    };
+
     // 子概念容器
-    if (hasChildren) {
+    if (hasChildren && !isCollapsed) {
         const childrenContainer = capsule.createEl('div', { cls: 'sm-capsule-children' });
-        children.sort(compareConceptName).forEach(child => {
+        children.forEach(child => {
             renderCapsule(childrenContainer, child, level + 1);
         });
     }
@@ -665,13 +1206,8 @@ function renderManagerView(container) {
     topDropZone.addEventListener('drop', async (e) => {
         e.preventDefault(); e.stopPropagation(); topDropZone.classList.remove('active');
         const draggedId = state.dragId;
-        if (draggedId && state.concepts[draggedId] && state.concepts[draggedId].parentId !== null) {
-            state.concepts[draggedId].parentId = null;
-            state.concepts[draggedId].colorType = 'yaml';
-            await saveData();
-            new Notice('✅ 已移动到顶层');
-            renderViewFn();
-        }
+        if (!draggedId || !state.concepts[draggedId] || state.concepts[draggedId].parentId === null) return;
+        await moveConceptToParent(draggedId, null, '✅ 已移动到顶层');
     });
 
     // 只获取顶层概念进行分组渲染（子概念由递归函数处理）
@@ -689,7 +1225,7 @@ function renderManagerView(container) {
             attr: { style: 'font-weight: 600; color: var(--text-muted); margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--background-modifier-border);' }
         });
 
-        groups[letter].sort(compareConceptName).forEach(c => {
+        groups[letter].sort(compareConceptOrder).forEach(c => {
             renderManagerItem(treeContainer, c);  // 只渲染顶层概念，子概念递归渲染
         });
     });
@@ -698,51 +1234,67 @@ function renderManagerView(container) {
 // 渲染管理项 (移除统计信息)
 function renderManagerItem(container, concept) {
     const children = getChildConcepts(concept.id);
+    const hasChildren = children.length > 0;
+    const isCollapsed = !!state.collapsedIds[concept.id];
     const colorType = concept.colorType || 'yaml';
     const color = COLORS[colorType];
 
     const item = container.createEl('div', {
-        cls: 'sm-mgr-item',
+        cls: `sm-mgr-item${hasChildren && isCollapsed ? ' is-collapsed' : ''}`,
         attr: { draggable: 'true', 'data-kw-id': concept.id }
     });
+    if (hasChildren && isCollapsed) {
+        item.dataset.collapsedLabel = `已折叠 ${children.length}`;
+    }
 
     // 拖拽事件
     item.addEventListener('dragstart', (e) => {
         state.dragId = concept.id;
         item.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', concept.id);
     });
     item.addEventListener('dragend', () => {
         state.dragId = null;
         item.classList.remove('dragging');
+        clearConceptDropIndicator(item);
     });
     item.addEventListener('dragover', (e) => {
         e.preventDefault();
-        if (state.dragId && state.dragId !== concept.id) {
-            item.classList.add('drag-over');
-        }
+        if (!state.dragId || state.dragId === concept.id) return;
+        const position = getConceptDropPosition(e, item);
+        applyConceptDropIndicator(item, position);
     });
     item.addEventListener('dragleave', () => {
-        item.classList.remove('drag-over');
+        clearConceptDropIndicator(item);
     });
     item.addEventListener('drop', async (e) => {
         e.preventDefault();
         e.stopPropagation();
-        item.classList.remove('drag-over');
+        const position = getConceptDropPosition(e, item);
+        clearConceptDropIndicator(item);
         const draggedId = state.dragId;
-        if (draggedId && draggedId !== concept.id && state.concepts[draggedId]) {
-            const descendants = getDescendantIds(draggedId);
-            if (descendants.includes(concept.id)) {
-                new Notice('⚠️ 不能将父级拖入其子级');
-                return;
-            }
-            state.concepts[draggedId].parentId = concept.id;
-            state.concepts[draggedId].colorType = 'plus'; // 子级设为橙色
-            await saveData();
-            new Notice(`✅ 已移动到 "${concept.keyword}" 下`);
-            renderViewFn();
-        }
+        if (!draggedId || draggedId === concept.id || !state.concepts[draggedId]) return;
+        const actionLabel = position === 'child'
+            ? `✅ 已移动到 "${concept.keyword}" 下`
+            : `✅ 已移动到 "${concept.keyword}" ${position === 'before' ? '前面' : '后面'}`;
+        await moveConceptRelative(draggedId, concept.id, position, actionLabel);
     });
+
+    const toggleBtn = item.createEl('button', {
+        cls: `sm-mgr-item-toggle${hasChildren ? '' : ' is-placeholder'}`,
+        text: hasChildren ? (isCollapsed ? '▶' : '▼') : '•',
+        attr: { title: hasChildren ? (isCollapsed ? '展开子概念' : '收起子概念') : '无子概念' }
+    });
+    if (hasChildren) {
+        toggleBtn.onclick = (e) => {
+            e.stopPropagation();
+            state.collapsedIds[concept.id] = !isCollapsed;
+            renderViewFn();
+        };
+    } else {
+        toggleBtn.disabled = true;
+    }
 
     // 图标
     const icon = item.createEl('div', { cls: 'sm-mgr-item-icon', text: color.icon, attr: { style: `color: ${color.text};` } });
@@ -750,6 +1302,12 @@ function renderManagerItem(container, concept) {
     // 信息 (只保留名称)
     const info = item.createEl('div', { cls: 'sm-mgr-item-info' });
     info.createEl('div', { cls: 'sm-mgr-item-label', text: concept.keyword });
+    if (hasChildren && isCollapsed) {
+        info.createEl('div', {
+            cls: 'sm-mgr-item-state',
+            text: `已收起 ${children.length} 个直接子概念`
+        });
+    }
     // INFO: 移除 meta 信息（如子级计数）
 
     // 操作按钮
@@ -768,9 +1326,9 @@ function renderManagerItem(container, concept) {
     };
 
     // 递归渲染子概念
-    if (children.length > 0) {
+    if (hasChildren && !isCollapsed) {
         const childContainer = container.createEl('div', { cls: 'sm-mgr-children' });
-        children.sort(compareConceptName).forEach(child => {
+        children.forEach(child => {
             renderManagerItem(childContainer, child);
         });
     }
@@ -778,31 +1336,14 @@ function renderManagerItem(container, concept) {
 
 // ============ 管理操作 ============
 
-function addConcept() {
+async function addConcept() {
     const input = document.getElementById('sm-new-keyword');
     const selector = window._smParentSelector;
     const keyword = input.value.trim();
-
-    if (!keyword) { new Notice('⚠️ 请输入名称'); return; }
-
-    const id = generateId(keyword);
-    if (state.concepts[id]) { new Notice('⚠️ 该名称已存在'); return; }
-
     const parentId = selector ? selector.selectedParentId : null;
-    const sameLevelKids = Object.values(state.concepts).filter(c => c.parentId === parentId);
+    const created = await createConceptRecord(keyword, parentId);
+    if (!created) return;
 
-    state.concepts[id] = {
-        id: id,
-        keyword: keyword,
-        colorType: parentId ? 'plus' : 'yaml', // 有父级设为橙色，否则设为蓝色
-        parentId: parentId,
-        order: sameLevelKids.length,
-        sortLetter: getSortLetter(keyword),
-        note: '',
-        createdAt: new Date().toISOString()
-    };
-
-    saveData();
     input.value = '';
     if (selector) selector.setSelected('');
     renderViewFn();
@@ -859,15 +1400,64 @@ function openEditModal(id) {
     const container = dv.container;
     const wrapper = container.createEl('div');
     wrapper.innerHTML = modalHtml;
-    document.getElementById('sm-edit-modal').addEventListener('click', closeEditModal);
+    const modalEl = document.getElementById('sm-edit-modal');
+    modalEl.dataset.selectedParentId = concept.parentId || '';
+    document.getElementById('sm-edit-modal').addEventListener('click', window.closeEditModal);
 
 
     // 初始化父级选择器
     initParentSelector('sm-edit-parent-selector', concept.parentId, (newParentId) => {
-        concept.parentId = newParentId;
-        // 颜色根据新父级确定
-        concept.colorType = newParentId ? 'plus' : 'yaml';
+        modalEl.dataset.selectedParentId = newParentId || '';
     }, concept.id);
+}
+
+function openCreateModal(defaultParentId = null) {
+    window.closeCreateModal?.();
+
+    const modalHtml = `
+        <div class="sm-modal-overlay" id="sm-create-modal">
+            <div class="sm-modal" onclick="event.stopPropagation()">
+                <div class="sm-modal-header">
+                    <span>➕ 新增概念</span>
+                    <button onclick="closeCreateModal()" style="background: none; border: none; cursor: pointer; font-size: 16px;">×</button>
+                </div>
+                <div style="padding: 16px;">
+                    <div class="sm-form-row">
+                        <label class="sm-form-label">名称:</label>
+                        <input type="text" id="sm-create-keyword" class="sm-form-input" placeholder="输入概念名称...">
+                    </div>
+                    <div class="sm-form-row">
+                        <label class="sm-form-label">父级:</label>
+                        <div id="sm-create-parent-selector" class="sm-parent-selector"></div>
+                    </div>
+                </div>
+                <div class="sm-modal-footer">
+                    <button onclick="closeCreateModal()">取消</button>
+                    <button onclick="saveCreate()" style="color: var(--interactive-accent); font-weight: 600;">添加</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const container = dv.container;
+    const wrapper = container.createEl('div');
+    wrapper.innerHTML = modalHtml;
+    const modalEl = document.getElementById('sm-create-modal');
+    modalEl.dataset.selectedParentId = defaultParentId || '';
+    modalEl.addEventListener('click', window.closeCreateModal);
+
+    initParentSelector('sm-create-parent-selector', defaultParentId, (newParentId) => {
+        modalEl.dataset.selectedParentId = newParentId || '';
+    });
+
+    const input = document.getElementById('sm-create-keyword');
+    input?.focus();
+    input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            window.saveCreate();
+        }
+    });
 }
 
 window.closeEditModal = function() {
@@ -876,9 +1466,30 @@ window.closeEditModal = function() {
     window._smParentSelector = null;
 };
 
+window.closeCreateModal = function() {
+    const modal = document.getElementById('sm-create-modal');
+    if (modal) modal.remove();
+    window._smParentSelector = null;
+};
+
+window.saveCreate = async function() {
+    const modalEl = document.getElementById('sm-create-modal');
+    const keyword = document.getElementById('sm-create-keyword')?.value.trim() || '';
+    const selectedParentId = modalEl?.dataset?.selectedParentId || '';
+    const created = await createConceptRecord(keyword, selectedParentId || null);
+
+    if (!created) return;
+
+    window.closeCreateModal();
+    renderViewFn();
+    new Notice('✅ 已添加');
+};
+
 window.saveEdit = async function(id) {
     const concept = state.concepts[id];
     const newKeyword = document.getElementById('sm-edit-keyword').value.trim();
+    const modalEl = document.getElementById('sm-edit-modal');
+    const selectedParentId = modalEl?.dataset?.selectedParentId || '';
 
     if (!newKeyword) { new Notice('⚠️ 名称不能为空'); return; }
 
@@ -888,8 +1499,19 @@ window.saveEdit = async function(id) {
         return;
     }
 
+    if (!canMoveConceptToParent(id, selectedParentId || null, { silent: true })) {
+        new Notice('⚠️ 不能将父级移动到自己的子级');
+        return;
+    }
+
+    const previousParentId = concept.parentId || null;
     concept.keyword = newKeyword;
     concept.sortLetter = getSortLetter(newKeyword);
+    concept.parentId = selectedParentId || null;
+    concept.colorType = concept.parentId ? 'plus' : 'yaml';
+    if (previousParentId !== concept.parentId) {
+        concept.order = getSiblingConcepts(concept.parentId, concept.id).length;
+    }
 
     if (newId !== id) {
         // 同步更新子级parentId
@@ -902,7 +1524,7 @@ window.saveEdit = async function(id) {
     }
 
     await saveData();
-    closeEditModal();
+    window.closeEditModal();
     renderViewFn();
     new Notice('✅ 已保存');
 };
@@ -1065,7 +1687,7 @@ function importData() {
                         keyword: item.keyword || '未命名',
                         parentId: item.parentId || null,
                         colorType: item.colorType || 'dot',
-                        order: item.order || 0,
+                        order: Number.isFinite(Number(item.order)) ? Number(item.order) : 0,
                         sortLetter: item.sortLetter || getSortLetter(item.keyword || ''),
                         note: item.note || '',
                         createdAt: item.createdAt || new Date().toISOString()
