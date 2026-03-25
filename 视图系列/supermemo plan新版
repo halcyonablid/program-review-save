@@ -172,7 +172,8 @@ function processActivityPlanData(activityPlanData) {
       status: 'planning',
       activities: [],
       totalExpectedDuration: 0,
-      lastTransitionTime: new Date()
+      lastTransitionTime: new Date(),
+      resumePlan: null
     };
 
     // 5) 过滤出活动条目
@@ -377,6 +378,7 @@ async function savePlanToJSON(phase) {
             created: phase.created || new Date().toISOString(),
             startTime: phase.startTime,
             plannedDuration: phase.plannedDuration,
+            resumePlan: phase.resumePlan || null,
             activities: phase.activities.map(a => ({
                 id: a.id,
                 project: a.project,
@@ -447,6 +449,7 @@ async function loadPlanFromJSON() {
                 created: data.created,
                 startTime: data.startTime,
                 plannedDuration: data.plannedDuration,
+                resumePlan: data.resumePlan || null,
                 status: detectedStatus,  // 根据活动状态动态检测
                 activities: data.activities.map(a => ({
                     ...a,
@@ -947,6 +950,14 @@ const extendDurationBtn = controlsEl.createEl("button", {
   }
 });
 
+const resumeQueueBtn = controlsEl.createEl("button", {
+  text: "接续后续事项",
+  attr: {
+    style: "background-color: #ff9800; color: white; margin-left: 10px;",
+    title: "从下一个未开始事项重新接续并重排后续时间"
+  }
+});
+
 // 结束当前时间阶段
 const finishPhaseBtn = executionPanelEl.createEl("button", {
   text: "结束时间阶段", 
@@ -965,7 +976,7 @@ experienceLabel.style.fontWeight = "bold";
 
 const experienceInput = reviewFormEl.createEl("textarea");
 experienceInput.style.width = "100%";
-experienceInput.style.height = "300px"; // 显著增加高度
+experienceInput.style.height = "420px"; // 放大评价输入区
 experienceInput.style.padding = "10px";
 experienceInput.style.fontSize = "16px";
 experienceInput.style.resize = "vertical"; // 允许垂直调整大小
@@ -974,25 +985,21 @@ experienceInput.setAttribute("placeholder", "请描述您的体验（可输入�
 experienceInput.setAttribute("maxlength", "1000"); // 限制最大字符数
 
 // 设置评价表单整体样式
-reviewFormEl.style.maxWidth = "800px";
-reviewFormEl.style.margin = "20px auto";
+reviewFormEl.style.maxWidth = "760px";
 reviewFormEl.style.padding = "20px";
 reviewFormEl.style.backgroundColor = "#f9f9f9";
-reviewFormEl.style.borderRadius = "5px";
-reviewFormEl.style.boxShadow = "0 2px 5px rgba(0,0,0,0.1)";
-// 修复：添加定位和 z-index 确保表单正确显示在最上层
+reviewFormEl.style.borderRadius = "10px";
+reviewFormEl.style.boxShadow = "0 12px 32px rgba(0,0,0,0.18)";
+reviewFormEl.style.border = "1px solid var(--background-modifier-border)";
+reviewFormEl.style.boxSizing = "border-box";
+reviewFormEl.style.width = "min(760px, calc(100% - 24px))";
+reviewFormEl.style.maxHeight = "calc(100vh - 32px)";
+reviewFormEl.style.overflowY = "auto";
 reviewFormEl.style.position = "absolute";
-reviewFormEl.style.top = "50%";
-reviewFormEl.style.left = "50%";
-reviewFormEl.style.transform = "translate(-50%, -50%)";
+reviewFormEl.style.top = "0";
+reviewFormEl.style.left = "0";
+reviewFormEl.style.transform = "none";
 reviewFormEl.style.zIndex = "1000";
-reviewFormEl.style.width = "90%";
-const ratingLabel = reviewFormEl.createEl("label", {text: "评分(1-5):"});
-const ratingInput = reviewFormEl.createEl("select");
-for (let i = 1; i <= 5; i++) {
-  ratingInput.createEl("option", {text: String(i), attr: {value: String(i)}});
-}
-ratingInput.value = "3";
 
 // 提交按钮样式
 let submitReviewBtn = reviewFormEl.createEl("button", {
@@ -1114,14 +1121,14 @@ function convertPhaseToEntries(phase) {
     timestamp: formatDateForTimestamp(endTime),
     project: "**阶段结束**未记录", // 修改：添加阶段结束标记
     prevExperience: "一个时间段完成了",
-    prevRating: 5
+    prevRating: 0
   };
   
   // 将最后一个完成活动的评价放到"未记录"条目中
   if (completedActivities.length > 0) {
     const lastActivity = completedActivities[0]; // 最近完成的活动
     endEntry.prevExperience = lastActivity.experience || "未记录";
-    endEntry.prevRating = lastActivity.rating || 3;
+    endEntry.prevRating = Number(lastActivity.rating) || 0;
   }
   
   newEntries.push(endEntry);
@@ -1135,14 +1142,14 @@ function convertPhaseToEntries(phase) {
       timestamp: formatDateForTimestamp(startTime),
       project: currentActivity.project,
       prevExperience: "未记录",
-      prevRating: 3
+      prevRating: 0
     };
     
     // 如果不是第一个活动，则使用前一个活动的评价
     if (i < completedActivities.length - 1) {
       const prevActivity = completedActivities[i + 1]; // 因为是倒序，所以i+1是前一个
       newEntry.prevExperience = prevActivity.experience || "未记录";
-      newEntry.prevRating = prevActivity.rating || 3;
+      newEntry.prevRating = Number(prevActivity.rating) || 0;
     }
     
     newEntries.push(newEntry);
@@ -1486,7 +1493,7 @@ function convertPhaseToActivityPlan(phase) {
       expectedDuration: activity.expectedDuration,
       allocatedDuration: activity.allocatedDuration || activity.expectedDuration,
       experience: activity.experience || "未记录",
-      rating: activity.rating || 3,
+      rating: Number(activity.rating) || 0,
       // 保存实际结束时间，有助于更精确的恢复
       actualEnd: activity.actualEnd
         ? formatDateForTimestamp(new Date(activity.actualEnd))
@@ -1525,9 +1532,55 @@ function formatTime(date) {
   return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
 }
 
+function formatDateTimeLocal(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 // 生成唯一ID
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+
+function getActivePlanConfig() {
+  if (!currentPhase) {
+    return {
+      startTime: new Date(),
+      plannedDuration: 0,
+      activityId: null,
+      isResumePlan: false
+    };
+  }
+
+  if (
+    currentPhase.status === 'active' &&
+    currentPhase.resumePlan &&
+    currentPhase.resumePlan.startTime &&
+    Number(currentPhase.resumePlan.plannedDuration) > 0
+  ) {
+    return {
+      startTime: new Date(currentPhase.resumePlan.startTime),
+      plannedDuration: Number(currentPhase.resumePlan.plannedDuration) || 0,
+      activityId: currentPhase.resumePlan.activityId || null,
+      isResumePlan: true
+    };
+  }
+
+  return {
+    startTime: new Date(currentPhase.startTime),
+    plannedDuration: Number(currentPhase.plannedDuration) || 0,
+    activityId: null,
+    isResumePlan: false
+  };
+}
+
+function getResumePlanStartIndex() {
+  if (!currentPhase?.resumePlan?.activityId || !Array.isArray(currentPhase.activities)) return -1;
+  return currentPhase.activities.findIndex(activity => activity.id === currentPhase.resumePlan.activityId);
 }
 
 // 确保执行阶段的实时刷新计时器存在
@@ -1745,9 +1798,11 @@ function calculateExpectedTimes() {
     return;
   }
   
+  const activePlan = getActivePlanConfig();
+
   // 计划结束时间
-  const plannedEndTime = new Date(currentPhase.startTime);
-  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+  const plannedEndTime = new Date(activePlan.startTime);
+  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + activePlan.plannedDuration);
   
   // 找到第一个未完成的活动的索引
   const firstPendingIndex = currentPhase.activities.findIndex(a => a.status !== 'completed');
@@ -2037,10 +2092,11 @@ function allocateRemainingTime() {
 
   const now = new Date();
   const activities = currentPhase.activities;
+  const activePlan = getActivePlanConfig();
 
   // 计划结束时间
-  const plannedEndTime = new Date(currentPhase.startTime);
-  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+  const plannedEndTime = new Date(activePlan.startTime);
+  plannedEndTime.setMinutes(plannedEndTime.getMinutes() + activePlan.plannedDuration);
 
   // 找出进行中与首个待办的索引
   const inProgressIdx = activities.findIndex(a => a.status === 'in-progress');
@@ -2363,7 +2419,7 @@ function renderActivitiesList() {
         }
         .activity-card .time-info {
             flex-shrink: 0;
-            width: 80px;
+            width: 120px;
             text-align: center;
         }
         .activity-card .time-info .time {
@@ -2371,9 +2427,15 @@ function renderActivitiesList() {
             font-weight: 600;
             color: var(--text-normal);
         }
+        .activity-card .time-info .time-separator {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin: 2px 0;
+        }
         .activity-card .time-info .duration {
             font-size: 11px;
             color: var(--text-muted);
+            margin-top: 4px;
         }
         .activity-card .activity-content {
             flex: 1;
@@ -2454,12 +2516,26 @@ function renderActivitiesList() {
         const timeInfo = card.createEl("div", {cls: "time-info"});
         const startTime = activity.expectedStart ?
             formatTime(new Date(activity.expectedStart)) : "待定";
+        const endTime = activity.expectedEnd ?
+            formatTime(new Date(activity.expectedEnd)) : "待定";
         timeInfo.createEl("div", {
             cls: "time",
             text: startTime
         });
+        timeInfo.createEl("div", {
+            cls: "time-separator",
+            text: "↓"
+        });
+        timeInfo.createEl("div", {
+            cls: "time",
+            text: endTime
+        });
         const expectedMins = activity.expectedDuration;
         const allocatedMins = activity.allocatedDuration || expectedMins;
+        timeInfo.createEl("div", {
+            cls: "duration",
+            text: `预计 ${startTime} - ${endTime}`
+        });
         timeInfo.createEl("div", {
             cls: "duration",
             text: `${formatDuration(expectedMins)} → ${formatDuration(allocatedMins)}`
@@ -2504,7 +2580,7 @@ function renderActivitiesList() {
         });
         reviewBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            showReviewForm(activity);
+            showReviewForm(activity, e.currentTarget.closest(".activity-card") || e.currentTarget);
         });
 
         // 删除按钮
@@ -2703,26 +2779,13 @@ function renderExecutionList() {
       nameEl.addEventListener("click", () => showEditModal(activity));
     }
 
-    const ratingValue = Number(activity.rating) || 0;
-    const ratingStars = ratingValue > 0
-      ? "★".repeat(ratingValue) + "☆".repeat(5 - ratingValue)
-      : "☆☆☆☆☆";
-    let ratingColor = "var(--text-muted)";
-    if (ratingValue >= 4) {
-      ratingColor = "#2e7d32";
-    } else if (ratingValue === 3) {
-      ratingColor = "#f9a825";
-    } else if (ratingValue > 0) {
-      ratingColor = "#d32f2f";
-    }
-
     nameRow.createEl("span", {
       cls: "activity-rating-pill",
-      text: ratingValue > 0 ? `${ratingStars} ${ratingValue}/5` : `${ratingStars} 待评价`,
+      text: (activity.experience || "").trim() ? "已复盘" : "待复盘",
       attr: {
         style: `
-          color: ${ratingColor};
-          background: ${ratingValue > 0 ? 'rgba(76, 175, 80, 0.12)' : 'var(--background-modifier-border)'};
+          color: ${(activity.experience || "").trim() ? '#2e7d32' : 'var(--text-muted)'};
+          background: ${(activity.experience || "").trim() ? 'rgba(76, 175, 80, 0.12)' : 'var(--background-modifier-border)'};
         `
       }
     });
@@ -2776,9 +2839,8 @@ function renderExecutionList() {
       actualTimeText = `实际: ${formatDuration(actualDuration)}`;
     } else if (activity.status === 'in-progress') {
       const now = new Date();
-      const start = new Date(activity.actualStart);
-      const elapsedTime = (now - start) / (60 * 1000);
-      const totalAllocated = activity.allocatedDuration || activity.expectedDuration;
+      const elapsedTime = getActivityElapsedMinutes(activity, now);
+      const totalAllocated = getActivityPlannedMinutes(activity);
       actualTimeText = `${formatDuration(elapsedTime)} / ${formatDuration(totalAllocated)} (本活动)`;
     } else {
       actualTimeText = `分配: ${formatDuration(activity.allocatedDuration || activity.expectedDuration)}`;
@@ -2794,10 +2856,7 @@ function renderExecutionList() {
 
     // 显示阶段剩余总时间（仅对进行中的活动）
     if (activity.status === 'in-progress' && currentPhase) {
-      const plannedEndTime = new Date(currentPhase.startTime);
-      plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
-      const remainingMs = Math.max(0, plannedEndTime - new Date());
-      const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+      const remainingMinutes = getPhaseProgressMetrics(new Date()).remainingMinutes;
       durationInfo.createEl("span", {
         text: `阶段剩余: ${formatDuration(remainingMinutes)}`,
         cls: "activity-phase-remaining",
@@ -2809,7 +2868,7 @@ function renderExecutionList() {
     }
 
     durationInfo.createEl("span", {
-      text: reviewText ? `评价: 已记录 · ${ratingValue || '未评分'}` : "评价: 待补充",
+      text: reviewText ? "评价: 已记录" : "评价: 待补充",
       attr: {
         style: `
           color: ${reviewText ? '#4CAF50' : '#888'};
@@ -2832,7 +2891,7 @@ function renderExecutionList() {
     });
     reviewBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      showReviewForm(activity);
+      showReviewForm(activity, e.currentTarget.closest(".execution-card") || e.currentTarget);
     });
 
     // 插入按钮
@@ -3168,6 +3227,10 @@ class AddActivityModal extends Modal {
   // onOpen 是 Modal 的生命周期方法，当窗口打开时自动执行
   onOpen() {
     const { contentEl } = this; // contentEl 是 Modal 提供的一个安全的、用于填充内容的 HTML 元素
+    if (this.modalEl) {
+      this.modalEl.style.width = "980px";
+      this.modalEl.style.maxWidth = "94vw";
+    }
 
     // --- 开始构建模态窗口的内部 UI ---
 
@@ -3182,6 +3245,10 @@ class AddActivityModal extends Modal {
       text: `在 "${targetActivity.project}" 后添加新活动`,
       cls: 'modal-title' // 可以添加自定义类名以便CSS美化
     }).style.marginBottom = "15px";
+    contentEl.createEl("div", {
+      text: "这里先把待执行任务尽量完整地写下来，后续再在执行中调整顺序和时长。",
+      attr: { style: "margin-bottom: 18px; color: var(--text-muted); line-height: 1.7;" }
+    });
 
     // 2. 添加活动名称输入区域 (使用 textarea)
     contentEl.createEl('label', { 
@@ -3197,9 +3264,11 @@ class AddActivityModal extends Modal {
     // 设置样式
     Object.assign(nameInput.style, {
       width: "100%",
-      height: "200px",
-      padding: "10px",
-      fontSize: "16px",
+      minHeight: "300px",
+      height: "300px",
+      padding: "14px",
+      fontSize: "17px",
+      lineHeight: "1.75",
       resize: "vertical",
       marginTop: "5px",
       marginBottom: "15px"
@@ -3215,7 +3284,8 @@ class AddActivityModal extends Modal {
     durationInput.setAttrs({ min: '1', value: '10' });
     Object.assign(durationInput.style, {
       width: "100%",
-      padding: "8px",
+      padding: "12px",
+      fontSize: "16px",
       marginTop: "5px",
       marginBottom: "20px"
     });
@@ -3338,6 +3408,8 @@ class ExtendDurationModal extends Modal {
   // onOpen 是 Modal 的生命周期方法，当窗口打开时自动执行
   onOpen() {
     const { contentEl } = this;
+    const activePlan = getActivePlanConfig();
+    const currentDurationLabel = activePlan.isResumePlan ? '当前接续时长' : '当前总时长';
 
     // --- 开始构建模态窗口的内部 UI ---
 
@@ -3347,7 +3419,7 @@ class ExtendDurationModal extends Modal {
     // 2. 显示当前总时长
     contentEl.createEl('div', {
       cls: 'modal-info-text' // 添加一个类名方便样式调整
-    }).innerHTML = `<span>当前总时长: <strong>${formatDuration(currentPhase.plannedDuration)}</strong></span>`;
+    }).innerHTML = `<span>${currentDurationLabel}: <strong>${formatDuration(activePlan.plannedDuration)}</strong></span>`;
     contentEl.lastChild.style.marginBottom = '10px';
 
     // 3. 添加时长输入区域
@@ -3388,6 +3460,93 @@ class ExtendDurationModal extends Modal {
   }
 
   // onClose 是 Modal 的生命周期方法，当窗口关闭时自动执行
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+class ResumeQueueModal extends Modal {
+  constructor(app, defaultStartTime, defaultDuration, nextActivity, currentActivity, onSubmit) {
+    super(app);
+    this.defaultStartTime = defaultStartTime;
+    this.defaultDuration = defaultDuration;
+    this.nextActivity = nextActivity;
+    this.currentActivity = currentActivity;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+
+    contentEl.createEl('h4', { text: '接续后续事项' });
+
+    const infoEl = contentEl.createEl('div', { cls: 'modal-info-text' });
+    infoEl.style.marginBottom = '12px';
+    infoEl.innerHTML = `
+      <div>将从 <strong>${this.nextActivity.project}</strong> 开始接续后续队列。</div>
+      <div style="margin-top: 6px; color: var(--text-muted); font-size: 12px;">
+        ${this.currentActivity ? `当前进行中的「${this.currentActivity.project}」会在新的接续时间点收口。` : '当前没有进行中的事项，会直接从下一个未开始事项起步。'}
+      </div>
+    `;
+
+    contentEl.createEl('label', { text: '新的开始时间:' }).style.fontWeight = 'bold';
+    const startInput = contentEl.createEl('input', { type: 'datetime-local' });
+    startInput.setAttrs({ value: formatDateTimeLocal(this.defaultStartTime) });
+    startInput.style.width = '100%';
+    startInput.style.marginTop = '5px';
+    startInput.style.marginBottom = '15px';
+
+    contentEl.createEl('label', { text: '后续阶段总时长(分钟):' }).style.fontWeight = 'bold';
+    const durationInput = contentEl.createEl('input', { type: 'number' });
+    durationInput.setAttrs({ min: '1', value: String(this.defaultDuration) });
+    durationInput.style.width = '100%';
+    durationInput.style.marginTop = '5px';
+
+    const buttonContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+    buttonContainer.style.marginTop = '15px';
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.gap = '10px';
+
+    const confirmBtn = buttonContainer.createEl('button', {
+      text: '确认接续',
+      cls: 'mod-cta'
+    });
+    confirmBtn.style.flex = '1';
+
+    const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
+    cancelBtn.style.flex = '1';
+
+    confirmBtn.addEventListener('click', () => {
+      const startValue = startInput.value;
+      const durationValue = Number(durationInput.value);
+
+      if (!startValue) {
+        new Notice('请选择新的开始时间', 3000);
+        return;
+      }
+
+      if (!Number.isFinite(durationValue) || durationValue <= 0) {
+        new Notice('请输入有效的后续阶段总时长', 3000);
+        return;
+      }
+
+      const parsedStart = new Date(startValue);
+      if (Number.isNaN(parsedStart.getTime())) {
+        new Notice('开始时间格式无效', 3000);
+        return;
+      }
+
+      const success = this.onSubmit(parsedStart, durationValue);
+      if (success !== false) {
+        this.close();
+      }
+    });
+
+    cancelBtn.addEventListener('click', () => this.close());
+
+    setTimeout(() => startInput.focus(), 50);
+  }
+
   onClose() {
     this.contentEl.empty();
   }
@@ -3495,10 +3654,11 @@ class FixedStartTimeModal extends Modal {
       fixedTime.setHours(hours, minutes, 0, 0);
 
       // 验证时间是否在计划范围内
-      const plannedEndTime = new Date(currentPhase.startTime);
-      plannedEndTime.setMinutes(plannedEndTime.getMinutes() + currentPhase.plannedDuration);
+      const activePlan = getActivePlanConfig();
+      const plannedEndTime = new Date(activePlan.startTime);
+      plannedEndTime.setMinutes(plannedEndTime.getMinutes() + activePlan.plannedDuration);
 
-      if (fixedTime < new Date(currentPhase.startTime)) {
+      if (fixedTime < new Date(activePlan.startTime)) {
         new Notice('固定时间不能早于计划开始时间！', 3000);
         return;
       }
@@ -3598,16 +3758,51 @@ function showExtendDurationModal() {
   new ExtendDurationModal(app, handleSubmit).open();
 }
 
+function showResumeQueueModal() {
+  if (!currentPhase || currentPhase.status !== 'active') {
+    new Notice('没有正在执行的计划', 3000);
+    return;
+  }
+
+  const nextPending = currentPhase.activities.find(activity => activity.status === 'pending');
+  if (!nextPending) {
+    new Notice('没有可接续的未开始事项', 3000);
+    return;
+  }
+
+  const currentActivity = currentPhase.activities.find(activity => activity.status === 'in-progress') || null;
+  const defaultDuration = Math.max(
+    1,
+    Math.round(
+      currentPhase.activities
+        .filter(activity => activity.status === 'pending')
+        .reduce((sum, activity) => sum + Number(activity.allocatedDuration || activity.expectedDuration || 0), 0)
+    )
+  );
+
+  const handleSubmit = (resumeStartTime, remainingDuration) => {
+    return resumeRemainingQueue(resumeStartTime, remainingDuration);
+  };
+
+  new ResumeQueueModal(app, new Date(), defaultDuration, nextPending, currentActivity, handleSubmit).open();
+}
+
 
 // 延长阶段总时长的函数
 function extendPhaseDuration(extraMinutes) {
   if (!currentPhase) return;
   
+  const activePlan = getActivePlanConfig();
+
   // 保存原始时长用于消息显示
-  const originalDuration = currentPhase.plannedDuration;
+  const originalDuration = activePlan.plannedDuration;
   
   // 更新总时长
-  currentPhase.plannedDuration += extraMinutes;
+  if (activePlan.isResumePlan) {
+    currentPhase.resumePlan.plannedDuration = originalDuration + extraMinutes;
+  } else {
+    currentPhase.plannedDuration += extraMinutes;
+  }
   
   // 重新分配剩余时间
   allocateRemainingTime();
@@ -3620,7 +3815,7 @@ function extendPhaseDuration(extraMinutes) {
   // 显示成功消息
   statusEl.innerHTML = '';
   statusEl.createEl("div", {
-    text: `总时长已从 ${formatDuration(originalDuration)} 延长至 ${formatDuration(currentPhase.plannedDuration)}`,
+    text: `总时长已从 ${formatDuration(originalDuration)} 延长至 ${formatDuration(originalDuration + extraMinutes)}`,
     attr: {style: "color: green; background-color: #e8f5e9; padding: 8px; border-radius: 3px; margin: 10px 0;"}
   });
   
@@ -3631,18 +3826,150 @@ function extendPhaseDuration(extraMinutes) {
   });
 }
 
+function resumeRemainingQueue(resumeStartTime, remainingDuration) {
+  if (!currentPhase || currentPhase.status !== 'active') return false;
+
+  const nextPendingIndex = currentPhase.activities.findIndex(activity => activity.status === 'pending');
+  if (nextPendingIndex === -1) {
+    new Notice('没有可接续的未开始事项', 3000);
+    return false;
+  }
+
+  const nextPending = currentPhase.activities[nextPendingIndex];
+  const currentActivity = currentPhase.activities.find(activity => activity.status === 'in-progress') || null;
+
+  if (currentActivity?.actualStart && resumeStartTime < new Date(currentActivity.actualStart)) {
+    new Notice('新的接续时间不能早于当前事项的开始时间', 3000);
+    return false;
+  }
+
+  const latestCompletedEnd = currentPhase.activities.reduce((latest, activity) => {
+    if (activity.status !== 'completed' || !activity.actualEnd) return latest;
+    const activityEnd = new Date(activity.actualEnd);
+    return !latest || activityEnd > latest ? activityEnd : latest;
+  }, null);
+
+  if (latestCompletedEnd && resumeStartTime < latestCompletedEnd) {
+    new Notice('新的接续时间不能早于已完成事项的结束时间', 3000);
+    return false;
+  }
+
+  if (currentActivity) {
+    currentActivity.status = 'completed';
+    if (!currentActivity.actualStart) {
+      currentActivity.actualStart = new Date(resumeStartTime);
+    }
+    currentActivity.actualEnd = new Date(resumeStartTime);
+    currentActivity.expectedEnd = new Date(resumeStartTime);
+  }
+
+  nextPending.status = 'in-progress';
+  nextPending.actualStart = new Date(resumeStartTime);
+  nextPending.expectedStart = new Date(resumeStartTime);
+
+  currentPhase.resumePlan = {
+    startTime: new Date(resumeStartTime),
+    plannedDuration: Number(remainingDuration),
+    activityId: nextPending.id
+  };
+  currentPhase.lastTransitionTime = new Date(resumeStartTime);
+
+  allocateRemainingTime();
+  renderExecutionList();
+  updateExecutionDisplay();
+  debouncedSave();
+
+  statusEl.innerHTML = '';
+  statusEl.createEl("div", {
+    text: `已从 ${formatDateForTimestamp(new Date(resumeStartTime))} 接续，后续总时长 ${formatDuration(remainingDuration)}`,
+    attr: {style: "color: green; background-color: #e8f5e9; padding: 8px; border-radius: 3px; margin: 10px 0;"}
+  });
+  return true;
+}
+
+let reviewAnchorEl = null;
+let reviewOutsideClickHandler = null;
+
+function hideReviewForm() {
+  reviewFormEl.style.display = "none";
+  reviewFormEl.style.visibility = "visible";
+  reviewFormEl.removeAttribute("data-activity-id");
+  reviewAnchorEl = null;
+
+  if (reviewOutsideClickHandler) {
+    document.removeEventListener("click", reviewOutsideClickHandler, true);
+    reviewOutsideClickHandler = null;
+  }
+}
+
+function resolveReviewAnchorEl(activity, preferredAnchorEl) {
+  if (preferredAnchorEl && preferredAnchorEl.closest) {
+    return preferredAnchorEl.closest(".execution-card, .activity-card") || preferredAnchorEl;
+  }
+
+  if (activity?.id) {
+    return containerEl.querySelector(`[data-activity-id="${activity.id}"]`);
+  }
+
+  return null;
+}
+
+function positionReviewForm(anchorEl) {
+  const containerRect = containerEl.getBoundingClientRect();
+  const formRect = reviewFormEl.getBoundingClientRect();
+  const edgePadding = 12;
+  const panelWidth = formRect.width;
+  const maxLeft = Math.max(edgePadding, containerRect.width - panelWidth - edgePadding);
+
+  let left = Math.min(
+    maxLeft,
+    Math.max(edgePadding, Math.round((containerRect.width - panelWidth) / 2))
+  );
+  let top = edgePadding;
+
+  if (anchorEl) {
+    const anchorRect = anchorEl.getBoundingClientRect();
+    top = anchorRect.top - containerRect.top;
+
+    const maxTop = Math.max(edgePadding, containerEl.offsetHeight - formRect.height - edgePadding);
+    if (top > maxTop) {
+      top = Math.max(edgePadding, anchorRect.bottom - containerRect.top - formRect.height);
+    }
+  }
+
+  reviewFormEl.style.left = `${Math.round(left)}px`;
+  reviewFormEl.style.top = `${Math.round(Math.max(edgePadding, top))}px`;
+}
+
+function refreshReviewFormPosition() {
+  if (reviewFormEl.style.display === "none") return;
+  positionReviewForm(reviewAnchorEl);
+}
+
+if (window.timePlannerReviewRefreshHandler) {
+  window.removeEventListener("resize", window.timePlannerReviewRefreshHandler);
+  document.removeEventListener("scroll", window.timePlannerReviewRefreshHandler, true);
+}
+window.timePlannerReviewRefreshHandler = refreshReviewFormPosition;
+window.addEventListener("resize", window.timePlannerReviewRefreshHandler);
+document.addEventListener("scroll", window.timePlannerReviewRefreshHandler, true);
+
 // 显示评价表单（优化版：解决闪回问题）
-function showReviewForm(activity) {
+function showReviewForm(activity, preferredAnchorEl) {
   // 保存当前评价的活动ID，确保提交时评价正确的活动
   reviewFormEl.setAttribute("data-activity-id", activity.id);
+  reviewAnchorEl = resolveReviewAnchorEl(activity, preferredAnchorEl);
   
   // 显示评价表单
   reviewFormEl.style.display = "block";
+  reviewFormEl.style.visibility = "hidden";
   activityToReviewName.setText(`评价活动: ${activity.project}`);
   
-  // 填入现有的评价和评分（支持重新评价）
+  // 填入现有评价
   experienceInput.value = activity.experience || "";
-  ratingInput.value = activity.rating || "3";
+  positionReviewForm(reviewAnchorEl);
+  reviewFormEl.style.visibility = "visible";
+  setTimeout(() => experienceInput.focus(), 0);
   
   // 清除之前的事件监听器
   const oldBtn = submitReviewBtn;
@@ -3653,6 +3980,23 @@ function showReviewForm(activity) {
     reviewFormEl.appendChild(newBtn);
   }
   submitReviewBtn = newBtn;
+
+  if (reviewOutsideClickHandler) {
+    document.removeEventListener("click", reviewOutsideClickHandler, true);
+  }
+  reviewOutsideClickHandler = (event) => {
+    if (reviewFormEl.style.display === "none") return;
+    const clickedInsideForm = reviewFormEl.contains(event.target);
+    const clickedAnchor = reviewAnchorEl && reviewAnchorEl.contains(event.target);
+    if (!clickedInsideForm && !clickedAnchor) {
+      hideReviewForm();
+    }
+  };
+  setTimeout(() => {
+    if (reviewOutsideClickHandler) {
+      document.addEventListener("click", reviewOutsideClickHandler, true);
+    }
+  }, 0);
   
   // 添加优化后的事件监听器
   newBtn.addEventListener("click", () => {
@@ -3670,11 +4014,10 @@ function showReviewForm(activity) {
 
     // 保存旧值用于状态比较
     const oldExperience = targetActivity.experience;
-    const oldRating = targetActivity.rating;
     
-    // 更新活动的评价和评分
+    // 更新活动评价，评分字段清零以兼容旧数据
     targetActivity.experience = experienceInput.value.trim();
-    targetActivity.rating = parseInt(ratingInput.value);
+    targetActivity.rating = 0;
     
     // 添加评价时间戳，用于检测最新评价
     targetActivity.lastReviewTime = new Date().getTime();
@@ -3682,7 +4025,7 @@ function showReviewForm(activity) {
  
     
     // 关闭评价表单
-    reviewFormEl.style.display = "none";
+    hideReviewForm();
     
     // 更新UI以反映新评价
     if (currentPhase.status === 'planning') {
@@ -3703,11 +4046,9 @@ function showReviewForm(activity) {
       attr: {style: "margin-top: 5px; font-size: 0.9em; color: #555;"}
     });
     
-    if (oldExperience !== targetActivity.experience || oldRating !== targetActivity.rating) {
+    if (oldExperience !== targetActivity.experience) {
       changesMsg.innerHTML = `
         <span>评价已更新:</span>
-        ${oldRating !== targetActivity.rating ? 
-          `<span>评分: ${oldRating || '无'} → ${targetActivity.rating}</span><br>` : ''}
         ${oldExperience !== targetActivity.experience ? 
           `<span>描述: ${oldExperience ? '已修改' : '新增'}</span>` : ''}
       `;
@@ -3717,20 +4058,80 @@ function showReviewForm(activity) {
   });
 }
 
+function getActivityPlannedMinutes(activity) {
+  return Math.max(0, Number(activity?.allocatedDuration || activity?.expectedDuration || 0));
+}
+
+function getActivityElapsedMinutes(activity, now = new Date()) {
+  if (!activity || !activity.actualStart) return 0;
+  return Math.max(0, (now - new Date(activity.actualStart)) / (60 * 1000));
+}
+
+function getActivityProgressMinutes(activity, now = new Date()) {
+  if (!activity) return 0;
+  const plannedMinutes = getActivityPlannedMinutes(activity);
+
+  if (activity.status === 'completed') {
+    if (activity.actualStart && activity.actualEnd) {
+      return Math.max(0, (new Date(activity.actualEnd) - new Date(activity.actualStart)) / (60 * 1000));
+    }
+    return plannedMinutes;
+  }
+
+  if (activity.status === 'in-progress') {
+    const elapsedMinutes = getActivityElapsedMinutes(activity, now);
+    return plannedMinutes > 0 ? Math.min(plannedMinutes, elapsedMinutes) : elapsedMinutes;
+  }
+
+  return 0;
+}
+
+function getPhaseProgressMetrics(now = new Date()) {
+  if (!currentPhase) {
+    return {
+      plannedMinutes: 0,
+      progressedMinutes: 0,
+      remainingMinutes: 0,
+      progressPercent: 0
+    };
+  }
+
+  const activePlan = getActivePlanConfig();
+  const plannedMinutes = Math.max(0, Number(activePlan.plannedDuration) || 0);
+  const resumeStartIndex = getResumePlanStartIndex();
+  const scopedActivities = resumeStartIndex >= 0
+    ? currentPhase.activities.slice(resumeStartIndex)
+    : currentPhase.activities;
+  const allCompleted = scopedActivities.length > 0 &&
+    scopedActivities.every(activity => activity.status === 'completed');
+  const rawProgressedMinutes = allCompleted
+    ? plannedMinutes
+    : scopedActivities.reduce((sum, activity) => sum + getActivityProgressMinutes(activity, now), 0);
+  const progressedMinutes = plannedMinutes > 0
+    ? Math.min(plannedMinutes, Math.max(0, rawProgressedMinutes))
+    : 0;
+  const remainingMinutes = Math.max(0, plannedMinutes - progressedMinutes);
+  const progressPercent = plannedMinutes > 0 ? Math.min(100, (progressedMinutes / plannedMinutes) * 100) : 0;
+
+  return {
+    plannedMinutes,
+    progressedMinutes,
+    remainingMinutes,
+    progressPercent
+  };
+}
+
 // 同步单个活动进度条宽度
 function syncActivityProgressBar(activity) {
   if (!activity || activity.status !== 'in-progress') return;
   const barEl = containerEl.querySelector(`.activity-progress-bar[data-activity-id=\"${activity.id}\"]`);
   if (!barEl) return;
-  const now = new Date();
-  const start = activity.actualStart ? new Date(activity.actualStart) : now;
-  const elapsed = (now - start) / (60 * 1000);
-  const total = activity.allocatedDuration || activity.expectedDuration || 0;
+  const total = getActivityPlannedMinutes(activity);
   if (total <= 0) {
     barEl.style.width = '0%';
     return;
   }
-  const pct = Math.min(100, Math.max(0, (elapsed / total) * 100));
+  const pct = Math.min(100, Math.max(0, (getActivityProgressMinutes(activity) / total) * 100));
   barEl.style.width = `${pct}%`;
 }
 
@@ -3739,9 +4140,8 @@ function updateActivityLiveUI(activity, phaseRemainingMinutes = null) {
   if (!activity || activity.status !== 'in-progress') return;
 
   const now = new Date();
-  const start = activity.actualStart ? new Date(activity.actualStart) : now;
-  const elapsed = (now - start) / (60 * 1000);
-  const total = activity.allocatedDuration || activity.expectedDuration || 0;
+  const elapsed = getActivityElapsedMinutes(activity, now);
+  const total = getActivityPlannedMinutes(activity);
   const remaining = Math.max(0, total - elapsed);
 
   // 更新时间文本
@@ -3769,29 +4169,24 @@ function updateExecutionDisplay() {
   if (!currentPhase || currentPhase.status !== 'active') return;
   
   const now = new Date();
-  const startTime = new Date(currentPhase.startTime);
-  const plannedEndTime = new Date(startTime.getTime() + currentPhase.plannedDuration * 60 * 1000);
-  
-  // 计算总进度
-  const totalDuration = currentPhase.plannedDuration * 60 * 1000; // 毫秒
-  const elapsed = now - startTime;
-  const progress = Math.min(100, (elapsed / totalDuration) * 100);
+  const activePlan = getActivePlanConfig();
+  const startTime = new Date(activePlan.startTime);
+  const plannedEndTime = new Date(startTime.getTime() + activePlan.plannedDuration * 60 * 1000);
+  const progressMetrics = getPhaseProgressMetrics(now);
   
   // 更新进度条
-  progressBar.style.width = `${progress}%`;
-  progressBar.setAttribute("aria-valuenow", Math.floor(progress));
+  progressBar.style.width = `${progressMetrics.progressPercent}%`;
+  progressBar.setAttribute("aria-valuenow", Math.floor(progressMetrics.progressPercent));
   
-  // 计算剩余时间
-  const remainingMs = Math.max(0, plannedEndTime - now);
-  const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
-  const elapsedMinutes = Math.max(0, elapsed / (60 * 1000));
-  const totalMinutes = currentPhase.plannedDuration;
+  const remainingMinutes = progressMetrics.remainingMinutes;
+  const elapsedMinutes = progressMetrics.progressedMinutes;
+  const totalMinutes = progressMetrics.plannedMinutes;
 
-  // 更新进度文本，包含更多信息
+  // 更新进度文本，和下方事项推进量保持同一口径
   progressText.innerHTML = `开始: ${formatTime(startTime)} | 结束: ${formatTime(plannedEndTime)} | ` +
-                         `已进行: ${formatDuration(elapsedMinutes)} | 总时长: ${formatDuration(totalMinutes)} | ` +
+                         `已推进: ${formatDuration(elapsedMinutes)} | 总时长: ${formatDuration(totalMinutes)} | ` +
                          `剩余: ${formatDuration(remainingMinutes)} | ` +
-                         `进度: ${Math.floor(progress)}%`;
+                         `进度: ${Math.floor(progressMetrics.progressPercent)}%`;
 
   // 查找当前进行中的活动
   const currentActivity = currentPhase.activities.find(a => a.status === 'in-progress');
@@ -3812,9 +4207,9 @@ function updateExecutionDisplay() {
     }
 
     // 计算当前活动已进行时间
-    const activityElapsed = (now - new Date(currentActivity.actualStart)) / (60 * 1000);
-    const allocatedTime = currentActivity.allocatedDuration || currentActivity.expectedDuration;
-    const activityRemaining = Math.max(0, allocatedTime - activityElapsed);
+    const activityElapsed = getActivityElapsedMinutes(currentActivity, now);
+    const allocatedTime = getActivityPlannedMinutes(currentActivity);
+    const activityRemaining = Math.max(0, allocatedTime - getActivityProgressMinutes(currentActivity, now));
     
     // 更新当前活动卡片上的进度背景
     syncActivityProgressBar(currentActivity);
@@ -3995,7 +4390,8 @@ function createPhase() {
     activities: [],
     status: 'planning',
     totalExpectedDuration: 0,
-    lastTransitionTime: null // 添加转换点时间标记
+    lastTransitionTime: null, // 添加转换点时间标记
+    resumePlan: null
   };
   
   // 更新UI状态
@@ -4194,6 +4590,7 @@ startPhaseBtn.addEventListener("click", () => {
 
 nextActivityBtn.addEventListener("click", startNextActivity);
 finishPhaseBtn.addEventListener("click", completePhase);
+resumeQueueBtn.addEventListener("click", showResumeQueueModal);
 
 // 确保阅读/预览模式也有定时刷新，并立即刷新一次
 ensureExecutionTicker();
