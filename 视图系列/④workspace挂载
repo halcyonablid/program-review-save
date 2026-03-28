@@ -161,8 +161,10 @@
         if (window.workspaceCollapsedParadigmMountGroups === undefined) window.workspaceCollapsedParadigmMountGroups = {};
         if (window.workspaceCollapsedParadigmCategoryTreeIds === undefined) window.workspaceCollapsedParadigmCategoryTreeIds = {};
         if (window.workspaceParadigmTocCollapsed === undefined) window.workspaceParadigmTocCollapsed = false;
+        if (window.workspaceParadigmTocMode === undefined) window.workspaceParadigmTocMode = "paradigm";
         if (window.workspaceParadigmTocDragState === undefined) window.workspaceParadigmTocDragState = null;
         if (!window.workspaceCollapsedParadigmTocCategoryIds || typeof window.workspaceCollapsedParadigmTocCategoryIds !== "object") window.workspaceCollapsedParadigmTocCategoryIds = {};
+        if (!window.workspaceExpandedParadigmReferenceSourceIds || typeof window.workspaceExpandedParadigmReferenceSourceIds !== "object") window.workspaceExpandedParadigmReferenceSourceIds = {};
         if (window.workspacePendingParadigmMountFocus === undefined) window.workspacePendingParadigmMountFocus = null;
         if (window.workspacePendingParadigmCategoryFocus === undefined) window.workspacePendingParadigmCategoryFocus = null;
         if (window.workspacePendingParadigmPanelFocus === undefined) window.workspacePendingParadigmPanelFocus = null;
@@ -8104,6 +8106,11 @@
                 .workspace-paradigm-collapse.dot { opacity:.35; }
                 .workspace-panel-row-left { min-width:0; flex:1 1 auto; }
                 .workspace-panel-row-hint { font-size:11px; color:var(--text-faint); margin-top:2px; }
+                .workspace-paradigm-reference-list { margin-top:8px; display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid rgba(52,152,219,.18); border-radius:10px; background:linear-gradient(180deg, rgba(52,152,219,.06) 0%, rgba(255,255,255,0) 100%); }
+                .workspace-paradigm-reference-item { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:7px 8px; border:1px solid rgba(52,152,219,.14); border-radius:8px; background:var(--background-primary); }
+                .workspace-paradigm-reference-meta { min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-reference-title { font-weight:600; color:var(--text-normal); }
+                .workspace-paradigm-reference-subtitle { font-size:11px; color:var(--text-muted); margin-top:2px; }
                 .workspace-paradigm-tree-wrap { display:flex; flex-direction:column; gap:6px; }
                 .workspace-paradigm-branch { margin-bottom:8px; }
                 .workspace-paradigm-branch.has-children { border:1px solid rgba(52,152,219,.18); border-radius:12px; padding:6px; }
@@ -8203,6 +8210,11 @@
                 .workspace-paradigm-toc.is-collapsed { width:auto; max-height:none; overflow:visible; padding:8px; }
                 .workspace-paradigm-toc-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
                 .workspace-paradigm-toc-title { font-size:13px; font-weight:700; }
+                .workspace-paradigm-toc-head-main { display:flex; align-items:center; gap:8px; min-width:0; flex:1 1 auto; }
+                .workspace-paradigm-toc-mode-switch { display:inline-flex; align-items:center; gap:4px; padding:3px; border-radius:999px; background:var(--background-secondary); box-shadow:inset 0 0 0 1px var(--background-modifier-border); }
+                .workspace-paradigm-toc-mode-btn { border:none; background:transparent; color:var(--text-muted); border-radius:999px; padding:3px 10px; cursor:pointer; font-size:11px; line-height:1.4; }
+                .workspace-paradigm-toc-mode-btn.is-active { background:rgba(52,152,219,.14); color:#1f618d; font-weight:700; box-shadow:inset 0 0 0 1px rgba(52,152,219,.18); }
+                .workspace-paradigm-toc-mode-btn:hover { color:var(--text-normal); background:var(--background-modifier-hover); }
                 .workspace-paradigm-toc-toggle { border:none; background:transparent; cursor:pointer; color:var(--text-muted); padding:2px 6px; border-radius:999px; }
                 .workspace-paradigm-toc-toggle:hover { background:var(--background-modifier-hover); color:var(--text-normal); }
                 .workspace-paradigm-toc-current { border:1px solid rgba(46,204,113,.28); background:rgba(46,204,113,.08); border-radius:12px; padding:8px 10px; }
@@ -8319,16 +8331,34 @@
                 : [];
             const paradigmCategoryTocCount = paradigmCategoryTocEntries.filter((entry) => entry.kind === "category").length;
             const paradigmCategoryTocParadigmCount = paradigmCategoryTocEntries.filter((entry) => entry.kind === "paradigm").length;
+            const isParadigmTocMode = !!window.workspaceShowParadigmPanel && window.workspaceParadigmTocMode !== "tab";
 
             const wrap = dv.container.createEl("div", { cls: "workspace-wrap" });
             const paradigmToc = wrap.createEl("div", {
                 cls: `workspace-paradigm-toc ${window.workspaceParadigmTocCollapsed ? "is-collapsed" : ""}`
             });
             const paradigmTocHead = paradigmToc.createEl("div", { cls: "workspace-paradigm-toc-head" });
-            paradigmTocHead.createEl("div", {
-                text: window.workspaceShowParadigmPanel ? "范式分类 TOC" : "当前视图范式 TOC",
+            const paradigmTocHeadMain = paradigmTocHead.createEl("div", { cls: "workspace-paradigm-toc-head-main" });
+            paradigmTocHeadMain.createEl("div", {
+                text: isParadigmTocMode ? "范式分类 TOC" : "当前视图范式 TOC",
                 cls: "workspace-paradigm-toc-title"
             });
+            if (window.workspaceShowParadigmPanel) {
+                const modeSwitch = paradigmTocHeadMain.createEl("div", { cls: "workspace-paradigm-toc-mode-switch" });
+                const createModeBtn = (mode, label) => {
+                    const btn = modeSwitch.createEl("button", {
+                        text: label,
+                        cls: `workspace-paradigm-toc-mode-btn ${window.workspaceParadigmTocMode === mode ? "is-active" : ""}`.trim(),
+                        attr: { type: "button", title: mode === "paradigm" ? "查看范式分类 TOC" : "查看 Tab 挂载范式 TOC" }
+                    });
+                    btn.onclick = () => {
+                        window.workspaceParadigmTocMode = mode;
+                        renderViewFn?.();
+                    };
+                };
+                createModeBtn("paradigm", "范式");
+                createModeBtn("tab", "Tab");
+            }
             const paradigmTocToggle = paradigmTocHead.createEl("button", {
                 text: window.workspaceParadigmTocCollapsed ? "◀" : "▶",
                 cls: "workspace-paradigm-toc-toggle",
@@ -8341,10 +8371,10 @@
             if (!window.workspaceParadigmTocCollapsed) {
                 const currentBox = paradigmToc.createEl("div", { cls: "workspace-paradigm-toc-current" });
                 currentBox.createEl("div", {
-                    text: window.workspaceShowParadigmPanel ? "范式管理视图" : (activeTab?.name || "未选中 Tab"),
+                    text: isParadigmTocMode ? "范式管理视图" : (activeTab?.name || "未选中 Tab"),
                     attr: { style: "font-weight:700;" }
                 });
-                if (window.workspaceShowParadigmPanel) {
+                if (isParadigmTocMode) {
                     currentBox.createEl("div", {
                         text: paradigmCategoryTocCount > 0 || paradigmCategoryTocParadigmCount > 0
                             ? `${paradigmCategoryTocCount} 个分类节点 · ${paradigmCategoryTocParadigmCount} 个范式节点 · 点击可滚动定位，分类节点支持折叠和拖拽管理`
@@ -8362,7 +8392,7 @@
                     });
                 }
                 const tocList = paradigmToc.createEl("div", { cls: "workspace-paradigm-toc-list" });
-                if (window.workspaceShowParadigmPanel) {
+                if (isParadigmTocMode) {
                     const tocCollapsedCategoryIds = window.workspaceCollapsedParadigmTocCategoryIds;
                     for (let index = 0; index < paradigmCategoryTocEntries.length; index++) {
                         const entry = paradigmCategoryTocEntries[index];
@@ -8552,7 +8582,7 @@
                 }
                 if (tocList.childElementCount === 0) {
                     tocList.createEl("div", {
-                        text: window.workspaceShowParadigmPanel ? "当前没有可见分类" : "当前视图没有可见 Tab",
+                        text: isParadigmTocMode ? "当前没有可见分类" : "当前视图没有可见 Tab",
                         cls: "workspace-empty"
                     });
                 }
@@ -8915,6 +8945,130 @@
                     if (offsetX >= childThreshold) return "child";
                     return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
                 };
+                const renderParadigmEditorPanel = (container, paradigmNodeId) => {
+                    const editingParadigm = getParadigmById(paradigmNodeId);
+                    if (!editingParadigm) return;
+                    const editor = container.createEl("div", { cls: "workspace-panel", attr: { style: "margin-top:10px;" } });
+                    const head = editor.createEl("div", { cls: "workspace-panel-head" });
+                    const editingSourcePathLabel = getParadigmSourcePathLabel(editingParadigm);
+                    const editingChildParadigmIds = getEffectiveChildParadigmIds(editingParadigm.id);
+                    const headLeft = head.createEl("div");
+                    headLeft.createEl("div", {
+                        text: `🛠 当前范式条目：${getParadigmNodeLabel(editingParadigm)}`,
+                        cls: "workspace-panel-title"
+                    });
+                    headLeft.createEl("div", {
+                        text: `当前节点 ${editingParadigm.id}${isParadigmCopy(editingParadigm) ? ` · 本体位置 ${editingSourcePathLabel}` : " · 定义源"} · 子范式 ${editingChildParadigmIds.length} 个`,
+                        cls: "workspace-subtitle"
+                    });
+                    if (editingChildParadigmIds.length > 0) {
+                        headLeft.createEl("div", {
+                            text: "这里只显示当前范式自己的条目；子范式条目请在对应子范式上单独点击“管理条目”查看。",
+                            cls: "workspace-panel-row-hint"
+                        });
+                    }
+                    const actions = head.createEl("div", { cls: "workspace-main-actions" });
+                    const syncAll = actions.createEl("button", { text: "同步到已绑定Tab", cls: "workspace-sub-btn" });
+                    syncAll.onclick = async () => {
+                        await updateWorkspaceData((data) => {
+                            syncParadigmAcrossTabsInData(data, editingParadigm.id);
+                        });
+                        new Notice("✅ 已同步到所有绑定 Tab");
+                    };
+                    const editorTree = editor.createEl("div", { cls: "workspace-paradigm-editor-children" });
+                    const renderParadigmEditorScope = (scopeContainer, currentParadigmNodeId, level = 0, chain = new Set()) => {
+                        const paradigmNode = getParadigmById(currentParadigmNodeId);
+                        if (!paradigmNode || chain.has(paradigmNode.id)) return;
+                        const sourceParadigm = getParadigmSourceParadigm(paradigmNode) || paradigmNode;
+                        const targetParadigmId = sourceParadigm.id;
+                        const roots = getParadigmChildrenIds(targetParadigmId, null);
+                        const childNodeIds = getEffectiveChildParadigmIds(paradigmNode.id);
+                        const hasScopeChildren = roots.length > 0;
+                        const isCollapsed = hasScopeChildren ? isParadigmEditorScopeCollapsed(paradigmNode.id) : false;
+                        const hostParadigm = paradigmNode.parentParadigmId ? getParadigmById(paradigmNode.parentParadigmId) : null;
+                        const sourcePathLabel = getParadigmSourcePathLabel(paradigmNode);
+                        const scopeVisual = getParadigmVisual(getParadigmSourceId(paradigmNode) || paradigmNode.id);
+                        const scope = scopeContainer.createEl("div", {
+                            cls: `workspace-paradigm-editor-scope ${isParadigmCopy(paradigmNode) ? "is-copy" : ""}`,
+                            attr: { style: `margin-left:${level * 18}px;` }
+                        });
+                        if (isCollapsed) scope.classList.add("is-collapsed");
+                        if (scopeVisual) {
+                            scope.style.borderColor = `${scopeVisual.accent}3d`;
+                            scope.style.background = `linear-gradient(180deg, ${scopeVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
+                            scope.style.boxShadow = `inset 0 0 0 1px ${scopeVisual.accent}12`;
+                        }
+                        const scopeHead = scope.createEl("div", { cls: "workspace-panel-head" });
+                        const scopeLeft = scopeHead.createEl("div", { attr: { style: "display:flex;align-items:flex-start;gap:8px;min-width:0;flex:1 1 auto;" } });
+                        const collapseBtn = scopeLeft.createEl("span", {
+                            text: hasScopeChildren ? (isCollapsed ? "▶" : "▼") : "•",
+                            cls: `workspace-paradigm-collapse ${hasScopeChildren ? "clickable" : "dot"}`
+                        });
+                        if (isCollapsed) collapseBtn.classList.add("is-collapsed");
+                        if (hasScopeChildren) {
+                            collapseBtn.onclick = async (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                await toggleParadigmEditorScopeCollapsed(paradigmNode.id);
+                            };
+                        }
+                        const scopeMeta = scopeLeft.createEl("div", { attr: { style: "min-width:0;flex:1 1 auto;" } });
+                        scopeMeta.createEl("div", {
+                            text: `${level === 0 ? "当前范式" : "子范式"}：${getParadigmNodeLabel(paradigmNode)}`,
+                            cls: "workspace-panel-title"
+                        });
+                        scopeMeta.createEl("div", {
+                            text: `${paradigmNode.id}${isParadigmCopy(paradigmNode) ? ` · 本体位置 ${sourcePathLabel}` : " · 定义源"}${hostParadigm ? ` · 挂在 ${getParadigmNodeLabel(hostParadigm)} (${hostParadigm.id}) 下` : " · 根层"} · 子范式 ${childNodeIds.length} 个`,
+                            cls: "workspace-subtitle"
+                        });
+                        if (isParadigmCopy(paradigmNode)) {
+                            scopeMeta.createEl("div", {
+                                cls: "workspace-panel-row-hint",
+                                text: "这个节点是引用副本：这里展示和编辑的条目会写回定义源"
+                            });
+                        }
+                        if (childNodeIds.length > 0) {
+                            scopeMeta.createEl("div", {
+                                cls: "workspace-panel-row-hint",
+                                text: `下面还有 ${childNodeIds.length} 个子范式；它们的条目不在这里展示。`
+                            });
+                        }
+                        const scopeActions = scopeHead.createEl("div", { cls: "workspace-main-actions" });
+                        const addRoot = scopeActions.createEl("button", { text: "＋ 根条目", cls: "workspace-sub-btn" });
+                        addRoot.onclick = async () => { await addParadigmItem(targetParadigmId, null); };
+                        if (isCollapsed) {
+                            scopeHead.createEl("span", {
+                                text: "已折叠",
+                                cls: "workspace-origin-badge collapsed",
+                                attr: { title: "该范式条目段当前处于折叠状态" }
+                            });
+                        }
+                        if (!isCollapsed) {
+                            const paradigmRootDropZone = scope.createEl("div", {
+                                cls: "workspace-root-drop-zone",
+                                text: `↥ 拖拽到这里设为 ${sourceParadigm.name} 的根条目（顶层）`
+                            });
+                            paradigmRootDropZone.addEventListener("dragover", (e) => {
+                                e.preventDefault();
+                                if (!window.workspaceParadigmCurrentDragId) return;
+                                if (window.workspaceParadigmDragParadigmId !== targetParadigmId) return;
+                                paradigmRootDropZone.classList.add("drag-over");
+                            });
+                            paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
+                            paradigmRootDropZone.addEventListener("drop", async (e) => {
+                                e.preventDefault();
+                                paradigmRootDropZone.classList.remove("drag-over");
+                                if (!window.workspaceParadigmCurrentDragId) return;
+                                if (window.workspaceParadigmDragParadigmId !== targetParadigmId) return;
+                                await moveParadigmItemToRoot(window.workspaceParadigmCurrentDragId, targetParadigmId);
+                            });
+                            const tree = scope.createEl("div");
+                            if (roots.length === 0) tree.createEl("div", { text: "_暂无范式条目_", cls: "workspace-empty" });
+                            else renderParadigmTree(tree, targetParadigmId, null, 0, new Set());
+                        }
+                    };
+                    renderParadigmEditorScope(editorTree, editingParadigm.id, 0, new Set());
+                };
 
                 const renderParadigmRow = (container, paradigmId, level = 0) => {
                     const paradigm = getParadigmById(paradigmId);
@@ -8975,7 +9129,9 @@
                     }
                     const hostParadigm = paradigm.parentParadigmId ? getParadigmById(paradigm.parentParadigmId) : null;
                     const sourcePathLabel = getParadigmSourcePathLabel(paradigm);
+                    const copyReferenceEntries = !isCopyParadigm ? getParadigmCopyReferenceEntries(paradigm.id) : [];
                     const incomingCopyRefSummary = !isCopyParadigm ? summarizeParadigmCopyReferences(paradigm.id) : "";
+                    const copyReferenceExpanded = !isCopyParadigm && !!window.workspaceExpandedParadigmReferenceSourceIds?.[paradigm.id];
                     const boundTabSummary = summarizeParadigmBoundTabs(paradigm.id);
                     row.draggable = true;
                     row.addEventListener("dragstart", (e) => {
@@ -9062,7 +9218,7 @@
                     if (!isCopyParadigm && incomingCopyRefSummary) {
                         left.createEl("div", {
                             cls: "workspace-panel-row-hint",
-                            text: `🔁 ${incomingCopyRefSummary}`
+                            text: copyReferenceExpanded ? `🔁 ${incomingCopyRefSummary}` : `🔁 ${incomingCopyRefSummary} · 可点“引用 ${copyReferenceEntries.length}”查看并定位各个副本`
                         });
                     }
                     if (boundTabSummary.directText) {
@@ -9084,6 +9240,25 @@
                         if (isBound) await unbindParadigmFromCurrentTab(paradigm.id);
                         else await bindParadigmToCurrentTab(paradigm.id);
                     };
+                    if (isCopyParadigm && sourceParadigm?.id) {
+                        const sourceBtn = actions.createEl("button", {
+                            text: "定义源",
+                            cls: "workspace-sub-btn",
+                            attr: { title: `跳到定义源：${getParadigmNodeLabel(sourceParadigm)} (${sourceParadigm.id})` }
+                        });
+                        sourceBtn.onclick = async () => { await revealParadigmPanelTarget(sourceParadigm.id); };
+                    }
+                    if (!isCopyParadigm && copyReferenceEntries.length > 0) {
+                        const refsBtn = actions.createEl("button", {
+                            text: copyReferenceExpanded ? `收起引用 ${copyReferenceEntries.length}` : `引用 ${copyReferenceEntries.length}`,
+                            cls: "workspace-sub-btn",
+                            attr: { title: copyReferenceExpanded ? "收起引用副本清单" : "展开引用副本清单并可逐个定位" }
+                        });
+                        refsBtn.onclick = () => {
+                            window.workspaceExpandedParadigmReferenceSourceIds[paradigm.id] = !copyReferenceExpanded;
+                            renderViewFn?.();
+                        };
+                    }
                     const editBtn = actions.createEl("button", { text: window.workspaceEditingParadigmId === paradigm.id ? "收起条目" : "管理条目", cls: "workspace-sub-btn" });
                     editBtn.onclick = () => {
                         window.workspaceEditingParadigmId = window.workspaceEditingParadigmId === paradigm.id ? null : paradigm.id;
@@ -9101,6 +9276,35 @@
                     renameBtn.onclick = async () => { await renameParadigm(isCopyParadigm ? sourceParadigm.id : paradigm.id); };
                     const deleteBtn = actions.createEl("button", { text: isCopyParadigm ? "删副本" : "删除", cls: "workspace-sub-btn" });
                     deleteBtn.onclick = async () => { await deleteParadigm(paradigm.id); };
+                    if (!isCopyParadigm && copyReferenceExpanded && copyReferenceEntries.length > 0) {
+                        const refList = branch.createEl("div", { cls: "workspace-paradigm-reference-list" });
+                        copyReferenceEntries.forEach((entry, index) => {
+                            const copyParadigm = entry.copyParadigm;
+                            if (!copyParadigm) return;
+                            const copyPathLabel = getParadigmMountPathLabel(copyParadigm);
+                            const copyCategoryLabel = copyParadigm.categoryId ? getParadigmCategoryPathLabel(copyParadigm.categoryId) : "未分类";
+                            const refItem = refList.createEl("div", { cls: "workspace-paradigm-reference-item" });
+                            const refMeta = refItem.createEl("div", { cls: "workspace-paradigm-reference-meta" });
+                            refMeta.createEl("div", {
+                                text: `#${index + 1} · ${copyPathLabel}`,
+                                cls: "workspace-paradigm-reference-title"
+                            });
+                            refMeta.createEl("div", {
+                                text: `${copyParadigm.id} · 分类 ${copyCategoryLabel} · 挂在 ${entry.hostLabel}`,
+                                cls: "workspace-paradigm-reference-subtitle"
+                            });
+                            const refActions = refItem.createEl("div", { cls: "workspace-main-actions" });
+                            const jumpBtn = refActions.createEl("button", {
+                                text: "定位副本",
+                                cls: "workspace-sub-btn",
+                                attr: { type: "button", title: `滚动到副本：${copyPathLabel}` }
+                            });
+                            jumpBtn.onclick = async () => { await revealParadigmPanelTarget(copyParadigm.id); };
+                        });
+                    }
+                    if (window.workspaceEditingParadigmId === paradigm.id) {
+                        renderParadigmEditorPanel(branch, paradigm.id);
+                    }
 
                     if (childParadigmIds.length > 0 && !isCollapsed) {
                         const childWrap = branch.createEl("div", { cls: "workspace-paradigm-branch-children" });
@@ -9296,127 +9500,6 @@
                         text: "_当前标签筛选下没有命中的范式_",
                         cls: "workspace-empty"
                     });
-                }
-
-                const editingParadigmId = window.workspaceEditingParadigmId;
-                const editingParadigm = editingParadigmId ? getParadigmById(editingParadigmId) : null;
-                if (editingParadigm) {
-                    const editor = panel.createEl("div", { cls: "workspace-panel", attr: { style: "margin-top:10px;" } });
-                    const head = editor.createEl("div", { cls: "workspace-panel-head" });
-                    const editingSourceParadigm = getParadigmSourceParadigm(editingParadigm) || editingParadigm;
-                    const editingSourcePathLabel = getParadigmSourcePathLabel(editingParadigm);
-                    const editingSubtreeIds = getParadigmNodeSubtreeIds(editingParadigm.id);
-                    const editingSourceIds = Array.from(new Set(editingSubtreeIds.map((id) => getParadigmSourceId(id)).filter(Boolean)));
-                    const headLeft = head.createEl("div");
-                    headLeft.createEl("div", {
-                        text: `🛠 范式条目链：${getParadigmNodeLabel(editingParadigm)}`,
-                        cls: "workspace-panel-title"
-                    });
-                    headLeft.createEl("div", {
-                        text: `当前节点 ${editingParadigm.id}${isParadigmCopy(editingParadigm) ? ` · 本体位置 ${editingSourcePathLabel}` : " · 定义源"} · 纳入范式节点 ${editingSubtreeIds.length} 个 · 涉及定义源 ${editingSourceIds.length} 个`,
-                        cls: "workspace-subtitle"
-                    });
-                    const actions = head.createEl("div", { cls: "workspace-main-actions" });
-                    const syncAll = actions.createEl("button", { text: "同步到已绑定Tab", cls: "workspace-sub-btn" });
-                    syncAll.onclick = async () => {
-                        await updateWorkspaceData((data) => {
-                            syncParadigmAcrossTabsInData(data, editingParadigm.id);
-                        });
-                        new Notice("✅ 已同步到所有绑定 Tab");
-                    };
-                    const editorTree = editor.createEl("div", { cls: "workspace-paradigm-editor-children" });
-                    const renderParadigmEditorScope = (container, paradigmNodeId, level = 0, chain = new Set()) => {
-                        const paradigmNode = getParadigmById(paradigmNodeId);
-                        if (!paradigmNode || chain.has(paradigmNode.id)) return;
-                        const nextChain = new Set(chain);
-                        nextChain.add(paradigmNode.id);
-                        const sourceParadigm = getParadigmSourceParadigm(paradigmNode) || paradigmNode;
-                        const targetParadigmId = sourceParadigm.id;
-                        const roots = getParadigmChildrenIds(targetParadigmId, null);
-                        const childNodeIds = getEffectiveChildParadigmIds(paradigmNode.id);
-                        const hasScopeChildren = roots.length > 0 || childNodeIds.length > 0;
-                        const isCollapsed = hasScopeChildren ? isParadigmEditorScopeCollapsed(paradigmNode.id) : false;
-                        const hostParadigm = paradigmNode.parentParadigmId ? getParadigmById(paradigmNode.parentParadigmId) : null;
-                        const sourcePathLabel = getParadigmSourcePathLabel(paradigmNode);
-                        const scopeVisual = getParadigmVisual(getParadigmSourceId(paradigmNode) || paradigmNode.id);
-                        const scope = container.createEl("div", {
-                            cls: `workspace-paradigm-editor-scope ${isParadigmCopy(paradigmNode) ? "is-copy" : ""}`,
-                            attr: { style: `margin-left:${level * 18}px;` }
-                        });
-                        if (isCollapsed) scope.classList.add("is-collapsed");
-                        if (scopeVisual) {
-                            scope.style.borderColor = `${scopeVisual.accent}3d`;
-                            scope.style.background = `linear-gradient(180deg, ${scopeVisual.bg} 0%, rgba(255,255,255,0) 100%)`;
-                            scope.style.boxShadow = `inset 0 0 0 1px ${scopeVisual.accent}12`;
-                        }
-                        const scopeHead = scope.createEl("div", { cls: "workspace-panel-head" });
-                        const scopeLeft = scopeHead.createEl("div", { attr: { style: "display:flex;align-items:flex-start;gap:8px;min-width:0;flex:1 1 auto;" } });
-                        const collapseBtn = scopeLeft.createEl("span", {
-                            text: hasScopeChildren ? (isCollapsed ? "▶" : "▼") : "•",
-                            cls: `workspace-paradigm-collapse ${hasScopeChildren ? "clickable" : "dot"}`
-                        });
-                        if (isCollapsed) collapseBtn.classList.add("is-collapsed");
-                        if (hasScopeChildren) {
-                            collapseBtn.onclick = async (e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                await toggleParadigmEditorScopeCollapsed(paradigmNode.id);
-                            };
-                        }
-                        const scopeMeta = scopeLeft.createEl("div", { attr: { style: "min-width:0;flex:1 1 auto;" } });
-                        scopeMeta.createEl("div", {
-                            text: `${level === 0 ? "当前范式" : "子范式"}：${getParadigmNodeLabel(paradigmNode)}`,
-                            cls: "workspace-panel-title"
-                        });
-                        scopeMeta.createEl("div", {
-                            text: `${paradigmNode.id}${isParadigmCopy(paradigmNode) ? ` · 本体位置 ${sourcePathLabel}` : " · 定义源"}${hostParadigm ? ` · 挂在 ${getParadigmNodeLabel(hostParadigm)} (${hostParadigm.id}) 下` : " · 根层"} · 子范式 ${childNodeIds.length} 个`,
-                            cls: "workspace-subtitle"
-                        });
-                        if (isParadigmCopy(paradigmNode)) {
-                            scopeMeta.createEl("div", {
-                                cls: "workspace-panel-row-hint",
-                                text: "这个节点是引用副本：这里展示和编辑的条目会写回定义源"
-                            });
-                        }
-                        const scopeActions = scopeHead.createEl("div", { cls: "workspace-main-actions" });
-                        const addRoot = scopeActions.createEl("button", { text: "＋ 根条目", cls: "workspace-sub-btn" });
-                        addRoot.onclick = async () => { await addParadigmItem(targetParadigmId, null); };
-                        if (isCollapsed) {
-                            scopeHead.createEl("span", {
-                                text: "已折叠",
-                                cls: "workspace-origin-badge collapsed",
-                                attr: { title: "该范式条目段当前处于折叠状态" }
-                            });
-                        }
-                        if (!isCollapsed) {
-                            const paradigmRootDropZone = scope.createEl("div", {
-                                cls: "workspace-root-drop-zone",
-                                text: `↥ 拖拽到这里设为 ${sourceParadigm.name} 的根条目（顶层）`
-                            });
-                            paradigmRootDropZone.addEventListener("dragover", (e) => {
-                                e.preventDefault();
-                                if (!window.workspaceParadigmCurrentDragId) return;
-                                if (window.workspaceParadigmDragParadigmId !== targetParadigmId) return;
-                                paradigmRootDropZone.classList.add("drag-over");
-                            });
-                            paradigmRootDropZone.addEventListener("dragleave", () => paradigmRootDropZone.classList.remove("drag-over"));
-                            paradigmRootDropZone.addEventListener("drop", async (e) => {
-                                e.preventDefault();
-                                paradigmRootDropZone.classList.remove("drag-over");
-                                if (!window.workspaceParadigmCurrentDragId) return;
-                                if (window.workspaceParadigmDragParadigmId !== targetParadigmId) return;
-                                await moveParadigmItemToRoot(window.workspaceParadigmCurrentDragId, targetParadigmId);
-                            });
-                            const tree = scope.createEl("div");
-                            if (roots.length === 0) tree.createEl("div", { text: "_暂无范式条目_", cls: "workspace-empty" });
-                            else renderParadigmTree(tree, targetParadigmId, null, 0, new Set());
-                            if (childNodeIds.length > 0) {
-                                const childWrap = scope.createEl("div", { cls: "workspace-paradigm-editor-children" });
-                                childNodeIds.forEach((childId) => renderParadigmEditorScope(childWrap, childId, level + 1, nextChain));
-                            }
-                        }
-                    };
-                    renderParadigmEditorScope(editorTree, editingParadigm.id, 0, new Set());
                 }
             }
 
