@@ -8,6 +8,7 @@
         const TASK_COMMENTS_SCHEMA_VERSION = "1.0";
         const ATTACHMENTS_FOLDER = "attachments";
         const WORKSPACE_SCHEMA_VERSION = "2.5";
+        const PARADIGM_TRANSFER_LOG_TITLE = "📥 共通范式迁入记录";
         const RELATIONS_PLUGIN_ID = "eva-cross-view-relations";
         const WORKSPACE_RELATION_VIEW_TYPE = "workspace";
         const ROOT_KEY = "__root__";
@@ -161,7 +162,10 @@
         if (window.workspaceCollapsedParadigmCategoryTreeIds === undefined) window.workspaceCollapsedParadigmCategoryTreeIds = {};
         if (window.workspaceParadigmTocCollapsed === undefined) window.workspaceParadigmTocCollapsed = false;
         if (window.workspaceParadigmTocDragState === undefined) window.workspaceParadigmTocDragState = null;
+        if (!window.workspaceCollapsedParadigmTocCategoryIds || typeof window.workspaceCollapsedParadigmTocCategoryIds !== "object") window.workspaceCollapsedParadigmTocCategoryIds = {};
         if (window.workspacePendingParadigmMountFocus === undefined) window.workspacePendingParadigmMountFocus = null;
+        if (window.workspacePendingParadigmCategoryFocus === undefined) window.workspacePendingParadigmCategoryFocus = null;
+        if (window.workspacePendingParadigmPanelFocus === undefined) window.workspacePendingParadigmPanelFocus = null;
         if (window.workspaceShouldRestorePinnedScrollAfterRender === undefined) window.workspaceShouldRestorePinnedScrollAfterRender = false;
         if (!window.workspaceRelationBridgeRegistry || typeof window.workspaceRelationBridgeRegistry !== "object") window.workspaceRelationBridgeRegistry = {};
         if (window.workspacePendingRelationFocusNodeKey === undefined) window.workspacePendingRelationFocusNodeKey = "";
@@ -2119,7 +2123,7 @@
                     attr: { style: "font-size:12px;font-weight:700;margin-bottom:4px;" }
                 });
                 shortcutWrap.createEl("div", {
-                    text: "把笔记链接/条目拖到下面区域，就会作为这个条目的快捷方式一起保存。",
+                    text: "把笔记链接、网页链接或文件/快捷方式拖到下面区域，就会作为这个条目的快捷方式一起保存。",
                     attr: { style: "font-size:12px;color:var(--text-muted);margin-bottom:8px;" }
                 });
                 const shortcutStatus = shortcutWrap.createEl("div", {
@@ -2132,9 +2136,56 @@
                         style: "min-height:72px;border:1px dashed var(--background-modifier-border);border-radius:10px;padding:12px;background:var(--background-secondary);display:flex;align-items:center;justify-content:center;text-align:center;color:var(--text-muted);transition:all .15s;margin-bottom:8px;"
                     }
                 });
+                const shortcutPasteRow = shortcutWrap.createEl("div", {
+                    attr: { style: "display:flex;gap:8px;align-items:center;margin-bottom:8px;" }
+                });
+                const shortcutPasteInput = shortcutPasteRow.createEl("input", {
+                    type: "text",
+                    placeholder: "也可粘贴 URL / 文件路径 / Obsidian 链接后点添加",
+                    attr: {
+                        style: "flex:1 1 auto;padding:8px 10px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-primary);"
+                    }
+                });
+                const shortcutPasteBtn = shortcutPasteRow.createEl("button", { text: "添加" });
                 const shortcutList = shortcutWrap.createEl("div", {
                     attr: { style: "display:flex;flex-direction:column;gap:6px;" }
                 });
+                const appendShortcutEntry = (entry, successPrefix = "已添加快捷方式") => {
+                    if (!entry) return false;
+                    const next = normalizeShortcutEntries(this.shortcutEntries.concat([entry]));
+                    if (next.length === this.shortcutEntries.length) {
+                        shortcutStatus.textContent = `已存在同一路径快捷方式：${getShortcutDisplayLabel(entry)}`;
+                        return false;
+                    }
+                    this.shortcutEntries = next;
+                    shortcutStatus.textContent = `${successPrefix}：${getShortcutDisplayLabel(entry)}`;
+                    renderShortcutList();
+                    return true;
+                };
+                const resolveShortcutEntryFromRawInput = (rawValue) => {
+                    const text = String(rawValue || "").trim();
+                    if (!text) return null;
+                    const noteFile = resolveShortcutNoteFile(text);
+                    if (noteFile) return buildShortcutEntryFromFile(noteFile);
+                    const vaultFile = resolveExistingVaultFile(text);
+                    if (vaultFile) return buildShortcutEntryFromFile(vaultFile);
+                    if (isLikelyExternalUrl(text) || isLikelyAbsoluteFsPath(text)) {
+                        return buildShortcutEntryFromExternalPath(text);
+                    }
+                    return null;
+                };
+                const addShortcutFromPaste = () => {
+                    const entry = resolveShortcutEntryFromRawInput(shortcutPasteInput.value);
+                    if (!entry) {
+                        shortcutStatus.textContent = "没有识别到可用的 URL 或快捷方式";
+                        return;
+                    }
+                    const added = appendShortcutEntry(entry, "已粘贴添加快捷方式");
+                    if (added) {
+                        shortcutPasteInput.value = "";
+                        shortcutPasteInput.focus();
+                    }
+                };
                 const renderShortcutList = () => {
                     shortcutList.empty();
                     shortcutStatus.textContent = this.shortcutEntries.length > 0
@@ -2154,15 +2205,33 @@
                             }
                         });
                         const meta = row.createEl("div", { attr: { style: "min-width:0;flex:1 1 auto;" } });
-                        meta.createEl("div", {
+                        const titleEl = meta.createEl("div", {
                             text: `↗ ${getShortcutDisplayLabel(entry)}`,
                             attr: { style: "font-weight:600;word-break:break-word;" }
                         });
-                        meta.createEl("div", {
+                        const subtitleEl = meta.createEl("div", {
+                            text: "正在识别预览信息…",
+                            attr: { style: "font-size:12px;color:var(--text-muted);word-break:break-word;" }
+                        });
+                        const pathEl = meta.createEl("div", {
                             text: entry.path,
                             attr: { style: "font-size:12px;color:var(--text-muted);word-break:break-all;" }
                         });
-                        const removeBtn = row.createEl("button", { text: "移除" });
+                        void getShortcutPreviewMeta(entry).then((metaInfo) => {
+                            if (!row.isConnected) return;
+                            titleEl.textContent = `↗ ${metaInfo.title || getShortcutDisplayLabel(entry)}`;
+                            subtitleEl.textContent = metaInfo.subtitle || "";
+                            pathEl.textContent = metaInfo.detail || entry.path;
+                        }).catch(() => {
+                            if (!row.isConnected) return;
+                            subtitleEl.textContent = "";
+                        });
+                        const actions = row.createEl("div", {
+                            attr: { style: "display:flex;gap:6px;align-items:center;flex:0 0 auto;" }
+                        });
+                        const previewBtn = actions.createEl("button", { text: "预览" });
+                        previewBtn.onclick = async () => { await openShortcutPreviewModal(entry); };
+                        const removeBtn = actions.createEl("button", { text: "移除" });
                         removeBtn.onclick = () => {
                             this.shortcutEntries = this.shortcutEntries.filter((it) => it.id !== entry.id);
                             renderShortcutList();
@@ -2192,14 +2261,14 @@
                         shortcutStatus.textContent = `没有识别到可用的快捷方式。拖拽类型: ${typeText}`;
                         return;
                     }
-                    const next = normalizeShortcutEntries(this.shortcutEntries.concat([entry]));
-                    if (next.length === this.shortcutEntries.length) {
-                        shortcutStatus.textContent = `已存在同一路径快捷方式：${getShortcutDisplayLabel(entry)}`;
-                        return;
-                    }
-                    this.shortcutEntries = next;
-                    shortcutStatus.textContent = `已添加快捷方式：${getShortcutDisplayLabel(entry)}`;
-                    renderShortcutList();
+                    appendShortcutEntry(entry);
+                });
+                shortcutPasteBtn.onclick = addShortcutFromPaste;
+                shortcutPasteInput.addEventListener("keydown", (e) => {
+                    if (e.key !== "Enter") return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    addShortcutFromPaste();
                 });
                 renderShortcutList();
 
@@ -2257,19 +2326,41 @@
                         attr: { style: "display:flex;flex-direction:column;gap:8px;" }
                     });
                     this.shortcutEntries.forEach((entry) => {
-                        const row = list.createEl("button", {
-                            cls: "mod-cta",
+                        const row = list.createEl("div", {
                             attr: {
-                                type: "button",
-                                style: "display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:10px 12px;border-radius:10px;text-align:left;"
+                                style: "display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--background-modifier-border);background:var(--background-secondary);"
                             }
                         });
-                        row.createEl("div", { text: `↗ ${getShortcutDisplayLabel(entry)}` });
-                        row.createEl("div", {
+                        const metaWrap = row.createEl("div", { attr: { style: "min-width:0;flex:1 1 auto;" } });
+                        const titleEl = metaWrap.createEl("div", { text: `↗ ${getShortcutDisplayLabel(entry)}`, attr: { style: "font-weight:700;word-break:break-word;" } });
+                        const subtitleEl = metaWrap.createEl("div", {
+                            text: "正在识别预览信息…",
+                            attr: { style: "font-size:12px;opacity:.85;word-break:break-word;" }
+                        });
+                        const pathEl = metaWrap.createEl("div", {
                             text: entry.path,
                             attr: { style: "font-size:12px;opacity:.85;word-break:break-all;" }
                         });
-                        row.onclick = () => {
+                        void getShortcutPreviewMeta(entry).then((metaInfo) => {
+                            if (!row.isConnected) return;
+                            titleEl.textContent = `↗ ${metaInfo.title || getShortcutDisplayLabel(entry)}`;
+                            subtitleEl.textContent = metaInfo.subtitle || "";
+                            pathEl.textContent = metaInfo.detail || entry.path;
+                        }).catch(() => {
+                            if (!row.isConnected) return;
+                            subtitleEl.textContent = "";
+                        });
+                        const actionsWrap = row.createEl("div", {
+                            attr: { style: "display:flex;gap:6px;align-items:center;flex:0 0 auto;" }
+                        });
+                        const previewBtn = actionsWrap.createEl("button", { text: "预览" });
+                        previewBtn.onclick = async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            await openShortcutPreviewModal(entry);
+                        };
+                        const openBtn = actionsWrap.createEl("button", { text: "打开", cls: "mod-cta" });
+                        openBtn.onclick = () => {
                             this.resolve(entry);
                             this.close();
                         };
@@ -2429,6 +2520,7 @@
         const noteSelector = (noteIndex, currentNotePath = null) => new Promise(r => new VaultNotePickerModal(app, noteIndex, currentNotePath, r).open());
         const paradigmSelector = (items, title = "选择范式", placeholder = "输入名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
         const paradigmCategorySelector = (items, title = "选择分类", placeholder = "输入分类名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
+        const tabSelector = (items, title = "选择Tab", placeholder = "输入Tab名称或ID筛选") => new Promise(r => new ParadigmPickerModal(app, items, title, placeholder, r).open());
         const paradigmTagDefinitionEditor = (options = {}) => new Promise(r => new ParadigmTagDefinitionModal(app, options, r).open());
         const paradigmTagPicker = (title = "设置范式标签", selectedIds = []) => new Promise(r => new ParadigmTagPickerModal(app, title, selectedIds, r).open());
         const taskCommentEditor = (title, defaultValue = "") => new Promise(r => new TaskCommentModal(app, title, defaultValue, r).open());
@@ -2670,6 +2762,23 @@
             if (pathModule?.join) return pathModule.join(basePath, ...clean.split(/[\\/]+/).filter(Boolean));
             return `${basePath.replace(/[\\/]+$/, "")}/${clean.replace(/\\/g, "/")}`;
         };
+        const getShortcutPathTail = (rawPath) => {
+            const clean = String(decodeFileUriToFsPath(rawPath) || "").trim();
+            if (!clean) return "";
+            if (isLikelyExternalUrl(clean) && !/^file:\/\//i.test(clean)) {
+                try {
+                    const parsed = new URL(clean);
+                    return decodeURIComponent((parsed.pathname || "").split("/").filter(Boolean).pop() || "") || parsed.hostname || clean;
+                } catch (_) {
+                    return clean;
+                }
+            }
+            return clean.split(/[\\/]/).pop() || clean;
+        };
+        const suggestShortcutLabelFromPath = (rawPath) => {
+            const tail = getShortcutPathTail(rawPath);
+            return normalizeShortcutLabel(tail.replace(/\.(md|lnk|url)$/i, ""));
+        };
         const getShortcutDisplayLabel = (entryLike) => {
             const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
             const explicit = normalizeShortcutLabel(entry.label || "");
@@ -2693,11 +2802,11 @@
         const buildShortcutEntryFromExternalPath = (rawPath, previous = null) => {
             const clean = String(decodeFileUriToFsPath(rawPath) || "").trim();
             if (!clean) return null;
-            const last = clean.split(/[\\/]/).pop() || clean;
+            const fallbackLabel = suggestShortcutLabelFromPath(clean);
             return {
                 id: String(previous?.id || `shortcut_${generateId()}`).trim() || `shortcut_${generateId()}`,
                 path: clean,
-                label: normalizeShortcutLabel(previous?.label || last.replace(/\.(lnk|url)$/i, "")),
+                label: normalizeShortcutLabel(previous?.label || fallbackLabel),
                 ctime: null,
                 createdAt: previous?.createdAt || nowString(),
                 updatedAt: nowString()
@@ -2745,53 +2854,353 @@
             }
             return ensureUniqueIds(out);
         };
-        const collectShortcutDropTexts = (dataTransfer) => {
+        const collectShortcutDropCandidates = (dataTransfer) => {
             if (!dataTransfer) return [];
-            const values = [];
-            const tryPush = (value) => {
+            const out = [];
+            const seen = new Set();
+            const pushCandidate = (value, label = "") => {
                 const text = String(value || "").trim();
                 if (!text) return;
-                text.split(/\r?\n/).forEach((part) => {
-                    const clean = String(part || "").trim();
-                    if (!clean || clean.startsWith("#")) return;
-                    if (/<[a-z][\s\S]*>/i.test(clean)) {
-                        extractShortcutCandidatesFromHtml(clean).forEach((hit) => values.push(hit));
-                        return;
-                    }
-                    if (clean) values.push(clean);
+                const key = text.toLowerCase();
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push({
+                    value: text,
+                    label: normalizeShortcutLabel(label || "")
                 });
             };
-            const baseTypes = ["text/plain", "text/uri-list", "text/x-obsidian-link", "text/html"];
+            const splitPlainLines = (value) => String(value || "").trim().split(/\r?\n/).map((part) => String(part || "").trim()).filter((part) => !!part && !part.startsWith("#"));
+            const plainText = (() => {
+                try { return String(dataTransfer.getData("text/plain") || "").trim(); } catch (_) { return ""; }
+            })();
+            const uriText = (() => {
+                try { return String(dataTransfer.getData("text/uri-list") || "").trim(); } catch (_) { return ""; }
+            })();
+            const htmlText = (() => {
+                try { return String(dataTransfer.getData("text/html") || "").trim(); } catch (_) { return ""; }
+            })();
+            const plainLabel = plainText && !isLikelyExternalUrl(plainText) && !/<[a-z][\s\S]*>/i.test(plainText) ? plainText : "";
+
+            if (htmlText) {
+                try {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(htmlText, "text/html");
+                    doc.querySelectorAll("a[href], [data-href], [src], [data-path]").forEach((node) => {
+                        const href = String(node.getAttribute?.("href") || node.getAttribute?.("data-href") || node.getAttribute?.("src") || node.getAttribute?.("data-path") || "").trim();
+                        const label = String(node.textContent || node.getAttribute?.("title") || "").trim();
+                        if (href) pushCandidate(href, label);
+                    });
+                } catch (_) {
+                    extractShortcutCandidatesFromHtml(htmlText).forEach((hit) => pushCandidate(hit));
+                }
+            }
+            if (uriText) {
+                splitPlainLines(uriText).forEach((part) => pushCandidate(part, plainLabel));
+            }
+
+            const baseTypes = ["text/plain", "text/x-obsidian-link"];
             const dynamicTypes = Array.from(dataTransfer.types || []).map((type) => String(type || "").trim()).filter(Boolean);
             ensureUniqueIds(baseTypes.concat(dynamicTypes)).forEach((type) => {
-                try { tryPush(dataTransfer.getData(type)); } catch (_) {}
+                if (type === "text/uri-list" || type === "text/html") return;
+                let value = "";
+                try { value = String(dataTransfer.getData(type) || "").trim(); } catch (_) {}
+                if (!value) return;
+                splitPlainLines(value).forEach((part) => {
+                    if (/<[a-z][\s\S]*>/i.test(part)) {
+                        extractShortcutCandidatesFromHtml(part).forEach((hit) => pushCandidate(hit));
+                        return;
+                    }
+                    pushCandidate(part);
+                });
             });
+
             Array.from(dataTransfer.files || []).forEach((file) => {
                 const path = String(file?.path || file?.name || "").trim();
-                if (path) values.push(path);
+                const label = String(file?.name || "").trim();
+                if (path) pushCandidate(path, label);
             });
             Array.from(dataTransfer.items || []).forEach((item) => {
                 try {
                     const file = item?.getAsFile?.();
                     const path = String(file?.path || file?.name || "").trim();
-                    if (path) values.push(path);
+                    const label = String(file?.name || "").trim();
+                    if (path) pushCandidate(path, label);
                 } catch (_) {}
             });
-            return ensureUniqueIds(values);
+            return out;
         };
         const resolveShortcutEntryFromDrop = (dataTransfer) => {
-            const candidates = collectShortcutDropTexts(dataTransfer);
+            const candidates = collectShortcutDropCandidates(dataTransfer);
             for (const candidate of candidates) {
-                const noteFile = resolveShortcutNoteFile(candidate);
-                if (noteFile) return buildShortcutEntryFromFile(noteFile);
-                const vaultFile = resolveExistingVaultFile(candidate);
-                if (vaultFile) return buildShortcutEntryFromFile(vaultFile);
-                if (isLikelyExternalUrl(candidate) || isLikelyAbsoluteFsPath(candidate)) {
-                    const externalEntry = buildShortcutEntryFromExternalPath(candidate);
+                const noteFile = resolveShortcutNoteFile(candidate.value);
+                if (noteFile) return buildShortcutEntryFromFile(noteFile, candidate);
+                const vaultFile = resolveExistingVaultFile(candidate.value);
+                if (vaultFile) return buildShortcutEntryFromFile(vaultFile, candidate);
+                if (isLikelyExternalUrl(candidate.value) || isLikelyAbsoluteFsPath(candidate.value)) {
+                    const externalEntry = buildShortcutEntryFromExternalPath(candidate.value, candidate);
                     if (externalEntry) return externalEntry;
                 }
             }
             return null;
+        };
+        const SHORTCUT_PREVIEW_CACHE_VERSION = "2";
+        const getShortcutPreviewCache = () => {
+            if (!window.workspaceShortcutPreviewCacheState
+                || typeof window.workspaceShortcutPreviewCacheState !== "object"
+                || window.workspaceShortcutPreviewCacheState.version !== SHORTCUT_PREVIEW_CACHE_VERSION) {
+                window.workspaceShortcutPreviewCacheState = {
+                    version: SHORTCUT_PREVIEW_CACHE_VERSION,
+                    entries: {}
+                };
+            }
+            return window.workspaceShortcutPreviewCacheState.entries;
+        };
+        const decodeHtmlEntities = (text) => {
+            const raw = String(text || "");
+            if (!raw) return "";
+            const textarea = document.createElement("textarea");
+            textarea.innerHTML = raw;
+            return textarea.value;
+        };
+        const decodeJsStringLiteral = (raw) => {
+            const text = String(raw || "");
+            if (!text) return "";
+            try {
+                return JSON.parse(`"${text
+                    .replace(/\\/g, "\\\\")
+                    .replace(/"/g, '\\"')
+                    .replace(/\r/g, "\\r")
+                    .replace(/\n/g, "\\n")
+                    .replace(/\t/g, "\\t")
+                    .replace(/\\'/g, "'")}"`);
+            } catch (_) {
+                return text
+                    .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+                    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+                    .replace(/\\n/g, "\n")
+                    .replace(/\\r/g, "\r")
+                    .replace(/\\t/g, "\t")
+                    .replace(/\\'/g, "'")
+                    .replace(/\\"/g, '"')
+                    .replace(/\\\\/g, "\\");
+            }
+        };
+        const extractWechatScriptMeta = (htmlText) => {
+            const html = String(htmlText || "");
+            if (!html) return { title: "", nickname: "" };
+            const titleMatch = html.match(/var\s+msg_title\s*=\s*'((?:\\.|[^'])*)'\.html\(false\);/i)
+                || html.match(/var\s+msg_title\s*=\s*"((?:\\.|[^"])*)"\.html\(false\);/i)
+                || html.match(/msg_title\s*:\s*'((?:\\.|[^'])*)'/i)
+                || html.match(/msg_title\s*:\s*"((?:\\.|[^"])*)"/i);
+            const nicknameMatch = html.match(/var\s+nickname\s*=\s*htmlDecode\("((?:\\.|[^"])*)"\);/i)
+                || html.match(/var\s+nickname\s*=\s*'((?:\\.|[^'])*)'/i)
+                || html.match(/data-nickname=\\"((?:\\.|[^"])*)\\"/i);
+            return {
+                title: decodeHtmlEntities(decodeJsStringLiteral(titleMatch?.[1] || "").replace(/\s+/g, " ").trim()),
+                nickname: decodeHtmlEntities(decodeJsStringLiteral(nicknameMatch?.[1] || "").replace(/\s+/g, " ").trim())
+            };
+        };
+        const extractHtmlTitle = (htmlText) => {
+            const html = String(htmlText || "");
+            if (!html) return "";
+            const wechatMeta = extractWechatScriptMeta(html);
+            if (wechatMeta.title) return wechatMeta.title;
+            try {
+                const doc = new DOMParser().parseFromString(html, "text/html");
+                const titleCandidates = [
+                    doc.querySelector('meta[property="og:title"]')?.getAttribute("content"),
+                    doc.querySelector('meta[name="og:title"]')?.getAttribute("content"),
+                    doc.querySelector('meta[name="twitter:title"]')?.getAttribute("content"),
+                    doc.querySelector('meta[property="twitter:title"]')?.getAttribute("content"),
+                    doc.querySelector('meta[name="title"]')?.getAttribute("content"),
+                    doc.querySelector("title")?.textContent,
+                    doc.querySelector("h1")?.textContent
+                ];
+                for (const candidate of titleCandidates) {
+                    const title = decodeHtmlEntities(String(candidate || "").replace(/\s+/g, " ").trim());
+                    if (title) return title;
+                }
+            } catch (_) {}
+            const metaMatches = [
+                html.match(/<meta[^>]+(?:property|name)=["']og:title["'][^>]+content=["']([\s\S]*?)["']/i),
+                html.match(/<meta[^>]+content=["']([\s\S]*?)["'][^>]+(?:property|name)=["']og:title["']/i),
+                html.match(/<meta[^>]+(?:property|name)=["']twitter:title["'][^>]+content=["']([\s\S]*?)["']/i),
+                html.match(/<meta[^>]+content=["']([\s\S]*?)["'][^>]+(?:property|name)=["']twitter:title["']/i)
+            ];
+            for (const matched of metaMatches) {
+                const title = decodeHtmlEntities(String(matched?.[1] || "").replace(/\s+/g, " ").trim());
+                if (title) return title;
+            }
+            const matched = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            return matched ? decodeHtmlEntities(String(matched[1] || "").replace(/\s+/g, " ").trim()) : "";
+        };
+        const normalizeWebShortcutTitle = (title, rawUrl = "") => {
+            let text = normalizeShortcutLabel(title || "");
+            if (!text) return "";
+            let hostname = "";
+            try { hostname = new URL(rawUrl).hostname || ""; } catch (_) {}
+            if (/^mp\.weixin\.qq\.com$/i.test(hostname)) {
+                text = text
+                    .replace(/\s*[-|｜]\s*微信公众平台\s*$/i, "")
+                    .replace(/\s*[-|｜]\s*WeChat\s*Official\s*Accounts\s*Platform\s*$/i, "")
+                    .trim();
+            }
+            return text;
+        };
+        const buildWebPreviewRequestOptions = (rawUrl) => {
+            let hostname = "";
+            try { hostname = new URL(rawUrl).hostname || ""; } catch (_) {}
+            const headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
+            };
+            if (/^mp\.weixin\.qq\.com$/i.test(hostname)) {
+                headers["Referer"] = "https://mp.weixin.qq.com/";
+            }
+            return { headers, hostname };
+        };
+        const shouldAutoFillShortcutLabel = (entryLike) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
+            const explicit = normalizeShortcutLabel(entry.label || "");
+            if (!explicit) return true;
+            return explicit === suggestShortcutLabelFromPath(entry.path || "");
+        };
+        const updateShortcutEntryLabelIfNeeded = (entryLike, nextLabel) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : null;
+            const label = normalizeShortcutLabel(nextLabel || "");
+            if (!entry || !label || !shouldAutoFillShortcutLabel(entry)) return;
+            entry.label = label;
+            entry.updatedAt = nowString();
+        };
+        const getShortcutPreviewMeta = async (entryLike) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
+            const rawPath = String(entry.path || "").trim();
+            if (!rawPath) {
+                return { kind: "unknown", title: "未识别快捷方式", subtitle: "", detail: "" };
+            }
+            const cacheKey = rawPath;
+            const cache = getShortcutPreviewCache();
+            const cached = cache[cacheKey];
+            if (cached?.status === "resolved") return cached.value;
+            if (cached?.status === "pending" && cached.promise) return cached.promise;
+
+            const noteFile = resolveShortcutNoteFile(rawPath);
+            if (noteFile) {
+                const value = {
+                    kind: "note",
+                    title: noteFile.basename || getShortcutDisplayLabel(entry),
+                    subtitle: `笔记文件：${noteFile.name || `${noteFile.basename}.md`}`,
+                    detail: noteFile.path || rawPath
+                };
+                updateShortcutEntryLabelIfNeeded(entry, value.title);
+                cache[cacheKey] = { status: "resolved", value };
+                return value;
+            }
+
+            const vaultFile = resolveExistingVaultFile(rawPath);
+            if (vaultFile) {
+                const value = {
+                    kind: "file",
+                    title: getShortcutDisplayLabel(entry),
+                    subtitle: `文件名：${vaultFile.name || getShortcutPathTail(vaultFile.path)}`,
+                    detail: vaultFile.path || rawPath
+                };
+                updateShortcutEntryLabelIfNeeded(entry, vaultFile.basename || value.title);
+                cache[cacheKey] = { status: "resolved", value };
+                return value;
+            }
+
+            if (isLikelyExternalUrl(rawPath) && !/^file:\/\//i.test(rawPath)) {
+                const promise = (async () => {
+                    const requestOptions = buildWebPreviewRequestOptions(rawPath);
+                    const hostname = requestOptions.hostname || "";
+                    try {
+                        const requester = typeof obsidian?.requestUrl === "function" ? obsidian.requestUrl : null;
+                        let html = "";
+                        if (requester) {
+                            const resp = await requester({
+                                url: rawPath,
+                                method: "GET",
+                                throw: false,
+                                headers: requestOptions.headers
+                            });
+                            if (resp?.status && resp.status >= 200 && resp.status < 400) html = String(resp.text || "");
+                            else throw new Error(`HTTP ${resp?.status || 0}`);
+                        } else {
+                            const resp = await fetch(rawPath, {
+                                method: "GET",
+                                headers: requestOptions.headers
+                            });
+                            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                            html = await resp.text();
+                        }
+                        const wechatMeta = /^mp\.weixin\.qq\.com$/i.test(hostname) ? extractWechatScriptMeta(html) : null;
+                        const title = normalizeWebShortcutTitle(extractHtmlTitle(html), rawPath) || getShortcutDisplayLabel(entry);
+                        const value = {
+                            kind: "web",
+                            title,
+                            subtitle: wechatMeta?.nickname
+                                ? `网页标题 · ${wechatMeta.nickname}`
+                                : (hostname ? `网页标题 · ${hostname}` : "网页标题"),
+                            detail: rawPath
+                        };
+                        updateShortcutEntryLabelIfNeeded(entry, title);
+                        cache[cacheKey] = { status: "resolved", value };
+                        return value;
+                    } catch (error) {
+                        const value = {
+                            kind: "web",
+                            title: getShortcutDisplayLabel(entry),
+                            subtitle: hostname ? `网页链接 · ${hostname}` : "网页链接",
+                            detail: rawPath,
+                            error: String(error?.message || error || "")
+                        };
+                        cache[cacheKey] = { status: "resolved", value };
+                        return value;
+                    }
+                })();
+                cache[cacheKey] = { status: "pending", promise };
+                return promise;
+            }
+
+            const fileName = getShortcutPathTail(rawPath);
+            const value = {
+                kind: "file",
+                title: getShortcutDisplayLabel(entry),
+                subtitle: fileName ? `文件名：${fileName}` : "文件快捷方式",
+                detail: rawPath
+            };
+            updateShortcutEntryLabelIfNeeded(entry, fileName.replace(/\.(lnk|url)$/i, ""));
+            cache[cacheKey] = { status: "resolved", value };
+            return value;
+        };
+        const openShortcutPreviewModal = async (entryLike) => {
+            const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
+            const previewModal = new obsidian.Modal(app);
+            previewModal.modalEl.style.maxWidth = "680px";
+            previewModal.modalEl.style.width = "84vw";
+            previewModal.contentEl.empty();
+            previewModal.contentEl.createEl("h3", { text: `快捷方式预览：${getShortcutDisplayLabel(entry)}` });
+            const summary = previewModal.contentEl.createEl("div", {
+                attr: { style: "display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--background-modifier-border);border-radius:10px;background:var(--background-primary);" }
+            });
+            const titleEl = summary.createEl("div", { text: "正在识别预览信息…", attr: { style: "font-weight:700;" } });
+            const subtitleEl = summary.createEl("div", { attr: { style: "font-size:12px;color:var(--text-muted);" } });
+            const detailEl = summary.createEl("div", { attr: { style: "font-size:12px;color:var(--text-muted);word-break:break-all;" } });
+            const actions = previewModal.contentEl.createEl("div", {
+                attr: { style: "display:flex;justify-content:flex-end;gap:8px;margin-top:12px;" }
+            });
+            const openBtn = actions.createEl("button", { text: "打开", cls: "mod-cta" });
+            openBtn.onclick = async () => { await activateShortcutEntry(entry); };
+            const closeBtn = actions.createEl("button", { text: "关闭" });
+            closeBtn.onclick = () => previewModal.close();
+            previewModal.open();
+            const meta = await getShortcutPreviewMeta(entry);
+            if (!previewModal.contentEl.isConnected) return;
+            titleEl.textContent = meta.title || getShortcutDisplayLabel(entry);
+            subtitleEl.textContent = meta.subtitle || "";
+            detailEl.textContent = meta.detail || entry.path || "";
         };
         const openExternalShortcutTarget = async (entryLike) => {
             const entry = entryLike && typeof entryLike === "object" ? entryLike : {};
@@ -2884,14 +3293,16 @@
         const getTabDescendantIds = (tabId) => {
             const out = [];
             const seen = new Set();
-            const stack = getTabChildrenIds(tabId);
-            while (stack.length > 0) {
-                const current = String(stack.pop() || "").trim();
-                if (!current || seen.has(current) || !getTabById(current)) continue;
-                seen.add(current);
-                out.push(current);
-                getTabChildrenIds(current).slice().reverse().forEach((childId) => stack.push(childId));
-            }
+            const visit = (parentTabId) => {
+                getTabChildrenIds(parentTabId).forEach((childId) => {
+                    const current = String(childId || "").trim();
+                    if (!current || seen.has(current) || !getTabById(current)) return;
+                    seen.add(current);
+                    out.push(current);
+                    visit(current);
+                });
+            };
+            visit(tabId);
             return out;
         };
         const getVisibleTabIds = (tabId = getActiveTabId()) => {
@@ -3025,6 +3436,20 @@
             }
             return out;
         };
+        const getParadigmAncestorIds = (paradigmId) => {
+            const id = String(paradigmId || "").trim();
+            if (!id || !getParadigmById(id)) return [];
+            const out = [];
+            const seen = new Set([id]);
+            let cursor = getParadigmById(id)?.parentParadigmId || null;
+            while (cursor && !seen.has(cursor)) {
+                seen.add(cursor);
+                if (!getParadigmById(cursor)) break;
+                out.unshift(cursor);
+                cursor = getParadigmById(cursor)?.parentParadigmId || null;
+            }
+            return out;
+        };
         const getParadigmScopeIds = (paradigmId) => {
             const id = String(paradigmId || "").trim();
             if (!id || !getParadigmById(id)) return [];
@@ -3047,6 +3472,20 @@
             const id = String(categoryId || "").trim();
             if (!id || !getParadigmCategoryById(id)) return [];
             return [id].concat(getParadigmCategoryDescendantIds(id));
+        };
+        const getParadigmCategoryAncestorIds = (categoryId) => {
+            const id = String(categoryId || "").trim();
+            if (!id || !getParadigmCategoryById(id)) return [];
+            const out = [];
+            const seen = new Set([id]);
+            let cursor = getParadigmCategoryById(id)?.parentCategoryId || null;
+            while (cursor && !seen.has(cursor)) {
+                seen.add(cursor);
+                if (!getParadigmCategoryById(cursor)) break;
+                out.unshift(cursor);
+                cursor = getParadigmCategoryById(cursor)?.parentCategoryId || null;
+            }
+            return out;
         };
         const getParadigmTagById = (id) => WORKSPACE_DATA.paradigmTagsById?.[String(id || "").trim()] || null;
         const getParadigmTagChildrenIds = (parentTagId = null) => Object.values(WORKSPACE_DATA.paradigmTagsById || {})
@@ -3109,6 +3548,29 @@
                 window.workspaceParadigmTagFilters = normalized.slice();
             }
             return normalized;
+        };
+        const getWorkspaceTabPickerItems = (options = {}) => {
+            const excludedIds = new Set(ensureUniqueIds(options.excludeIds || []));
+            const activeId = String(options.activeTabId || getActiveTabId()).trim();
+            return (Array.isArray(WORKSPACE_DATA?.tabOrder) ? WORKSPACE_DATA.tabOrder : Object.keys(WORKSPACE_DATA?.tabsById || {}))
+                .map((tabId) => getTabById(tabId))
+                .filter((tab) => !!tab && !excludedIds.has(tab.id))
+                .map((tab) => {
+                    const boundCount = normalizeBoundParadigmIds(tab).length;
+                    const childCount = getTabChildrenIds(tab.id).length;
+                    return {
+                        id: tab.id,
+                        name: `${tab.id === activeId ? "● " : ""}${normalizeTabEmoji(tab.emoji || "") ? `${normalizeTabEmoji(tab.emoji || "")} ` : ""}${tab.name}`,
+                        meta: `${tab.id} · 已绑定范式 ${boundCount} · 子Tab ${childCount}${tab.id === activeId ? " · 当前Tab" : ""}`,
+                        search: [
+                            tab.id,
+                            tab.name,
+                            tab.emoji || "",
+                            tab.kind || "",
+                            tab.id === activeId ? "当前 tab active current" : ""
+                        ].join(" ")
+                    };
+                });
         };
         const setParadigmTagFilters = (filtersLike) => {
             window.workspaceParadigmTagFilters = normalizeParadigmTagFilters(filtersLike);
@@ -3299,6 +3761,27 @@
             }
             return document.scrollingElement || document.documentElement || document.body || null;
         };
+        const scrollWorkspaceElementToGoldenPoint = (targetEl, options = {}) => {
+            if (!targetEl) return false;
+            const scroller = getWorkspaceScrollContainer();
+            if (!scroller) return false;
+            const viewportRatio = Number.isFinite(options.viewportRatio) ? options.viewportRatio : 0.382;
+            const scrollerIsDocument = scroller === document.scrollingElement
+                || scroller === document.documentElement
+                || scroller === document.body;
+            const scrollerRect = scrollerIsDocument
+                ? { top: 0, height: window.innerHeight || document.documentElement.clientHeight || 0 }
+                : scroller.getBoundingClientRect();
+            const currentScrollTop = Number(scroller.scrollTop) || 0;
+            const targetRect = targetEl.getBoundingClientRect();
+            const targetTop = currentScrollTop + (targetRect.top - scrollerRect.top);
+            const desiredScrollTop = Math.max(0, targetTop - (scrollerRect.height * viewportRatio));
+            scroller.scrollTo({
+                top: Math.round(desiredScrollTop),
+                behavior: options.behavior || "smooth"
+            });
+            return true;
+        };
         const restorePinnedScrollPosition = (tabId = getActiveTabId()) => {
             const entry = getPinnedScrollEntry(tabId);
             if (!entry) return;
@@ -3311,9 +3794,11 @@
         };
         const schedulePinnedScrollRestore = (tabId = getActiveTabId()) => {
             [0, 120, 360, 900, 1800, 3200].forEach((delay) => {
-                window.setTimeout(() => {
+                const timerId = window.setTimeout(() => {
                     if (window.workspacePendingRelationFocusNodeKey) return;
-                    window.requestAnimationFrame(() => restorePinnedScrollPosition(tabId));
+                    window.requestAnimationFrame(() => {
+                        restorePinnedScrollPosition(tabId);
+                    });
                 }, delay);
             });
         };
@@ -3431,6 +3916,21 @@
             el.classList.add("workspace-paradigm-mount-focus-hit");
             window.setTimeout(() => el.classList.remove("workspace-paradigm-mount-focus-hit"), 1800);
         };
+        const pulseWorkspaceTabSectionTarget = (el) => {
+            if (!el) return;
+            el.classList.add("workspace-tab-section-focus-hit");
+            window.setTimeout(() => el.classList.remove("workspace-tab-section-focus-hit"), 1800);
+        };
+        const pulseParadigmCategoryTarget = (el) => {
+            if (!el) return;
+            el.classList.add("workspace-paradigm-category-focus-hit");
+            window.setTimeout(() => el.classList.remove("workspace-paradigm-category-focus-hit"), 1800);
+        };
+        const pulseParadigmPanelTarget = (el) => {
+            if (!el) return;
+            el.classList.add("workspace-paradigm-focus-hit");
+            window.setTimeout(() => el.classList.remove("workspace-paradigm-focus-hit"), 1800);
+        };
         const focusPendingParadigmMountTarget = (options = {}) => {
             if (window.workspacePendingRelationFocusNodeKey) return false;
             const pending = window.workspacePendingParadigmMountFocus;
@@ -3444,13 +3944,55 @@
             const selector = `.workspace-paradigm-mount-group-head[data-workspace-paradigm-mount-tab-id="${escapeSelectorValue(tabId)}"][data-workspace-paradigm-mount-id="${escapeSelectorValue(paradigmId)}"]`;
             const targetEl = dv.container.querySelector(selector);
             if (!targetEl) return false;
-            targetEl.scrollIntoView({
-                behavior: options.behavior || "smooth",
-                block: "center",
-                inline: "nearest"
-            });
+            scrollWorkspaceElementToGoldenPoint(targetEl, { behavior: options.behavior || "smooth" });
             pulseParadigmMountTarget(targetEl);
             window.workspacePendingParadigmMountFocus = null;
+            return true;
+        };
+        const focusPendingParadigmCategoryTarget = (options = {}) => {
+            if (window.workspacePendingRelationFocusNodeKey) return false;
+            const pending = window.workspacePendingParadigmCategoryFocus;
+            if (!pending || typeof pending !== "object") return false;
+            const categoryId = String(pending.categoryId || "").trim();
+            if (!categoryId) {
+                window.workspacePendingParadigmCategoryFocus = null;
+                return false;
+            }
+            const selector = `.workspace-paradigm-category-row[data-workspace-paradigm-category-id="${escapeSelectorValue(categoryId)}"]`;
+            const targetEl = dv.container.querySelector(selector);
+            if (!targetEl) return false;
+            scrollWorkspaceElementToGoldenPoint(targetEl, { behavior: options.behavior || "smooth" });
+            pulseParadigmCategoryTarget(targetEl);
+            window.workspacePendingParadigmCategoryFocus = null;
+            return true;
+        };
+        const focusPendingParadigmPanelTarget = (options = {}) => {
+            if (window.workspacePendingRelationFocusNodeKey) return false;
+            const pending = window.workspacePendingParadigmPanelFocus;
+            if (!pending || typeof pending !== "object") return false;
+            const paradigmId = String(pending.paradigmId || "").trim();
+            if (!paradigmId) {
+                window.workspacePendingParadigmPanelFocus = null;
+                return false;
+            }
+            const selector = `.workspace-panel-row[data-workspace-paradigm-id="${escapeSelectorValue(paradigmId)}"]`;
+            const targetEl = dv.container.querySelector(selector);
+            if (!targetEl) return false;
+            scrollWorkspaceElementToGoldenPoint(targetEl, { behavior: options.behavior || "smooth" });
+            pulseParadigmPanelTarget(targetEl);
+            window.workspacePendingParadigmPanelFocus = null;
+            return true;
+        };
+        const revealWorkspaceTabSection = async (tabId = getActiveTabId()) => {
+            const normalizedTabId = String(tabId || "").trim();
+            if (!normalizedTabId || !getTabById(normalizedTabId)) return false;
+            const selector = `.workspace-tab-section[data-workspace-tab-section-id="${escapeSelectorValue(normalizedTabId)}"]`;
+            const targetSectionEl = dv.container.querySelector(selector);
+            if (!targetSectionEl) return false;
+            const targetEl = targetSectionEl.querySelector(".workspace-tab-section-head") || targetSectionEl;
+            if (!targetEl) return false;
+            scrollWorkspaceElementToGoldenPoint(targetEl, { behavior: "smooth" });
+            pulseWorkspaceTabSectionTarget(targetSectionEl);
             return true;
         };
         const revealParadigmMountTarget = async (tabId = getActiveTabId(), paradigmId) => {
@@ -3489,8 +4031,74 @@
             window.setTimeout(() => focusPendingParadigmMountTarget(), 120);
             return true;
         };
+        const revealParadigmCategoryTarget = async (categoryId = null) => {
+            const normalizedCategoryId = String(categoryId || "").trim() || UNCATEGORIZED_PARADIGM_GROUP_ID;
+            if (normalizedCategoryId !== UNCATEGORIZED_PARADIGM_GROUP_ID && !getParadigmCategoryById(normalizedCategoryId)) return false;
+            const ancestorIds = normalizedCategoryId === UNCATEGORIZED_PARADIGM_GROUP_ID
+                ? []
+                : getParadigmCategoryAncestorIds(normalizedCategoryId);
+            const needsExpand = ancestorIds.some((ancestorId) => isParadigmCategoryTreeCollapsed(ancestorId));
+            window.workspacePendingParadigmCategoryFocus = {
+                categoryId: normalizedCategoryId
+            };
+            if (needsExpand) {
+                await updateWorkspaceData((data) => {
+                    if (!data.paradigmCategoryCollapsedById || typeof data.paradigmCategoryCollapsedById !== "object") {
+                        data.paradigmCategoryCollapsedById = {};
+                    }
+                    ancestorIds.forEach((ancestorId) => {
+                        data.paradigmCategoryCollapsedById[ancestorId] = false;
+                    });
+                });
+                return true;
+            }
+            focusPendingParadigmCategoryTarget();
+            window.setTimeout(() => focusPendingParadigmCategoryTarget(), 120);
+            return true;
+        };
+        const revealParadigmPanelTarget = async (paradigmId) => {
+            const normalizedParadigmId = String(paradigmId || "").trim();
+            const paradigm = getParadigmById(normalizedParadigmId);
+            if (!normalizedParadigmId || !paradigm) return false;
+            const categoryId = paradigm.categoryId || null;
+            const categoryExpandIds = categoryId
+                ? getParadigmCategoryAncestorIds(categoryId).concat(categoryId)
+                : [UNCATEGORIZED_PARADIGM_GROUP_ID];
+            const paradigmExpandIds = getParadigmAncestorIds(normalizedParadigmId);
+            const needsExpand = categoryExpandIds.some((id) => isParadigmCategoryTreeCollapsed(id))
+                || paradigmExpandIds.some((id) => isParadigmTreeCollapsed(id));
+            window.workspacePendingParadigmPanelFocus = {
+                paradigmId: normalizedParadigmId
+            };
+            if (needsExpand) {
+                await updateWorkspaceData((data) => {
+                    if (!data.paradigmCategoryCollapsedById || typeof data.paradigmCategoryCollapsedById !== "object") {
+                        data.paradigmCategoryCollapsedById = {};
+                    }
+                    categoryExpandIds.forEach((id) => {
+                        data.paradigmCategoryCollapsedById[id] = false;
+                    });
+                    if (!data.paradigmTreeCollapsedById || typeof data.paradigmTreeCollapsedById !== "object") {
+                        data.paradigmTreeCollapsedById = {};
+                    }
+                    paradigmExpandIds.forEach((id) => {
+                        data.paradigmTreeCollapsedById[id] = false;
+                    });
+                });
+                return true;
+            }
+            focusPendingParadigmPanelTarget();
+            window.setTimeout(() => focusPendingParadigmPanelTarget(), 120);
+            return true;
+        };
         const getParadigmTocDropPosition = (element, event) => {
             const rect = element.getBoundingClientRect();
+            return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+        };
+        const getParadigmCategoryTocDropPosition = (element, event) => {
+            const rect = element.getBoundingClientRect();
+            const ratioX = (event.clientX - rect.left) / Math.max(rect.width, 1);
+            if (ratioX > 0.72) return "child";
             return (event.clientY - rect.top) < rect.height / 2 ? "before" : "after";
         };
         const moveTopLevelParadigmMountOrder = async (tabId, draggedParadigmId, targetParadigmId, position = "after") => {
@@ -3780,6 +4388,78 @@
                 children.forEach((childId) => stack.push(childId));
             }
             return ids;
+        };
+        const getDirectChildIdsFromData = (data, parentId, tabId) => ensureUniqueIds(data.childrenByParentByTab?.[tabParentKey(tabId, parentId)] || [])
+            .filter((id) => !!data.itemsById?.[id] && data.itemsById[id].tabId === tabId);
+        const buildTransferMarkerLine = (meta) => {
+            const sourceTabId = String(meta?.sourceTabId || "").trim();
+            const sourceItemId = String(meta?.sourceItemId || "").trim();
+            const sourceParadigmId = String(meta?.sourceParadigmId || "").trim();
+            return `[workspace-transfer] sourceTabId=${sourceTabId};sourceItemId=${sourceItemId};sourceParadigmId=${sourceParadigmId};`;
+        };
+        const parseTransferMarkerLine = (text) => {
+            const raw = String(text || "");
+            const match = raw.match(/\[workspace-transfer\]\s*sourceTabId=([^;\n]+);sourceItemId=([^;\n]+);sourceParadigmId=([^;\n]+);/);
+            if (!match) return null;
+            return {
+                sourceTabId: String(match[1] || "").trim(),
+                sourceItemId: String(match[2] || "").trim(),
+                sourceParadigmId: String(match[3] || "").trim()
+            };
+        };
+        const composeTransferredItemComment = (meta, originalComment = "") => {
+            const sourceTabName = String(meta?.sourceTabName || meta?.sourceTabId || "").trim();
+            const sourceParadigmName = String(meta?.sourceParadigmName || meta?.sourceParadigmId || "").trim();
+            const sourceItemTitle = String(meta?.sourceItemTitle || meta?.sourceItemId || "").trim();
+            const sourceItemId = String(meta?.sourceItemId || "").trim();
+            const intro = [
+                `转自 Tab：${sourceTabName}${meta?.sourceTabId ? ` (${meta.sourceTabId})` : ""}`,
+                `来源范式：${sourceParadigmName}`,
+                `来源条目：${sourceItemTitle}${sourceItemId ? ` (${sourceItemId})` : ""}`,
+                buildTransferMarkerLine(meta)
+            ].join("\n");
+            const cleanOriginal = String(originalComment || "").trim();
+            return cleanOriginal ? `${intro}\n\n${cleanOriginal}` : intro;
+        };
+        const ensureLocalItemInserted = (data, tabId, parentId, itemId) => {
+            const scoped = tabParentKey(tabId, parentId);
+            if (!data.childrenByParentByTab || typeof data.childrenByParentByTab !== "object") data.childrenByParentByTab = {};
+            if (!Array.isArray(data.childrenByParentByTab[scoped])) data.childrenByParentByTab[scoped] = [];
+            const siblings = data.childrenByParentByTab[scoped];
+            if (siblings.includes(itemId)) return;
+            const insertAt = siblings.findIndex((siblingId) => data.itemsById?.[siblingId]?.sourceType === "paradigm");
+            if (insertAt < 0) siblings.push(itemId);
+            else siblings.splice(insertAt, 0, itemId);
+        };
+        const ensureParadigmTransferLogRootInData = (data, tabId) => {
+            const existing = getDirectChildIdsFromData(data, null, tabId)
+                .map((id) => data.itemsById?.[id])
+                .find((item) => !!item && item.sourceType === "tab" && item.title === PARADIGM_TRANSFER_LOG_TITLE);
+            if (existing) return existing.id;
+            const id = generateId();
+            data.itemsById[id] = {
+                id,
+                title: PARADIGM_TRANSFER_LOG_TITLE,
+                parentId: null,
+                tabId,
+                sourceType: "tab",
+                sourceParadigmId: null,
+                sourceParadigmItemId: null,
+                sourceParadigmBindingRootId: null,
+                sourceParadigmMountScopeId: null,
+                sourceParadigmCopyRefId: null,
+                sourceParadigmMountMode: "direct",
+                isCollapsed: true,
+                imageRef: "",
+                shortcuts: [],
+                comment: "自动记录每次“共通范式迁入”的执行结果。",
+                noteBinding: null,
+                orphaned: false,
+                createdAt: nowString(),
+                updatedAt: nowString()
+            };
+            ensureLocalItemInserted(data, tabId, null, id);
+            return id;
         };
 
         const wouldCreateCycle = (data, draggedId, nextParentId, tabId) => {
@@ -4257,6 +4937,235 @@
                 syncParadigmToTabInData(data, tab.id);
             });
         };
+        const transferCommonParadigmItemsBetweenTabs = async (sourceTabIdRaw, targetTabIdRaw) => {
+            const sourceTabId = String(sourceTabIdRaw || "").trim();
+            const targetTabId = String(targetTabIdRaw || "").trim();
+            if (!sourceTabId || !targetTabId || sourceTabId === targetTabId) {
+                new Notice("⚠️ 请选择不同的源 Tab 和目标 Tab");
+                return;
+            }
+            const sourceTab = getTabById(sourceTabId);
+            const targetTab = getTabById(targetTabId);
+            if (!sourceTab || !targetTab) {
+                new Notice("⚠️ 未找到源 Tab 或目标 Tab");
+                return;
+            }
+            const ok = await confirm(
+                "共通范式迁入",
+                `确定将 <b>${sourceTab.name}</b> 里共通范式下的本地条目增量迁入 <b>${targetTab.name}</b> 吗？<br><br>系统会自动匹配两个 Tab 的共通范式；目标 Tab 已有内容不会被覆盖，只会新增缺失条目，并给新增条目附上“转自 ${sourceTab.name}”备注。`
+            );
+            if (!ok) return;
+
+            let resultSummary = null;
+            await updateWorkspaceData((data) => {
+                ensureTabExists(data, sourceTabId, sourceTab.name);
+                ensureTabExists(data, targetTabId, targetTab.name);
+                syncParadigmToTabInData(data, sourceTabId);
+                syncParadigmToTabInData(data, targetTabId);
+
+                const sourceRootMapInfo = collectBoundParadigmRootMapForTab(data, sourceTabId);
+                const targetRootMapInfo = collectBoundParadigmRootMapForTab(data, targetTabId);
+                const sourceMountBySourceParadigmId = new Map();
+                const targetMountBySourceParadigmId = new Map();
+                Array.from(sourceRootMapInfo.rootMap.keys()).forEach((mountNodeId) => {
+                    const sourceParadigmId = getParadigmSourceIdInData(data, mountNodeId);
+                    if (sourceParadigmId && !sourceMountBySourceParadigmId.has(sourceParadigmId)) {
+                        sourceMountBySourceParadigmId.set(sourceParadigmId, mountNodeId);
+                    }
+                });
+                Array.from(targetRootMapInfo.rootMap.keys()).forEach((mountNodeId) => {
+                    const sourceParadigmId = getParadigmSourceIdInData(data, mountNodeId);
+                    if (sourceParadigmId && !targetMountBySourceParadigmId.has(sourceParadigmId)) {
+                        targetMountBySourceParadigmId.set(sourceParadigmId, mountNodeId);
+                    }
+                });
+                const commonParadigmSourceIds = Array.from(sourceMountBySourceParadigmId.keys())
+                    .filter((sourceParadigmId) => targetMountBySourceParadigmId.has(sourceParadigmId));
+
+                const stats = {
+                    commonParadigmCount: commonParadigmSourceIds.length,
+                    touchedParadigmItemCount: 0,
+                    createdItemCount: 0,
+                    reusedItemCount: 0,
+                    commonParadigmNames: [],
+                    touchedParadigmItemLabels: []
+                };
+                const touchedParadigmItemSet = new Set();
+
+                const cloneLocalSubtreeIntoTarget = (sourceItemId, targetParentId, transferMetaBase) => {
+                    const sourceItem = data.itemsById?.[sourceItemId];
+                    if (!sourceItem || sourceItem.tabId !== sourceTabId || sourceItem.sourceType !== "tab") return null;
+                    const sourceComment = typeof TASK_COMMENTS?.[sourceItemId] === "string" && String(TASK_COMMENTS[sourceItemId] || "").trim()
+                        ? String(TASK_COMMENTS[sourceItemId] || "")
+                        : String(sourceItem.comment || "");
+                    const transferMeta = {
+                        ...transferMetaBase,
+                        sourceItemId: sourceItem.id,
+                        sourceItemTitle: sourceItem.title
+                    };
+                    const markerLine = buildTransferMarkerLine(transferMeta);
+                    const existingChild = getDirectChildIdsFromData(data, targetParentId, targetTabId)
+                        .map((id) => data.itemsById?.[id])
+                        .find((item) => {
+                            if (!item || item.tabId !== targetTabId || item.sourceType !== "tab") return false;
+                            const marker = parseTransferMarkerLine(item.comment || "");
+                            return !!marker && marker.sourceTabId === sourceTabId && marker.sourceItemId === sourceItem.id;
+                        });
+                    let targetItemId = existingChild?.id || "";
+                    if (targetItemId) {
+                        stats.reusedItemCount += 1;
+                    } else {
+                        targetItemId = generateId();
+                        while (data.itemsById[targetItemId]) targetItemId = generateId();
+                        data.itemsById[targetItemId] = {
+                            id: targetItemId,
+                            title: sourceItem.title,
+                            parentId: targetParentId,
+                            tabId: targetTabId,
+                            sourceType: "tab",
+                            sourceParadigmId: null,
+                            sourceParadigmItemId: null,
+                            sourceParadigmBindingRootId: null,
+                            sourceParadigmMountScopeId: null,
+                            sourceParadigmCopyRefId: null,
+                            sourceParadigmMountMode: "direct",
+                            isCollapsed: !!sourceItem.isCollapsed,
+                            imageRef: sanitizeImageInput(sourceItem.imageRef || ""),
+                            shortcuts: normalizeShortcutEntries(sourceItem.shortcuts || []),
+                            comment: composeTransferredItemComment(transferMeta, sourceComment),
+                            noteBinding: normalizeBindingValue(sourceItem.noteBinding),
+                            orphaned: false,
+                            createdAt: nowString(),
+                            updatedAt: nowString()
+                        };
+                        ensureLocalItemInserted(data, targetTabId, targetParentId, targetItemId);
+                        stats.createdItemCount += 1;
+                    }
+                    const targetItem = data.itemsById?.[targetItemId];
+                    if (targetItem) {
+                        targetItem.parentId = targetParentId;
+                        if (!String(targetItem.comment || "").includes(markerLine)) {
+                            targetItem.comment = composeTransferredItemComment(transferMeta, targetItem.comment || sourceComment);
+                        }
+                        targetItem.updatedAt = nowString();
+                    }
+                    getDirectChildIdsFromData(data, sourceItem.id, sourceTabId).forEach((childId) => {
+                        const childItem = data.itemsById?.[childId];
+                        if (!childItem || childItem.sourceType !== "tab") return;
+                        cloneLocalSubtreeIntoTarget(childId, targetItemId, transferMetaBase);
+                    });
+                    return targetItemId;
+                };
+
+                commonParadigmSourceIds.forEach((sourceParadigmId) => {
+                    const sourceMountNodeId = sourceMountBySourceParadigmId.get(sourceParadigmId);
+                    const targetMountNodeId = targetMountBySourceParadigmId.get(sourceParadigmId);
+                    if (!sourceMountNodeId || !targetMountNodeId) return;
+                    const sourceParadigm = data.paradigmsById?.[sourceParadigmId];
+                    stats.commonParadigmNames.push(sourceParadigm?.name || sourceParadigmId);
+                    const paradigmItemIds = Object.values(data.paradigmItemsById || {})
+                        .filter((pgItem) => !!pgItem && pgItem.paradigmId === sourceParadigmId)
+                        .map((pgItem) => pgItem.id);
+                    paradigmItemIds.forEach((paradigmItemId) => {
+                        const sourceMountedTabItemId = data.paradigmToTabItemMapByTab?.[makeParadigmMountMapKey(sourceTabId, sourceMountNodeId, paradigmItemId)];
+                        const targetMountedTabItemId = data.paradigmToTabItemMapByTab?.[makeParadigmMountMapKey(targetTabId, targetMountNodeId, paradigmItemId)];
+                        if (!sourceMountedTabItemId || !targetMountedTabItemId) return;
+                        const directLocalChildIds = getDirectChildIdsFromData(data, sourceMountedTabItemId, sourceTabId)
+                            .filter((childId) => data.itemsById?.[childId]?.sourceType === "tab");
+                        if (directLocalChildIds.length === 0) return;
+                        const touchedKey = `${sourceParadigmId}::${paradigmItemId}`;
+                        if (!touchedParadigmItemSet.has(touchedKey)) {
+                            touchedParadigmItemSet.add(touchedKey);
+                            stats.touchedParadigmItemCount += 1;
+                            const paradigmItem = data.paradigmItemsById?.[paradigmItemId];
+                            stats.touchedParadigmItemLabels.push(`${sourceParadigm?.name || sourceParadigmId} / ${paradigmItem?.title || paradigmItemId}`);
+                        }
+                        directLocalChildIds.forEach((sourceLocalChildId) => {
+                            cloneLocalSubtreeIntoTarget(sourceLocalChildId, targetMountedTabItemId, {
+                                sourceTabId,
+                                sourceTabName: sourceTab.name,
+                                sourceParadigmId,
+                                sourceParadigmName: sourceParadigm?.name || sourceParadigmId
+                            });
+                        });
+                    });
+                });
+
+                const logRootId = ensureParadigmTransferLogRootInData(data, targetTabId);
+                const logItemId = generateId();
+                const previewParadigms = stats.commonParadigmNames.slice(0, 8).join("、");
+                const previewTouched = stats.touchedParadigmItemLabels.slice(0, 12).join("\n");
+                data.itemsById[logItemId] = {
+                    id: logItemId,
+                    title: `${nowString()} 从 ${sourceTab.name} 增量迁入 ${stats.createdItemCount} 条`,
+                    parentId: logRootId,
+                    tabId: targetTabId,
+                    sourceType: "tab",
+                    sourceParadigmId: null,
+                    sourceParadigmItemId: null,
+                    sourceParadigmBindingRootId: null,
+                    sourceParadigmMountScopeId: null,
+                    sourceParadigmCopyRefId: null,
+                    sourceParadigmMountMode: "direct",
+                    isCollapsed: false,
+                    imageRef: "",
+                    shortcuts: [],
+                    comment: [
+                        `源 Tab：${sourceTab.name} (${sourceTabId})`,
+                        `目标 Tab：${targetTab.name} (${targetTabId})`,
+                        `共同范式：${stats.commonParadigmCount} 个`,
+                        `命中范式条目：${stats.touchedParadigmItemCount} 个`,
+                        `新增条目：${stats.createdItemCount} 个`,
+                        `复用既有迁移条目：${stats.reusedItemCount} 个`,
+                        previewParadigms ? `共同范式列表：${previewParadigms}` : "共同范式列表：无",
+                        previewTouched ? `命中范式条目：\n${previewTouched}` : "命中范式条目：无"
+                    ].join("\n"),
+                    noteBinding: null,
+                    orphaned: false,
+                    createdAt: nowString(),
+                    updatedAt: nowString()
+                };
+                ensureLocalItemInserted(data, targetTabId, logRootId, logItemId);
+                const logRoot = data.itemsById?.[logRootId];
+                if (logRoot) logRoot.updatedAt = nowString();
+                const targetTabData = data.tabsById?.[targetTabId];
+                if (targetTabData) targetTabData.updatedAt = nowString();
+
+                resultSummary = {
+                    ...stats,
+                    sourceTabName: sourceTab.name,
+                    targetTabName: targetTab.name
+                };
+            });
+
+            if (!resultSummary) return;
+            new Notice(
+                resultSummary.createdItemCount > 0
+                    ? `📥 已从 ${resultSummary.sourceTabName} 向 ${resultSummary.targetTabName} 增量迁入 ${resultSummary.createdItemCount} 条，共同范式 ${resultSummary.commonParadigmCount} 个`
+                    : `ℹ️ 已检查 ${resultSummary.sourceTabName} -> ${resultSummary.targetTabName}，共同范式 ${resultSummary.commonParadigmCount} 个，没有新增条目`
+            );
+        };
+        const promptTransferCommonParadigmItemsBetweenTabs = async () => {
+            const tabs = Object.values(WORKSPACE_DATA.tabsById || {}).filter(Boolean);
+            if (tabs.length < 2) {
+                new Notice("⚠️ 至少需要两个 Tab 才能执行共通范式迁入");
+                return;
+            }
+            const activeId = getActiveTabId();
+            const source = await runWithPromptLock(() => tabSelector(
+                getWorkspaceTabPickerItems({ activeTabId: activeId }),
+                "选择源 Tab",
+                "输入源 Tab 名称或 ID 筛选"
+            ));
+            if (!source?.id) return;
+            const target = await runWithPromptLock(() => tabSelector(
+                getWorkspaceTabPickerItems({ excludeIds: [source.id], activeTabId: activeId }),
+                "选择目标 Tab",
+                "输入目标 Tab 名称或 ID 筛选"
+            ));
+            if (!target?.id) return;
+            await transferCommonParadigmItemsBetweenTabs(source.id, target.id);
+        };
 
         const createTab = async () => {
             const name = await runWithPromptLock(() => prompt("新建 Tab", "输入 Tab 名称（项目/任务/对象）"));
@@ -4467,8 +5376,13 @@
                 const key = paradigmCategoryTreeKey(parentId);
                 if (!Array.isArray(data.childParadigmCategoryIdsByParent[key])) data.childParadigmCategoryIdsByParent[key] = [];
                 const siblings = data.childParadigmCategoryIdsByParent[key];
-                if (position === "child") siblings.unshift(dragged.id);
-                else {
+                if (position === "child") {
+                    siblings.unshift(dragged.id);
+                    if (!data.paradigmCategoryCollapsedById || typeof data.paradigmCategoryCollapsedById !== "object") {
+                        data.paradigmCategoryCollapsedById = {};
+                    }
+                    data.paradigmCategoryCollapsedById[target.id] = false;
+                } else {
                     const targetIndex = siblings.indexOf(target.id);
                     if (targetIndex < 0) siblings.push(dragged.id);
                     else siblings.splice(position === "before" ? targetIndex : targetIndex + 1, 0, dragged.id);
@@ -6407,6 +7321,169 @@
                 return ownCategoryId && scopeIds.has(ownCategoryId);
             }).length;
         };
+        const createParadigmPanelVisibilityApi = (filterIds = getParadigmTagFilters()) => {
+            const activeFilterIds = normalizeParadigmTagFilters(filterIds);
+            const paradigmDirectTagMatchMemo = new Map();
+            const paradigmDescendantTagMatchMemo = new Map();
+            const paradigmAncestorTagMatchMemo = new Map();
+            const paradigmVisibilityMemo = new Map();
+            const categoryVisibilityMemo = new Map();
+            const paradigmDirectTagMatch = (paradigmId) => {
+                const normalizedId = String(paradigmId || "").trim();
+                if (!normalizedId || !getParadigmById(normalizedId)) return false;
+                if (activeFilterIds.length === 0) return true;
+                if (paradigmDirectTagMatchMemo.has(normalizedId)) return paradigmDirectTagMatchMemo.get(normalizedId);
+                const matched = paradigmMatchesTagFilters(normalizedId, activeFilterIds);
+                paradigmDirectTagMatchMemo.set(normalizedId, matched);
+                return matched;
+            };
+            const paradigmHasMatchingDescendant = (paradigmId, chain = new Set()) => {
+                const normalizedId = String(paradigmId || "").trim();
+                const currentParadigm = getParadigmById(normalizedId);
+                if (!normalizedId || !currentParadigm) return false;
+                if (activeFilterIds.length === 0) return false;
+                if (paradigmDescendantTagMatchMemo.has(normalizedId)) return paradigmDescendantTagMatchMemo.get(normalizedId);
+                if (chain.has(normalizedId)) return false;
+                const nextChain = new Set(chain);
+                nextChain.add(normalizedId);
+                const ownCategoryId = currentParadigm.categoryId || null;
+                const matched = getEffectiveChildParadigmIds(normalizedId).some((childId) => {
+                    const childParadigm = getParadigmById(childId);
+                    return !!childParadigm
+                        && (childParadigm.categoryId || null) === ownCategoryId
+                        && (
+                            paradigmDirectTagMatch(childId)
+                            || paradigmHasMatchingDescendant(childId, nextChain)
+                        );
+                });
+                paradigmDescendantTagMatchMemo.set(normalizedId, matched);
+                return matched;
+            };
+            const paradigmHasMatchingAncestor = (paradigmId) => {
+                const normalizedId = String(paradigmId || "").trim();
+                const currentParadigm = getParadigmById(normalizedId);
+                if (!normalizedId || !currentParadigm) return false;
+                if (activeFilterIds.length === 0) return false;
+                if (paradigmAncestorTagMatchMemo.has(normalizedId)) return paradigmAncestorTagMatchMemo.get(normalizedId);
+                const seen = new Set([normalizedId]);
+                let cursor = currentParadigm.parentParadigmId || null;
+                let matched = false;
+                while (cursor && !seen.has(cursor)) {
+                    seen.add(cursor);
+                    if (paradigmDirectTagMatch(cursor)) {
+                        matched = true;
+                        break;
+                    }
+                    cursor = getParadigmById(cursor)?.parentParadigmId || null;
+                }
+                paradigmAncestorTagMatchMemo.set(normalizedId, matched);
+                return matched;
+            };
+            const paradigmVisible = (paradigmId, chain = new Set()) => {
+                const normalizedId = String(paradigmId || "").trim();
+                const currentParadigm = getParadigmById(normalizedId);
+                if (!normalizedId || !currentParadigm) return false;
+                if (activeFilterIds.length === 0) return true;
+                if (paradigmVisibilityMemo.has(normalizedId)) return paradigmVisibilityMemo.get(normalizedId);
+                if (chain.has(normalizedId)) return false;
+                const nextChain = new Set(chain);
+                nextChain.add(normalizedId);
+                const visible = paradigmDirectTagMatch(normalizedId)
+                    || paradigmHasMatchingAncestor(normalizedId)
+                    || paradigmHasMatchingDescendant(normalizedId, nextChain);
+                paradigmVisibilityMemo.set(normalizedId, visible);
+                return visible;
+            };
+            const categoryVisible = (categoryId) => {
+                const normalizedId = String(categoryId || "").trim();
+                if (!normalizedId || !getParadigmCategoryById(normalizedId)) return false;
+                if (activeFilterIds.length === 0) return true;
+                if (categoryVisibilityMemo.has(normalizedId)) return categoryVisibilityMemo.get(normalizedId);
+                const visible = getCategoryParadigmRootIds(normalizedId).some((paradigmId) => paradigmVisible(paradigmId))
+                    || getChildParadigmCategoryIds(normalizedId).some((childId) => categoryVisible(childId));
+                categoryVisibilityMemo.set(normalizedId, visible);
+                return visible;
+            };
+            return {
+                filterIds: activeFilterIds,
+                paradigmVisible,
+                categoryVisible
+            };
+        };
+        const getParadigmCategoryTocEntries = (filterIds = getParadigmTagFilters()) => {
+            const visibilityApi = createParadigmPanelVisibilityApi(filterIds);
+            const activeFilterIds = visibilityApi.filterIds;
+            const entries = [];
+            const visitParadigm = (paradigmId, level = 0, currentCategoryId = null, chain = new Set()) => {
+                const normalizedId = String(paradigmId || "").trim();
+                const paradigm = getParadigmById(normalizedId);
+                if (!normalizedId || !paradigm || chain.has(normalizedId)) return;
+                if ((paradigm.categoryId || null) !== (currentCategoryId || null)) return;
+                if (activeFilterIds.length > 0 && !visibilityApi.paradigmVisible(normalizedId)) return;
+                entries.push({
+                    kind: "paradigm",
+                    id: normalizedId,
+                    level,
+                    name: getParadigmNodeLabel(paradigm),
+                    itemCount: Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((item) => item?.paradigmId === getParadigmSourceId(paradigm)).length,
+                    isCopy: isParadigmCopy(paradigm)
+                });
+                const nextChain = new Set(chain);
+                nextChain.add(normalizedId);
+                getEffectiveChildParadigmIds(normalizedId)
+                    .filter((childId) => (getParadigmById(childId)?.categoryId || null) === (currentCategoryId || null))
+                    .forEach((childId) => visitParadigm(childId, level + 1, currentCategoryId, nextChain));
+            };
+            const visit = (categoryId, level = 0, chain = new Set()) => {
+                const normalizedId = String(categoryId || "").trim();
+                const category = getParadigmCategoryById(normalizedId);
+                if (!normalizedId || !category || chain.has(normalizedId)) return;
+                if (activeFilterIds.length > 0 && !visibilityApi.categoryVisible(normalizedId)) return;
+                const visibleChildCategoryIds = getChildParadigmCategoryIds(normalizedId)
+                    .filter((childId) => activeFilterIds.length === 0 || visibilityApi.categoryVisible(childId));
+                const visibleParadigmRootCount = getCategoryParadigmRootIds(normalizedId)
+                    .filter((paradigmId) => visibilityApi.paradigmVisible(paradigmId))
+                    .length;
+                entries.push({
+                    kind: "category",
+                    id: normalizedId,
+                    level,
+                    name: category.name || normalizedId,
+                    visibleChildCategoryCount: visibleChildCategoryIds.length,
+                    totalChildCategoryCount: getChildParadigmCategoryIds(normalizedId).length,
+                    visibleParadigmRootCount,
+                    totalParadigmCount: getParadigmCountForCategoryScope(normalizedId)
+                });
+                getCategoryParadigmRootIds(normalizedId)
+                    .filter((paradigmId) => visibilityApi.paradigmVisible(paradigmId))
+                    .forEach((paradigmId) => visitParadigm(paradigmId, level + 1, normalizedId, new Set()));
+                const nextChain = new Set(chain);
+                nextChain.add(normalizedId);
+                visibleChildCategoryIds.forEach((childId) => visit(childId, level + 1, nextChain));
+            };
+            getChildParadigmCategoryIds(null)
+                .filter((categoryId) => activeFilterIds.length === 0 || visibilityApi.categoryVisible(categoryId))
+                .forEach((categoryId) => visit(categoryId, 0, new Set()));
+            const visibleUncategorizedParadigmRootCount = getCategoryParadigmRootIds(null)
+                .filter((paradigmId) => visibilityApi.paradigmVisible(paradigmId))
+                .length;
+            if (activeFilterIds.length === 0 || visibleUncategorizedParadigmRootCount > 0) {
+                entries.unshift({
+                    kind: "uncategorized",
+                    id: UNCATEGORIZED_PARADIGM_GROUP_ID,
+                    level: 0,
+                    name: "未分类",
+                    visibleChildCategoryCount: 0,
+                    totalChildCategoryCount: 0,
+                    visibleParadigmRootCount: visibleUncategorizedParadigmRootCount,
+                    totalParadigmCount: getParadigmCountForCategoryScope(null)
+                });
+                getCategoryParadigmRootIds(null)
+                    .filter((paradigmId) => visibilityApi.paradigmVisible(paradigmId))
+                    .forEach((paradigmId) => visitParadigm(paradigmId, 1, null, new Set()));
+            }
+            return entries;
+        };
 
         const renderParadigmTagChipGroup = (container, tagIds, options = {}) => {
             const normalizedTagIds = normalizeParadigmTagIds(tagIds, WORKSPACE_DATA.paradigmTagsById || {});
@@ -6849,7 +7926,10 @@
             if (!tab) return;
             const section = container.createEl("div", {
                 cls: `workspace-tab-section ${tabId === rootActiveTabId ? "is-current" : "is-child"}`,
-                attr: { style: `margin-left:${level * 18}px;` }
+                attr: {
+                    style: `margin-left:${level * 18}px;`,
+                    "data-workspace-tab-section-id": tabId
+                }
             });
             const head = section.createEl("div", { cls: "workspace-tab-section-head" });
             const titleWrap = head.createEl("div");
@@ -6956,6 +8036,8 @@
                 .workspace-paradigm-category-branch.uncategorized, .workspace-paradigm-category-row.uncategorized { border-style:dashed; }
                 .workspace-paradigm-category-children { margin-top:6px; display:flex; flex-direction:column; gap:6px; }
                 .workspace-paradigm-category-row { background:var(--background-primary); }
+                .workspace-paradigm-category-child-drop-zone { margin-top:6px; border:1px dashed rgba(46,204,113,.36); border-radius:9px; padding:6px 10px; color:var(--text-muted); font-size:11px; text-align:center; background:rgba(46,204,113,.04); transition:all .18s; }
+                .workspace-paradigm-category-child-drop-zone.drag-over { border-color:#2ecc71; color:var(--text-normal); background:rgba(46,204,113,.14); box-shadow:inset 0 0 0 1px rgba(46,204,113,.12); }
                 .workspace-paradigm-root-drop-zone { border:1px dashed var(--background-modifier-border); border-radius:8px; padding:7px 10px; color:var(--text-muted); font-size:12px; text-align:center; transition:all .2s; margin-bottom:8px; }
                 .workspace-paradigm-root-drop-zone.drag-over { border-color:#2ecc71; background:rgba(46,204,113,.15); color:var(--text-normal); }
                 .workspace-paradigm-hint { font-size:12px; color:var(--text-muted); margin-bottom:8px; }
@@ -7035,6 +8117,8 @@
                 .workspace-paradigm-mount-group-children { margin-top:8px; }
                 .workspace-paradigm-mount-focus-hit { box-shadow:0 0 0 2px rgba(46,204,113,.42), 0 0 18px rgba(46,204,113,.18); border-color:#2ecc71 !important; }
                 .workspace-paradigm-mount-group-head.workspace-paradigm-mount-focus-hit { border-radius:10px; background:rgba(46,204,113,.10); padding:4px 6px; margin:-4px -6px 0; }
+                .workspace-paradigm-category-row.workspace-paradigm-category-focus-hit { border-color:#2ecc71; box-shadow:0 0 0 2px rgba(46,204,113,.18), 0 10px 22px rgba(46,204,113,.12); background:rgba(46,204,113,.10); }
+                .workspace-panel-row.workspace-paradigm-focus-hit { border-color:#3498db; box-shadow:0 0 0 2px rgba(52,152,219,.16), 0 10px 22px rgba(52,152,219,.10); background:rgba(52,152,219,.10); }
                 .workspace-paradigm-toc { position:fixed; top:112px; right:16px; width:230px; max-height:calc(100vh - 150px); overflow:auto; z-index:110; border:1px solid var(--background-modifier-border); border-radius:16px; background:color-mix(in srgb, var(--background-primary) 94%, white 6%); box-shadow:0 10px 24px rgba(0,0,0,.10); backdrop-filter:blur(10px); padding:10px; display:flex; flex-direction:column; gap:10px; opacity:.97; }
                 .workspace-paradigm-toc.is-collapsed { width:auto; max-height:none; overflow:visible; padding:8px; }
                 .workspace-paradigm-toc-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -7043,16 +8127,29 @@
                 .workspace-paradigm-toc-toggle:hover { background:var(--background-modifier-hover); color:var(--text-normal); }
                 .workspace-paradigm-toc-current { border:1px solid rgba(46,204,113,.28); background:rgba(46,204,113,.08); border-radius:12px; padding:8px 10px; }
                 .workspace-paradigm-toc-list { display:flex; flex-direction:column; gap:6px; }
+                .workspace-paradigm-toc-entry { display:flex; align-items:flex-start; gap:6px; margin-left:var(--workspace-paradigm-toc-indent, 0px); }
+                .workspace-paradigm-toc-entry .workspace-paradigm-toc-btn { width:100%; margin-left:0; }
+                .workspace-paradigm-toc-fold { flex:0 0 20px; width:20px; height:20px; margin-top:6px; border:none; border-radius:999px; background:transparent; color:var(--text-muted); cursor:pointer; line-height:1; display:inline-flex; align-items:center; justify-content:center; }
+                .workspace-paradigm-toc-fold:hover { background:var(--background-modifier-hover); color:var(--text-normal); }
+                .workspace-paradigm-toc-fold-spacer { flex:0 0 20px; width:20px; height:20px; margin-top:6px; }
                 .workspace-paradigm-toc-group { display:flex; flex-direction:column; gap:6px; }
-                .workspace-paradigm-toc-group-label { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border-radius:10px; background:rgba(46,204,113,.08); color:var(--text-normal); font-size:12px; font-weight:700; }
+                .workspace-paradigm-toc-group-label { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:6px 8px; border-radius:10px; background:rgba(46,204,113,.08); color:var(--text-normal); font-size:12px; font-weight:700; }
                 .workspace-paradigm-toc-group-label.is-child { background:rgba(243,156,18,.10); color:#9c640c; }
-                .workspace-paradigm-toc-btn { display:block; width:calc(100% - var(--workspace-paradigm-toc-indent, 0px)); margin-left:var(--workspace-paradigm-toc-indent, 0px); border:none; border-left:2px solid rgba(52,152,219,.20); background:rgba(52,152,219,.08); color:var(--text-normal); text-align:left; padding:6px 8px; border-radius:10px; cursor:pointer; white-space:normal; word-break:break-word; overflow-wrap:anywhere; line-height:1.45; transition:background-color .16s ease, color .16s ease, border-color .16s ease; }
+                .workspace-paradigm-toc-tab-btn { display:block; flex:1 1 auto; min-width:0; width:100%; height:auto; min-height:0; border:none; background:transparent; color:inherit; text-align:left; font:inherit; font-weight:inherit; line-height:1.45; padding:0; cursor:pointer; white-space:normal; word-break:break-word; overflow-wrap:anywhere; }
+                .workspace-paradigm-toc-tab-btn:hover { color:var(--interactive-accent); text-decoration:underline; }
+                .workspace-paradigm-toc-group-meta { flex:0 0 auto; font-weight:500; opacity:.82; white-space:nowrap; padding-top:1px; }
+                .workspace-paradigm-toc-btn { display:block; flex:1 1 auto; min-width:0; width:calc(100% - var(--workspace-paradigm-toc-indent, 0px)); height:auto; min-height:0; margin-left:var(--workspace-paradigm-toc-indent, 0px); border:none; border-left:2px solid rgba(52,152,219,.20); background:rgba(52,152,219,.08); color:var(--text-normal); text-align:left; padding:6px 8px; border-radius:10px; cursor:pointer; white-space:normal; word-break:break-word; overflow-wrap:anywhere; line-height:1.45; transition:background-color .16s ease, color .16s ease, border-color .16s ease; }
                 .workspace-paradigm-toc-btn:hover { background:rgba(52,152,219,.14); color:var(--interactive-accent); }
                 .workspace-paradigm-toc-btn.is-sortable { cursor:grab; }
                 .workspace-paradigm-toc-btn.is-dragging { opacity:.45; }
                 .workspace-paradigm-toc-btn.drag-over-before { box-shadow:inset 0 3px 0 0 #2ecc71; }
                 .workspace-paradigm-toc-btn.drag-over-after { box-shadow:inset 0 -3px 0 0 #2ecc71; }
+                .workspace-paradigm-toc-btn.drag-over-child { background:rgba(46,204,113,.16); border-left-color:#2ecc71; box-shadow:inset 3px 0 0 0 #2ecc71; }
                 .workspace-paradigm-toc-btn.is-nested { border-left-color:rgba(243,156,18,.34); }
+                .workspace-paradigm-toc-btn.is-category { background:rgba(243,156,18,.08); border-left-color:rgba(243,156,18,.32); }
+                .workspace-paradigm-toc-btn.is-category:hover { background:rgba(243,156,18,.14); }
+                .workspace-paradigm-toc-btn.is-uncategorized { background:rgba(127,140,141,.10); border-left-color:rgba(127,140,141,.30); }
+                .workspace-paradigm-toc-btn.is-paradigm-node { background:rgba(52,152,219,.08); }
                 .workspace-item-line { display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; margin-bottom:4px; border:1px solid var(--background-modifier-border); transition:filter .15s,border-color .15s; user-select:none; }
                 .workspace-item-line.is-paradigm { border-style:dashed; }
                 .workspace-item-line.is-collapsed { border-color:rgba(243,156,18,.34); box-shadow:inset 0 0 0 1px rgba(243,156,18,.10); }
@@ -7094,6 +8191,7 @@
                 .workspace-empty { color:var(--text-faint); font-style:italic; padding:8px 4px; }
                 .workspace-tab-section { margin-top:12px; padding:12px; border:1px solid var(--background-modifier-border); border-radius:12px; background:var(--background-primary); }
                 .workspace-tab-section.is-current { border-color:rgba(46,204,113,.45); background:linear-gradient(180deg, rgba(46,204,113,.06) 0%, var(--background-primary) 100%); }
+                .workspace-tab-section.workspace-tab-section-focus-hit { border-color:#2ecc71; box-shadow:0 0 0 2px rgba(46,204,113,.16), 0 12px 26px rgba(46,204,113,.12); }
                 .workspace-tab-section-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
                 .workspace-tab-section-title { font-weight:700; color:var(--text-normal); }
                 .workspace-tab-section-subtitle { font-size:12px; color:var(--text-muted); margin-top:3px; }
@@ -7131,15 +8229,24 @@
                 tabId,
                 tab: getTabById(tabId),
                 entries: getParadigmMountTocEntriesForTab(tabId)
-            })).filter((group) => !!group.tab && group.entries.length > 0);
+            })).filter((group) => !!group.tab);
             const paradigmTocEntryCount = paradigmTocGroups.reduce((sum, group) => sum + group.entries.length, 0);
+            const tocParadigmTagFilters = getParadigmTagFilters();
+            const paradigmCategoryTocEntries = window.workspaceShowParadigmPanel
+                ? getParadigmCategoryTocEntries(tocParadigmTagFilters)
+                : [];
+            const paradigmCategoryTocCount = paradigmCategoryTocEntries.filter((entry) => entry.kind === "category").length;
+            const paradigmCategoryTocParadigmCount = paradigmCategoryTocEntries.filter((entry) => entry.kind === "paradigm").length;
 
             const wrap = dv.container.createEl("div", { cls: "workspace-wrap" });
             const paradigmToc = wrap.createEl("div", {
                 cls: `workspace-paradigm-toc ${window.workspaceParadigmTocCollapsed ? "is-collapsed" : ""}`
             });
             const paradigmTocHead = paradigmToc.createEl("div", { cls: "workspace-paradigm-toc-head" });
-            paradigmTocHead.createEl("div", { text: "当前视图范式 TOC", cls: "workspace-paradigm-toc-title" });
+            paradigmTocHead.createEl("div", {
+                text: window.workspaceShowParadigmPanel ? "范式分类 TOC" : "当前视图范式 TOC",
+                cls: "workspace-paradigm-toc-title"
+            });
             const paradigmTocToggle = paradigmTocHead.createEl("button", {
                 text: window.workspaceParadigmTocCollapsed ? "◀" : "▶",
                 cls: "workspace-paradigm-toc-toggle",
@@ -7151,82 +8258,221 @@
             };
             if (!window.workspaceParadigmTocCollapsed) {
                 const currentBox = paradigmToc.createEl("div", { cls: "workspace-paradigm-toc-current" });
-                currentBox.createEl("div", { text: activeTab?.name || "未选中 Tab", attr: { style: "font-weight:700;" } });
                 currentBox.createEl("div", {
-                    text: paradigmTocEntryCount > 0
-                        ? `${visibleTabIds.length} 个 Tab 视图 · ${paradigmTocEntryCount} 个范式 · 点击可滚动定位`
-                        : "当前视图没有纳入范式",
-                    cls: "workspace-subtitle"
+                    text: window.workspaceShowParadigmPanel ? "范式管理视图" : (activeTab?.name || "未选中 Tab"),
+                    attr: { style: "font-weight:700;" }
                 });
+                if (window.workspaceShowParadigmPanel) {
+                    currentBox.createEl("div", {
+                        text: paradigmCategoryTocCount > 0 || paradigmCategoryTocParadigmCount > 0
+                            ? `${paradigmCategoryTocCount} 个分类节点 · ${paradigmCategoryTocParadigmCount} 个范式节点 · 点击可滚动定位，分类节点支持折叠和拖拽管理`
+                            : (tocParadigmTagFilters.length > 0
+                                ? `当前标签筛选下没有可见分类 · 已启用 ${tocParadigmTagFilters.length} 个标签筛选`
+                                : "当前还没有分类，可先在范式管理里新建分类"),
+                        cls: "workspace-subtitle"
+                    });
+                } else {
+                    currentBox.createEl("div", {
+                        text: paradigmTocEntryCount > 0
+                            ? `${visibleTabIds.length} 个 Tab 视图 · ${paradigmTocEntryCount} 个范式 · 点击可滚动定位`
+                            : `${visibleTabIds.length} 个 Tab 视图 · 当前没有纳入范式，但子 Tab 仍可点击定位`,
+                        cls: "workspace-subtitle"
+                    });
+                }
                 const tocList = paradigmToc.createEl("div", { cls: "workspace-paradigm-toc-list" });
-                paradigmTocGroups.forEach((group) => {
-                    const isChildTab = group.tabId !== activeTabId;
-                    const groupWrap = tocList.createEl("div", { cls: "workspace-paradigm-toc-group" });
-                    const groupLabel = groupWrap.createEl("div", {
-                        text: `${isChildTab ? "子Tab" : "当前Tab"} · ${group.tab?.name || group.tabId}`,
-                        cls: `workspace-paradigm-toc-group-label ${isChildTab ? "is-child" : ""}`.trim()
-                    });
-                    groupLabel.createEl("span", {
-                        text: `${group.entries.length} 个范式`,
-                        attr: { style: "font-weight:500; opacity:.82;" }
-                    });
-                    group.entries.forEach((entry) => {
-                        const btn = groupWrap.createEl("button", {
-                            text: entry.name,
-                            cls: "workspace-paradigm-toc-btn",
+                if (window.workspaceShowParadigmPanel) {
+                    const tocCollapsedCategoryIds = window.workspaceCollapsedParadigmTocCategoryIds;
+                    for (let index = 0; index < paradigmCategoryTocEntries.length; index++) {
+                        const entry = paradigmCategoryTocEntries[index];
+                        const label = entry.kind === "uncategorized"
+                            ? "🗂 未分类"
+                            : (entry.kind === "category" ? `📚 ${entry.name}` : `📐 ${entry.name}`);
+                        const subtitle = entry.kind === "uncategorized"
+                            ? `直属范式 ${entry.visibleParadigmRootCount} · 全部范式 ${entry.totalParadigmCount}`
+                            : (entry.kind === "category"
+                                ? `子分类 ${entry.visibleChildCategoryCount}/${entry.totalChildCategoryCount} · 直属范式 ${entry.visibleParadigmRootCount} · 全部范式 ${entry.totalParadigmCount}`
+                                : `${entry.isCopy ? "引用副本" : "定义源"} · 条目 ${entry.itemCount}`);
+                        const isCategoryNode = entry.kind === "category" || entry.kind === "uncategorized";
+                        const isCollapsible = isCategoryNode && ((entry.visibleChildCategoryCount || 0) > 0 || (entry.visibleParadigmRootCount || 0) > 0);
+                        const isCollapsed = isCollapsible && !!tocCollapsedCategoryIds[String(entry.id || "").trim()];
+                        const entryWrap = tocList.createEl("div", {
+                            cls: "workspace-paradigm-toc-entry"
+                        });
+                        entryWrap.style.setProperty("--workspace-paradigm-toc-indent", `${entry.level * 18}px`);
+                        if (isCollapsible) {
+                            const foldBtn = entryWrap.createEl("button", {
+                                text: isCollapsed ? "▶" : "▼",
+                                cls: "workspace-paradigm-toc-fold",
+                                attr: {
+                                    type: "button",
+                                    title: isCollapsed ? `展开${label}` : `折叠${label}`
+                                }
+                            });
+                            foldBtn.onclick = (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                tocCollapsedCategoryIds[String(entry.id || "").trim()] = !isCollapsed;
+                                renderViewFn?.();
+                            };
+                        } else {
+                            entryWrap.createEl("span", { cls: "workspace-paradigm-toc-fold-spacer" });
+                        }
+                        const btn = entryWrap.createEl("button", {
+                            text: label,
+                            cls: `workspace-paradigm-toc-btn ${entry.kind === "paradigm" ? "is-paradigm-node" : "is-category"}`,
                             attr: {
                                 type: "button",
-                                title: entry.isTopLevelSortable
-                                    ? `跳转到范式：${entry.name}；拖拽可调整「${group.tab?.name || group.tabId}」里的顶层范式顺序`
-                                : `跳转到范式：${entry.name}`
+                                title: entry.kind === "uncategorized"
+                                    ? `跳转到未分类区：${subtitle}`
+                                    : (entry.kind === "category"
+                                        ? `跳转到分类：${getParadigmCategoryPathLabel(entry.id)}；拖拽可调整分类前后或子分类层级`
+                                        : `跳转到范式：${entry.name}`)
                             }
                         });
-                        btn.style.setProperty("--workspace-paradigm-toc-indent", `${entry.level * 18}px`);
+                        if (entry.kind === "uncategorized") btn.classList.add("is-uncategorized");
                         if (entry.level > 0) btn.classList.add("is-nested");
-                        if (entry.isTopLevelSortable) {
+                        if (entry.kind === "category") {
                             btn.classList.add("is-sortable");
                             btn.draggable = true;
                             btn.addEventListener("dragstart", (e) => {
                                 e.stopPropagation();
                                 window.workspaceParadigmTocDragState = {
-                                    tabId: entry.tabId,
-                                    paradigmId: entry.id
+                                    kind: "category",
+                                    categoryId: entry.id
                                 };
                                 e.dataTransfer.effectAllowed = "move";
-                                e.dataTransfer.setData("text/plain", `${entry.tabId}::${entry.id}`);
+                                e.dataTransfer.setData("text/plain", entry.id);
                                 setTimeout(() => btn.classList.add("is-dragging"), 0);
                             });
                             btn.addEventListener("dragend", () => {
                                 window.workspaceParadigmTocDragState = null;
-                                btn.classList.remove("is-dragging", "drag-over-before", "drag-over-after");
+                                btn.classList.remove("is-dragging", "drag-over-before", "drag-over-after", "drag-over-child");
                             });
                             btn.addEventListener("dragover", (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 const dragState = window.workspaceParadigmTocDragState;
-                                if (!dragState || dragState.tabId !== entry.tabId || dragState.paradigmId === entry.id) return;
-                                const position = getParadigmTocDropPosition(btn, e);
-                                btn.classList.remove("drag-over-before", "drag-over-after");
-                                btn.classList.add(position === "before" ? "drag-over-before" : "drag-over-after");
+                                if (!dragState || dragState.kind !== "category" || dragState.categoryId === entry.id) return;
+                                const position = getParadigmCategoryTocDropPosition(btn, e);
+                                btn.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                                if (position === "child") btn.classList.add("drag-over-child");
+                                else btn.classList.add(position === "before" ? "drag-over-before" : "drag-over-after");
                             });
                             btn.addEventListener("dragleave", () => {
-                                btn.classList.remove("drag-over-before", "drag-over-after");
+                                btn.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
                             });
                             btn.addEventListener("drop", async (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 const dragState = window.workspaceParadigmTocDragState;
-                                const position = getParadigmTocDropPosition(btn, e);
-                                btn.classList.remove("drag-over-before", "drag-over-after");
-                                if (!dragState || dragState.tabId !== entry.tabId || dragState.paradigmId === entry.id) return;
-                                await moveTopLevelParadigmMountOrder(entry.tabId, dragState.paradigmId, entry.id, position);
+                                const position = getParadigmCategoryTocDropPosition(btn, e);
+                                btn.classList.remove("drag-over-before", "drag-over-after", "drag-over-child");
+                                if (!dragState || dragState.kind !== "category" || dragState.categoryId === entry.id) return;
+                                await moveParadigmCategoryOrder(dragState.categoryId, entry.id, position);
                             });
                         }
-                        btn.onclick = async () => { await revealParadigmMountTarget(entry.tabId, entry.id); };
+                        btn.onclick = async () => {
+                            if (entry.kind === "paradigm") {
+                                await revealParadigmPanelTarget(entry.id);
+                                return;
+                            }
+                            await revealParadigmCategoryTarget(entry.kind === "uncategorized" ? null : entry.id);
+                        };
+                        btn.createEl("div", {
+                            text: subtitle,
+                            attr: { style: "font-size:11px;color:var(--text-muted);margin-top:3px;" }
+                        });
+                        if (isCollapsed) {
+                            while (
+                                index + 1 < paradigmCategoryTocEntries.length
+                                && (paradigmCategoryTocEntries[index + 1]?.level || 0) > entry.level
+                            ) {
+                                index += 1;
+                            }
+                        }
+                    }
+                } else {
+                    paradigmTocGroups.forEach((group) => {
+                        const isChildTab = group.tabId !== activeTabId;
+                        const groupWrap = tocList.createEl("div", { cls: "workspace-paradigm-toc-group" });
+                        const groupLabel = groupWrap.createEl("div", {
+                            cls: `workspace-paradigm-toc-group-label ${isChildTab ? "is-child" : ""}`.trim()
+                        });
+                        const groupBtn = groupLabel.createEl("button", {
+                            text: `${isChildTab ? "子Tab" : "当前Tab"} · ${group.tab?.name || group.tabId}`,
+                            cls: "workspace-paradigm-toc-tab-btn",
+                            attr: {
+                                type: "button",
+                                title: `滚动到 Tab：${group.tab?.name || group.tabId}`
+                            }
+                        });
+                        groupBtn.onclick = async () => { await revealWorkspaceTabSection(group.tabId); };
+                        groupLabel.createEl("span", {
+                            text: group.entries.length > 0 ? `${group.entries.length} 个范式` : "无范式",
+                            cls: "workspace-paradigm-toc-group-meta"
+                        });
+                        group.entries.forEach((entry) => {
+                            const btn = groupWrap.createEl("button", {
+                                text: entry.name,
+                                cls: "workspace-paradigm-toc-btn",
+                                attr: {
+                                    type: "button",
+                                    title: entry.isTopLevelSortable
+                                        ? `跳转到范式：${entry.name}；拖拽可调整「${group.tab?.name || group.tabId}」里的顶层范式顺序`
+                                        : `跳转到范式：${entry.name}`
+                                }
+                            });
+                            btn.style.setProperty("--workspace-paradigm-toc-indent", `${entry.level * 18}px`);
+                            if (entry.level > 0) btn.classList.add("is-nested");
+                            if (entry.isTopLevelSortable) {
+                                btn.classList.add("is-sortable");
+                                btn.draggable = true;
+                                btn.addEventListener("dragstart", (e) => {
+                                    e.stopPropagation();
+                                    window.workspaceParadigmTocDragState = {
+                                        kind: "mount",
+                                        tabId: entry.tabId,
+                                        paradigmId: entry.id
+                                    };
+                                    e.dataTransfer.effectAllowed = "move";
+                                    e.dataTransfer.setData("text/plain", `${entry.tabId}::${entry.id}`);
+                                    setTimeout(() => btn.classList.add("is-dragging"), 0);
+                                });
+                                btn.addEventListener("dragend", () => {
+                                    window.workspaceParadigmTocDragState = null;
+                                    btn.classList.remove("is-dragging", "drag-over-before", "drag-over-after");
+                                });
+                                btn.addEventListener("dragover", (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const dragState = window.workspaceParadigmTocDragState;
+                                    if (!dragState || dragState.kind !== "mount" || dragState.tabId !== entry.tabId || dragState.paradigmId === entry.id) return;
+                                    const position = getParadigmTocDropPosition(btn, e);
+                                    btn.classList.remove("drag-over-before", "drag-over-after");
+                                    btn.classList.add(position === "before" ? "drag-over-before" : "drag-over-after");
+                                });
+                                btn.addEventListener("dragleave", () => {
+                                    btn.classList.remove("drag-over-before", "drag-over-after");
+                                });
+                                btn.addEventListener("drop", async (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const dragState = window.workspaceParadigmTocDragState;
+                                    const position = getParadigmTocDropPosition(btn, e);
+                                    btn.classList.remove("drag-over-before", "drag-over-after");
+                                    if (!dragState || dragState.kind !== "mount" || dragState.tabId !== entry.tabId || dragState.paradigmId === entry.id) return;
+                                    await moveTopLevelParadigmMountOrder(entry.tabId, dragState.paradigmId, entry.id, position);
+                                });
+                            }
+                            btn.onclick = async () => { await revealParadigmMountTarget(entry.tabId, entry.id); };
+                        });
                     });
-                });
+                }
                 if (tocList.childElementCount === 0) {
-                    tocList.createEl("div", { text: "当前视图没有范式挂载分组", cls: "workspace-empty" });
+                    tocList.createEl("div", {
+                        text: window.workspaceShowParadigmPanel ? "当前没有可见分类" : "当前视图没有可见 Tab",
+                        cls: "workspace-empty"
+                    });
                 }
             }
 
@@ -7378,6 +8624,8 @@
             styleTabBtn.onclick = async () => { await editCurrentTabAppearance(); };
             const closeTabBtn = mainActions.createEl("button", { text: "🗑️ 关闭Tab", cls: "workspace-sub-btn" });
             closeTabBtn.onclick = async () => { await closeCurrentTab(); };
+            const transferParadigmItemsBtn = mainActions.createEl("button", { text: "📥 共通范式迁入", cls: "workspace-sub-btn" });
+            transferParadigmItemsBtn.onclick = async () => { await promptTransferCommonParadigmItemsBetweenTabs(); };
             const paradigmBtn = mainActions.createEl("button", { text: "📐 范式面板", cls: "workspace-sub-btn" });
             paradigmBtn.onclick = () => {
                 window.workspaceShowParadigmPanel = !window.workspaceShowParadigmPanel;
@@ -7618,7 +8866,8 @@
                         branch.style.boxShadow = `inset 0 0 0 1px ${paradigmVisual.accent}12`;
                     }
                     const row = branch.createEl("div", {
-                        cls: "workspace-panel-row"
+                        cls: "workspace-panel-row",
+                        attr: { "data-workspace-paradigm-id": paradigm.id }
                     });
                     const itemCount = Object.values(WORKSPACE_DATA.paradigmItemsById || {}).filter((x) => x.paradigmId === sourceParadigm.id).length;
                     const isBound = boundParadigmIds.includes(paradigm.id);
@@ -7781,7 +9030,8 @@
                         branch.style.boxShadow = `inset 0 0 0 1px ${categoryVisual.accent}10`;
                     }
                     const row = branch.createEl("div", {
-                        cls: "workspace-panel-row workspace-paradigm-category-row"
+                        cls: "workspace-panel-row workspace-paradigm-category-row",
+                        attr: { "data-workspace-paradigm-category-id": category.id }
                     });
                     row.draggable = true;
                     row.addEventListener("dragstart", (e) => {
@@ -7851,7 +9101,7 @@
                     });
                     left.createEl("div", {
                         cls: "workspace-panel-row-hint",
-                        text: "拖分类可调整层级；把范式拖到这里可归入此类"
+                        text: "拖分类到上下边缘可排序；拖到下方收纳区可变成子分类；把范式拖到这里可归入此类"
                     });
 
                     const actions = row.createEl("div", { cls: "workspace-main-actions" });
@@ -7863,6 +9113,30 @@
                     renameBtn.onclick = async () => { await renameParadigmCategory(category.id); };
                     const deleteBtn = actions.createEl("button", { text: "删除", cls: "workspace-sub-btn" });
                     deleteBtn.onclick = async () => { await deleteParadigmCategory(category.id); };
+
+                    const childDropZone = branch.createEl("div", {
+                        cls: "workspace-paradigm-category-child-drop-zone",
+                        text: `↳ 拖分类到这里，设为“${category.name}”的子分类`
+                    });
+                    childDropZone.addEventListener("dragover", (e) => {
+                        const draggedCategoryId = String(window.workspaceParadigmCategoryDragId || "").trim();
+                        if (!draggedCategoryId || draggedCategoryId === category.id) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        childDropZone.classList.add("drag-over");
+                    });
+                    childDropZone.addEventListener("dragleave", (e) => {
+                        e.stopPropagation();
+                        childDropZone.classList.remove("drag-over");
+                    });
+                    childDropZone.addEventListener("drop", async (e) => {
+                        const draggedCategoryId = String(window.workspaceParadigmCategoryDragId || "").trim();
+                        e.preventDefault();
+                        e.stopPropagation();
+                        childDropZone.classList.remove("drag-over");
+                        if (!draggedCategoryId || draggedCategoryId === category.id) return;
+                        await moveParadigmCategoryOrder(draggedCategoryId, category.id, "child");
+                    });
 
                     if (!isCollapsed) {
                         const childWrap = branch.createEl("div", { cls: "workspace-paradigm-category-children" });
@@ -7879,7 +9153,8 @@
                         cls: `workspace-paradigm-category-branch uncategorized ${paradigmRootIds.length > 0 ? "has-children" : ""}`
                     });
                     const row = branch.createEl("div", {
-                        cls: "workspace-panel-row workspace-paradigm-category-row uncategorized"
+                        cls: "workspace-panel-row workspace-paradigm-category-row uncategorized",
+                        attr: { "data-workspace-paradigm-category-id": UNCATEGORIZED_PARADIGM_GROUP_ID }
                     });
                     const head = row.createEl("div", { cls: "workspace-panel-row-head" });
                     const collapseBtn = head.createEl("span", {
@@ -8103,6 +9378,22 @@
             const list = wrap.createEl("div");
             renderWorkspaceSection(list, activeTabId, 0, activeTabId);
             mountFloatingPinButton(activeTabId);
+            if (window.workspacePendingParadigmPanelFocus && !window.workspacePendingRelationFocusNodeKey) {
+                [0, 120, 320].forEach((delay) => {
+                    window.setTimeout(() => {
+                        if (window.workspacePendingRelationFocusNodeKey) return;
+                        window.requestAnimationFrame(() => focusPendingParadigmPanelTarget());
+                    }, delay);
+                });
+            }
+            if (window.workspacePendingParadigmCategoryFocus && !window.workspacePendingRelationFocusNodeKey) {
+                [0, 120, 320].forEach((delay) => {
+                    window.setTimeout(() => {
+                        if (window.workspacePendingRelationFocusNodeKey) return;
+                        window.requestAnimationFrame(() => focusPendingParadigmCategoryTarget());
+                    }, delay);
+                });
+            }
             if (window.workspacePendingParadigmMountFocus && !window.workspacePendingRelationFocusNodeKey) {
                 [0, 120, 320].forEach((delay) => {
                     window.setTimeout(() => {
