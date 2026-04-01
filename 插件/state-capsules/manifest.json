@@ -1,0 +1,9 @@
+{
+  "id": "state-capsules",
+  "name": "State Capsules",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Save and restore Obsidian work scenes as capsules, including workspace, GTD, and note layout state.",
+  "author": "OpenAI Codex",
+  "isDesktopOnly": false
+}

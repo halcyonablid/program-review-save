@@ -1,0 +1,170 @@
+.state-capsules-manager-modal .modal {
+  width: min(920px, 92vw);
+}
+
+.state-capsules-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 6px 2px 10px;
+}
+
+.state-capsules-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.state-capsules-panel-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.state-capsules-panel-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.state-capsules-panel-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.state-capsules-btn {
+  border-radius: 10px;
+  padding: 7px 12px;
+}
+
+.state-capsules-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.state-capsules-btn.is-danger {
+  border-color: rgba(192, 57, 43, 0.28);
+  color: #c0392b;
+}
+
+.state-capsules-status,
+.state-capsules-helper {
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: var(--background-secondary);
+}
+
+.state-capsules-status {
+  font-weight: 600;
+}
+
+.state-capsules-helper {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.state-capsules-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.state-capsules-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--background-primary) 0%, var(--background-secondary) 100%);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.06);
+}
+
+.state-capsules-card.is-active {
+  border-color: rgba(46, 204, 113, 0.45);
+  box-shadow: 0 10px 24px rgba(46, 204, 113, 0.14);
+}
+
+.state-capsules-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.state-capsules-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.state-capsules-card-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.state-capsules-card-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--text-normal);
+}
+
+.state-capsules-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.state-capsules-warning {
+  color: #d35400;
+  font-weight: 600;
+}
+
+.state-capsules-empty {
+  padding: 18px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-secondary);
+}
+
+.state-capsules-log-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--background-secondary) 0%, var(--background-primary) 100%);
+}
+
+.state-capsules-log-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.state-capsules-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.state-capsules-log-row {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.state-capsules-log-path {
+  font-size: 13px;
+  color: var(--text-normal);
+  word-break: break-all;
+}
