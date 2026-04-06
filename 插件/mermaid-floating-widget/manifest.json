@@ -1,0 +1,9 @@
+{
+  "id": "mermaid-floating-widget",
+  "name": "Mermaid Floating Widget",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Launch the Mermaid floating widget from a ribbon icon or command using a source note script.",
+  "author": "OpenAI Codex",
+  "isDesktopOnly": false
+}

@@ -58,6 +58,27 @@
             }
           },
           {
+            "id": "21a94002aed7af96",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "workspace-mount-view",
+              "state": {
+                "sourceNotePath": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/④workspace挂载.md"
+              },
+              "icon": "layout-dashboard",
+              "title": "Workspace Mount"
+            }
+          },
+          {
             "id": "9f88599471c9a34e",
             "type": "leaf",
             "pane-relief:history-v1": {
@@ -80,31 +101,6 @@
               "pinned": true,
               "icon": "lucide-file",
               "title": "GTD待办事项管理系统"
-            }
-          },
-          {
-            "id": "41045f7bd5e8c470",
-            "type": "leaf",
-            "pane-relief:history-v1": {
-              "pos": 0,
-              "stack": [
-                {
-                  "state": "{}",
-                  "eState": "{}"
-                }
-              ]
-            },
-            "pinned": true,
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/④workspace挂载.md",
-                "mode": "preview",
-                "source": false
-              },
-              "pinned": true,
-              "icon": "lucide-file",
-              "title": "④workspace挂载"
             }
           },
           {
@@ -202,7 +198,7 @@
             }
           }
         ],
-        "currentTab": 4
+        "currentTab": 2
       }
     ],
     "direction": "vertical"
@@ -338,9 +334,28 @@
               "icon": "sheets-in-box",
               "title": "File Tree"
             }
+          },
+          {
+            "id": "6d0406b473c9d250",
+            "type": "leaf",
+            "pane-relief:history-v1": {
+              "pos": 0,
+              "stack": [
+                {
+                  "state": "{}",
+                  "eState": "{}"
+                }
+              ]
+            },
+            "state": {
+              "type": "file-tree-view",
+              "state": {},
+              "icon": "sheets-in-box",
+              "title": "File Tree"
+            }
           }
         ],
-        "currentTab": 5
+        "currentTab": 6
       }
     ],
     "direction": "horizontal",
@@ -460,13 +475,13 @@
   },
   "left-ribbon": {
     "hiddenItems": {
+      "bases:新建数据库": false,
       "switcher:打开快速切换": false,
       "graph:查看关系图谱": false,
       "canvas:新建白板": false,
       "daily-notes:打开/创建今天的日记": false,
       "templates:插入模板": false,
       "command-palette:打开命令面板": false,
-      "bases:创建新数据库": false,
       "mermaid-tools:Open Mermaid Toolbar": false,
       "outliner-md:New outliner file": false,
       "cmdr:在系统资源管理器中显示": false,
@@ -489,22 +504,24 @@
       "obsidian-excalidraw-plugin:新建绘图文件": false,
       "file-tree-alternative:File Tree Alternative Plugin": false,
       "periodic-notes:Open today": false,
-      "templater-obsidian:Templater": false
+      "templater-obsidian:Templater": false,
+      "state-capsules:Open State Capsules manager": false,
+      "workspace-mount:Open Workspace Mount": false
     }
   },
-  "active": "8a02e390deaec8bc",
+  "active": "21a94002aed7af96",
   "lastOpenFiles": [
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md",
+    "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了.md",
+    "ATOM@121.001.007.002.058.001- 分类：首先我们来讲一下各个插件和视图都是啥作用，设计理念是怎么样的.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/④workspace挂载.md",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/③关键词索引管理系统.md",
     "Pasted image 20260307002113.png",
     "Pasted image 20260307002053.png",
     "Pasted image 20260306232223.png",
-    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/④workspace挂载.md",
-    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/③关键词索引管理系统.md",
-    "ATOM@121.001.007.002.058.001.001- 分类：介绍索引页面的操作.md",
     "Pasted image 20260306231251.png",
-    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.225.006.002- 分类：信条，创建视角，我也能从未来人视角看到了.md",
-    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.058- 说明书.md",
-    "ATOM@121.001.007.002.058.001- 分类：首先我们来讲一下各个插件和视图都是啥作用，设计理念是怎么样的.md",
-    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md",
     "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/①整个库树状图，新版.md",
     "Pasted image 20260306230028.png",
     "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/Workspace_TaskComments.json",

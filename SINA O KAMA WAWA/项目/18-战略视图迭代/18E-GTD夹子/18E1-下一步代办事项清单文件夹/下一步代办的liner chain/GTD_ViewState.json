@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-06 23:08:29",
+  "updatedAt": "2026-04-06 12:47:43",
   "views": {
     "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md": {
       "scroll": {
@@ -21,7 +21,7 @@
   "trace": {
     "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md": {
       "script_boot": {
-        "ts": "2026-03-06 23:08:29.664",
+        "ts": "2026-04-06 12:47:43.391",
         "details": {
           "notePath": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD待办事项管理系统.md",
           "dbPath": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/GTD_Database.json",
@@ -29,7 +29,7 @@
         }
       },
       "restore_start": {
-        "ts": "2026-03-06 23:08:29.672",
+        "ts": "2026-04-06 12:47:43.401",
         "details": {
           "scrollTop": 420,
           "section": "gtd-section-schedule",
@@ -46,7 +46,7 @@
         }
       },
       "restore_anchor_miss": {
-        "ts": "2026-03-06 23:08:29.682",
+        "ts": "2026-04-06 12:47:43.455",
         "details": {
           "anchorId": "1767925188487",
           "sectionId": "gtd-section-schedule",
@@ -54,7 +54,7 @@
         }
       },
       "restore_cancelled": {
-        "ts": "2026-03-06 23:08:29.694",
+        "ts": "2026-04-06 12:47:43.459",
         "details": {
           "reason": "scroll",
           "host": "div.markdown-preview-view.markdown-rendered.node-insert-event",
@@ -62,23 +62,23 @@
         }
       },
       "bind_scroll_host": {
-        "ts": "2026-03-06 22:40:26.691",
+        "ts": "2026-04-06 12:47:43.463",
         "details": {
           "host": "div.markdown-preview-view.markdown-rendered.node-insert-event",
-          "hostRange": 421,
+          "hostRange": 576,
           "scrollTop": 420,
           "clientHeight": 904,
-          "scrollHeight": 1325
+          "scrollHeight": 1480
         }
       },
       "restore_finish": {
-        "ts": "2026-03-06 23:08:29.696",
+        "ts": "2026-04-06 12:47:43.463",
         "details": {
           "finalScrollTop": 420,
           "targetScrollTop": 420,
           "restoredByAnchor": false,
           "host": "div.markdown-preview-view.markdown-rendered.node-insert-event",
-          "hostRange": 421
+          "hostRange": 576
         }
       }
     }

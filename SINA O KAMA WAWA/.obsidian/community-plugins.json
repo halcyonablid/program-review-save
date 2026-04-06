@@ -15,5 +15,7 @@
   "obsidian-tabs",
   "pane-relief",
   "periodic-notes",
-  "templater-obsidian"
+  "templater-obsidian",
+  "state-capsules",
+  "workspace-mount"
 ]
