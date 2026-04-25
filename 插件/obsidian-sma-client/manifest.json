@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-sma-client",
+  "name": "Obsidian SMA Client",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Obsidian-side client for the local SMA bridge, with plugin-owned JSON state and minimal review queue panel.",
+  "author": "OpenAI Codex",
+  "isDesktopOnly": true
+}

@@ -1,0 +1,2658 @@
+{
+  "version": 1,
+  "settings": {
+    "bridgeBaseUrl": "http://127.0.0.1:27182/api/v1",
+    "bridgeToken": "dev-obsidian-bridge",
+    "requestTimeoutMs": 8000,
+    "autoSyncOnStartup": false,
+    "autoRegisterOnEnroll": false,
+    "importFrontmatterKey": "srs",
+    "dueLookaheadDays": 0
+  },
+  "conceptsById": {
+    "sm-p0kqbt": {
+      "id": "sm-p0kqbt",
+      "keyword": "零碎的tricks经验",
+      "colorType": "plus",
+      "parentId": "sm-e0kt",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T09:51:26.775Z",
+      "accentColor": ""
+    },
+    "sm-exjc3g": {
+      "id": "sm-exjc3g",
+      "keyword": "启发的想法",
+      "colorType": "plus",
+      "parentId": "sm-8ipxxm",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T10:10:06.548Z",
+      "accentColor": ""
+    },
+    "sm-1ulcj2": {
+      "id": "sm-1ulcj2",
+      "keyword": "自己的兴趣扩展学习",
+      "colorType": "yaml",
+      "parentId": null,
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T10:29:31.133Z",
+      "accentColor": ""
+    },
+    "sm-p4ummn": {
+      "id": "sm-p4ummn",
+      "keyword": "行业内学习",
+      "colorType": "yaml",
+      "parentId": null,
+      "order": 6,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T10:30:29.921Z",
+      "accentColor": ""
+    },
+    "sm-f8f9nd": {
+      "id": "sm-f8f9nd",
+      "keyword": "生活经验",
+      "colorType": "yaml",
+      "parentId": null,
+      "order": 2,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-07T04:25:48.312Z",
+      "accentColor": ""
+    },
+    "sm-e9h30h": {
+      "id": "sm-e9h30h",
+      "keyword": "001- 各种记录的库，进行中的事项",
+      "colorType": "yaml",
+      "parentId": null,
+      "order": 3,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-11T03:40:49.612Z",
+      "accentColor": "#ff9500"
+    },
+    "sm-lbbpj": {
+      "id": "sm-lbbpj",
+      "keyword": "002- 一般构型的库",
+      "colorType": "yaml",
+      "parentId": null,
+      "order": 4,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-11T03:42:03.801Z",
+      "accentColor": ""
+    },
+    "sm-r6erp": {
+      "id": "sm-r6erp",
+      "keyword": "自己工作的项目",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T09:55:17.510Z",
+      "accentColor": ""
+    },
+    "sm-rx3zop": {
+      "id": "sm-rx3zop",
+      "keyword": "维修能力，项目",
+      "colorType": "plus",
+      "parentId": "sm-lbbpj",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T09:55:13.059Z",
+      "accentColor": ""
+    },
+    "sm-wr4hdr": {
+      "id": "sm-wr4hdr",
+      "keyword": "小平衡机合同",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 3,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-11T03:41:08.476Z",
+      "accentColor": ""
+    },
+    "sm-mfrze9": {
+      "id": "sm-mfrze9",
+      "keyword": "工作流技巧",
+      "colorType": "plus",
+      "parentId": "sm-1ulcj2",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T11:40:05.310Z",
+      "accentColor": ""
+    },
+    "sm-1s91": {
+      "id": "sm-1s91",
+      "keyword": "TPA",
+      "colorType": "plus",
+      "parentId": "sm-hrdc2",
+      "order": 0,
+      "createdAt": "2026-01-24T07:14:44.022Z",
+      "sortLetter": "T",
+      "note": "",
+      "accentColor": ""
+    },
+    "sm-di8lpx": {
+      "id": "sm-di8lpx",
+      "keyword": "跟631所",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 1,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T10:11:34.656Z",
+      "accentColor": ""
+    },
+    "sm-e0kt": {
+      "id": "sm-e0kt",
+      "keyword": "余度",
+      "colorType": "yaml",
+      "parentId": null,
+      "order": 5,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-03T10:19:50.978Z",
+      "accentColor": ""
+    },
+    "sm-clbt95": {
+      "id": "sm-clbt95",
+      "keyword": "学习的文件",
+      "colorType": "plus",
+      "parentId": "sm-p4ummn",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "啦啦啦啦啦啦",
+      "createdAt": "2026-02-03T10:30:51.351Z",
+      "accentColor": ""
+    },
+    "sm-hrdc2": {
+      "id": "sm-hrdc2",
+      "keyword": "ATEC7系列",
+      "colorType": "plus",
+      "parentId": "sm-rx3zop",
+      "order": 0,
+      "sortLetter": "A",
+      "note": "",
+      "createdAt": "2026-02-04T08:57:56.575Z",
+      "accentColor": ""
+    },
+    "sm-ed5dxm": {
+      "id": "sm-ed5dxm",
+      "keyword": "测试台子",
+      "colorType": "plus",
+      "parentId": "sm-hrdc2",
+      "order": 1,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-04T09:00:00.667Z",
+      "accentColor": ""
+    },
+    "sm-mcob": {
+      "id": "sm-mcob",
+      "keyword": "网络",
+      "colorType": "plus",
+      "parentId": "sm-ed5dxm",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-04T09:00:12.627Z",
+      "accentColor": ""
+    },
+    "sm-20u": {
+      "id": "sm-20u",
+      "keyword": "RP",
+      "colorType": "plus",
+      "parentId": "sm-hrdc2",
+      "order": 2,
+      "sortLetter": "R",
+      "note": "",
+      "createdAt": "2026-02-04T09:00:38.065Z",
+      "accentColor": ""
+    },
+    "sm-1md7": {
+      "id": "sm-1md7",
+      "keyword": "LRA",
+      "colorType": "plus",
+      "parentId": "sm-rx3zop",
+      "order": 1,
+      "sortLetter": "L",
+      "note": "",
+      "createdAt": "2026-02-07T03:48:29.607Z",
+      "accentColor": ""
+    },
+    "sm-ajikfr": {
+      "id": "sm-ajikfr",
+      "keyword": "健康管理",
+      "colorType": "plus",
+      "parentId": "sm-cjj1bk",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-02-07T04:26:01.881Z",
+      "accentColor": ""
+    },
+    "sm-7p8h2v": {
+      "id": "sm-7p8h2v",
+      "keyword": "近地警告的工程调查",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 6,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-22T02:01:24.511Z",
+      "accentColor": "#2abefe"
+    },
+    "sm-acgeam": {
+      "id": "sm-acgeam",
+      "keyword": "作为补充",
+      "colorType": "plus",
+      "parentId": "sm-7p8h2v",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "这个是后续我可以看到内容",
+      "createdAt": "2026-03-23T10:23:51.962Z",
+      "accentColor": ""
+    },
+    "sm-jq4zce": {
+      "id": "sm-jq4zce",
+      "keyword": "项目体验",
+      "colorType": "plus",
+      "parentId": "sm-7p8h2v",
+      "order": 2,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-24T04:46:00.820Z",
+      "accentColor": ""
+    },
+    "sm-j7hhwn": {
+      "id": "sm-j7hhwn",
+      "keyword": "维修能力上项",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 7,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-24T04:58:31.941Z",
+      "accentColor": ""
+    },
+    "sm-sid11v": {
+      "id": "sm-sid11v",
+      "keyword": "接下来是PPT的环节了",
+      "colorType": "plus",
+      "parentId": "sm-7p8h2v",
+      "order": 3,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-24T05:08:57.128Z",
+      "accentColor": "#e2b783"
+    },
+    "sm-8ipxxm": {
+      "id": "sm-8ipxxm",
+      "keyword": "自己的日常的想法",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 10,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-24T05:30:34.768Z",
+      "accentColor": ""
+    },
+    "sm-6c7qxz": {
+      "id": "sm-6c7qxz",
+      "keyword": "自己的工作流和系统建设",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 11,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-24T05:44:38.932Z",
+      "accentColor": ""
+    },
+    "sm-ryt4jw": {
+      "id": "sm-ryt4jw",
+      "keyword": "批判式调取codex",
+      "colorType": "plus",
+      "parentId": "sm-6c7qxz",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-24T11:36:09.350Z",
+      "accentColor": ""
+    },
+    "sm-pfty0w": {
+      "id": "sm-pfty0w",
+      "keyword": "整理一下散落各处的概念",
+      "colorType": "plus",
+      "parentId": "sm-7p8h2v",
+      "order": 1,
+      "sortLetter": "#",
+      "note": "为了回收一下自己的经历过的历史信息",
+      "createdAt": "2026-03-25T00:52:05.857Z",
+      "accentColor": ""
+    },
+    "sm-ak10o8": {
+      "id": "sm-ak10o8",
+      "keyword": "会议内容",
+      "colorType": "plus",
+      "parentId": "sm-di8lpx",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-25T01:07:36.709Z",
+      "accentColor": ""
+    },
+    "sm-4innn4": {
+      "id": "sm-4innn4",
+      "keyword": "对于各种标签的认知",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 2,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-25T06:58:59.366Z",
+      "accentColor": ""
+    },
+    "sm-oyouha": {
+      "id": "sm-oyouha",
+      "keyword": "三月份手册改版",
+      "colorType": "plus",
+      "parentId": "sm-e9h30h",
+      "order": 5,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-25T07:18:09.395Z",
+      "accentColor": "#3fcfc5"
+    },
+    "sm-5wc6s5": {
+      "id": "sm-5wc6s5",
+      "keyword": "调查报告用过的好用范式",
+      "colorType": "plus",
+      "parentId": "sm-7p8h2v",
+      "order": 4,
+      "sortLetter": "#",
+      "note": "之前的工程调查报告的分析别人的",
+      "createdAt": "2026-03-25T07:23:00.768Z",
+      "accentColor": ""
+    },
+    "sm-cbfvtv": {
+      "id": "sm-cbfvtv",
+      "keyword": "应对汇报",
+      "colorType": "plus",
+      "parentId": "sm-7p8h2v",
+      "order": 5,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-25T07:56:41.324Z",
+      "accentColor": ""
+    },
+    "sm-5cko57": {
+      "id": "sm-5cko57",
+      "keyword": "雷达的工程调查",
+      "colorType": "plus",
+      "accentColor": "#360ec8",
+      "parentId": "sm-e9h30h",
+      "order": 12,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-26T04:51:39.010Z"
+    },
+    "sm-y9xk23": {
+      "id": "sm-y9xk23",
+      "keyword": "霍尼天线底座的工程调查",
+      "colorType": "plus",
+      "accentColor": "#fbff00",
+      "parentId": "sm-e9h30h",
+      "order": 13,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-26T04:52:16.123Z"
+    },
+    "sm-pbke83": {
+      "id": "sm-pbke83",
+      "keyword": "自己的具体的结合实际的形势判断",
+      "colorType": "plus",
+      "accentColor": "#5885df",
+      "parentId": "sm-e9h30h",
+      "order": 14,
+      "sortLetter": "#",
+      "note": "就比如我对真实的现实的事情的一些看法",
+      "createdAt": "2026-03-26T05:24:03.697Z"
+    },
+    "sm-cjj1bk": {
+      "id": "sm-cjj1bk",
+      "keyword": "基于启发式的框架体系构筑",
+      "colorType": "plus",
+      "accentColor": "#a25a01",
+      "parentId": "sm-pbke83",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-26T05:34:57.696Z"
+    },
+    "sm-fdgq5o": {
+      "id": "sm-fdgq5o",
+      "keyword": "针对PPT的修改",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-cbfvtv",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "主要是亮哥给我讲的",
+      "createdAt": "2026-03-26T07:03:40.731Z"
+    },
+    "sm-etwkzw": {
+      "id": "sm-etwkzw",
+      "keyword": "自己的系统的使用",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-8ipxxm",
+      "order": 1,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-26T07:30:38.788Z"
+    },
+    "sm-gnj3mc": {
+      "id": "sm-gnj3mc",
+      "keyword": "外部信源，或许有用",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-8ipxxm",
+      "order": 2,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-26T09:35:38.300Z"
+    },
+    "sm-ebc3": {
+      "id": "sm-ebc3",
+      "keyword": "写作",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-8ipxxm",
+      "order": 3,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-26T12:43:40.239Z"
+    },
+    "sm-itw8sq": {
+      "id": "sm-itw8sq",
+      "keyword": "可靠性会意见",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-7p8h2v",
+      "order": 6,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-27T05:30:42.685Z"
+    },
+    "sm-7qh3cd": {
+      "id": "sm-7qh3cd",
+      "keyword": "附件管理部问题分析特征",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-itw8sq",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-27T06:00:52.664Z"
+    },
+    "sm-kvzlk6": {
+      "id": "sm-kvzlk6",
+      "keyword": "电子部件深修",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-e9h30h",
+      "order": 4,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-27T06:02:08.594Z"
+    },
+    "sm-ufzu8p": {
+      "id": "sm-ufzu8p",
+      "keyword": "俊凯哥，丰哥，亮哥，我在可靠性会议之后的讨论有一个录音",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-kvzlk6",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-27T07:02:12.906Z"
+    },
+    "sm-dj7z3l": {
+      "id": "sm-dj7z3l",
+      "keyword": "核对清单",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-oyouha",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-27T07:06:24.959Z"
+    },
+    "sm-n3cqbt": {
+      "id": "sm-n3cqbt",
+      "keyword": "自己的范式",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "我有哪些用的好的范式，或者我需要对于哪些范式做什么规则，应当在这里写下来",
+      "createdAt": "2026-03-28T09:03:21.208Z"
+    },
+    "sm-wn1tmj": {
+      "id": "sm-wn1tmj",
+      "keyword": "workspace使用技巧",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 1,
+      "sortLetter": "W",
+      "note": "",
+      "createdAt": "2026-03-30T02:30:18.827Z"
+    },
+    "sm-s1k28s": {
+      "id": "sm-s1k28s",
+      "keyword": "打印机的重叠问题",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-e9h30h",
+      "order": 8,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-30T06:06:11.587Z"
+    },
+    "sm-ufso8v": {
+      "id": "sm-ufso8v",
+      "keyword": "世伟哥的标签研究",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-e9h30h",
+      "order": 9,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-30T06:07:31.287Z"
+    },
+    "sm-9edmt": {
+      "id": "sm-9edmt",
+      "keyword": "转codex工作流了",
+      "colorType": "plus",
+      "accentColor": "#1aea9a",
+      "parentId": "sm-6c7qxz",
+      "order": 1,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-30T10:58:49.365Z"
+    },
+    "sm-c85ta1": {
+      "id": "sm-c85ta1",
+      "keyword": "关键词管理系统的使用技巧",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 2,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-31T03:20:43.534Z"
+    },
+    "sm-uy5m9h": {
+      "id": "sm-uy5m9h",
+      "keyword": "对于外部信息",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-8ipxxm",
+      "order": 4,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-31T04:01:48.883Z"
+    },
+    "sm-w2d2do": {
+      "id": "sm-w2d2do",
+      "keyword": "第13周的这个周期的想法",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-8ipxxm",
+      "order": 5,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-31T04:40:36.394Z"
+    },
+    "sm-hvqzt8": {
+      "id": "sm-hvqzt8",
+      "keyword": "supermemo plan",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 3,
+      "sortLetter": "S",
+      "note": "",
+      "createdAt": "2026-03-31T05:05:42.762Z"
+    },
+    "sm-t8s5o0": {
+      "id": "sm-t8s5o0",
+      "keyword": "待办的管理",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 4,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-31T05:15:08.788Z"
+    },
+    "sm-5i2xon": {
+      "id": "sm-5i2xon",
+      "keyword": "项目的一般性的知识",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-5cko57",
+      "order": 0,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-31T08:41:20.230Z"
+    },
+    "sm-4o43tz": {
+      "id": "sm-4o43tz",
+      "keyword": "湖北多次拆下的件的调查，历史修理情况",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-5cko57",
+      "order": 1,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-03-31T08:43:30.573Z"
+    },
+    "sm-8srrbc": {
+      "id": "sm-8srrbc",
+      "keyword": "快速展开新的项目的方法",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 5,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-01T01:59:08.885Z"
+    },
+    "sm-ptvw08": {
+      "id": "sm-ptvw08",
+      "keyword": "高度表的sil下发，改装工作单",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-e9h30h",
+      "order": 15,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-01T05:26:19.947Z"
+    },
+    "sm-ogenz9": {
+      "id": "sm-ogenz9",
+      "keyword": "新增一个状态胶囊插件",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 6,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-01T09:40:06.347Z"
+    },
+    "sm-7rv78f": {
+      "id": "sm-7rv78f",
+      "keyword": "持续感的事项",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-8ipxxm",
+      "order": 6,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-03T03:46:18.499Z"
+    },
+    "sm-nbpiy9": {
+      "id": "sm-nbpiy9",
+      "keyword": "李哥的服务通告",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-e9h30h",
+      "order": 16,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-03T09:28:05.889Z"
+    },
+    "sm-87g5ez": {
+      "id": "sm-87g5ez",
+      "keyword": "mermaid图",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 7,
+      "sortLetter": "M",
+      "note": "",
+      "createdAt": "2026-04-03T10:16:47.135Z"
+    },
+    "sm-23k0": {
+      "id": "sm-23k0",
+      "keyword": "bus",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 8,
+      "sortLetter": "B",
+      "note": "",
+      "createdAt": "2026-04-03T10:19:06.202Z"
+    },
+    "sm-7ejrz2": {
+      "id": "sm-7ejrz2",
+      "keyword": "新的workspace mount插件",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 9,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-06T02:41:45.370Z"
+    },
+    "sm-hbux2f": {
+      "id": "sm-hbux2f",
+      "keyword": "插件做更新的规则",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 10,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-06T03:13:29.206Z"
+    },
+    "sm-w89x3r": {
+      "id": "sm-w89x3r",
+      "keyword": "集合卡视图",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 11,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-06T13:03:05.910Z"
+    },
+    "sm-cfz3z": {
+      "id": "sm-cfz3z",
+      "keyword": "做记录",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 12,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-11T05:07:04.492Z"
+    },
+    "sm-zf447k": {
+      "id": "sm-zf447k",
+      "keyword": "跨视图做条目关系关联",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 13,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-12T02:04:14.496Z"
+    },
+    "sm-5u1xi4": {
+      "id": "sm-5u1xi4",
+      "keyword": "真正对话库当中的卡迁移",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-etwkzw",
+      "order": 14,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-12T02:48:59.271Z"
+    },
+    "sm-7ahzuj": {
+      "id": "sm-7ahzuj",
+      "keyword": "车间修理项目",
+      "colorType": "yaml",
+      "accentColor": "#d47300",
+      "parentId": null,
+      "order": 1,
+      "sortLetter": "#",
+      "note": "",
+      "createdAt": "2026-04-24T05:48:51.093Z"
+    },
+    "sm-cpmb3q": {
+      "id": "sm-cpmb3q",
+      "keyword": "DFDR 980-4750",
+      "colorType": "plus",
+      "accentColor": "#d47300",
+      "parentId": "sm-7ahzuj",
+      "order": 0,
+      "sortLetter": "D",
+      "note": "",
+      "createdAt": "2026-04-24T05:49:10.715Z"
+    }
+  },
+  "smConceptsById": {
+    "1": {
+      "smConceptId": 1,
+      "name": "Root: 知识库",
+      "elementId": 1,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "2": {
+      "smConceptId": 2,
+      "name": "集合卡视图",
+      "elementId": 1304,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "3": {
+      "smConceptId": 3,
+      "name": "快速展开新的项目的方法",
+      "elementId": 2184,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "12": {
+      "smConceptId": 12,
+      "name": "附件管理部问题分析特征",
+      "elementId": 3406,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "15": {
+      "smConceptId": 15,
+      "name": "调查报告用过的好用范式",
+      "elementId": 662,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "16": {
+      "smConceptId": 16,
+      "name": "针对PPT的修改",
+      "elementId": 3784,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "18": {
+      "smConceptId": 18,
+      "name": "之前的文件夹保存的",
+      "elementId": 3180,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "19": {
+      "smConceptId": 19,
+      "name": "余度",
+      "elementId": 116,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "20": {
+      "smConceptId": 20,
+      "name": "基于启发式的框架体系构筑",
+      "elementId": 489,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "23": {
+      "smConceptId": 23,
+      "name": "RP",
+      "elementId": 2183,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "25": {
+      "smConceptId": 25,
+      "name": "世伟哥的标签研究",
+      "elementId": 338,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "27": {
+      "smConceptId": 27,
+      "name": "做记录",
+      "elementId": 1044,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "35": {
+      "smConceptId": 35,
+      "name": "网络",
+      "elementId": 2243,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "40": {
+      "smConceptId": 40,
+      "name": "ATEC7系列",
+      "elementId": 2647,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "42": {
+      "smConceptId": 42,
+      "name": "启发的想法",
+      "elementId": 1508,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "44": {
+      "smConceptId": 44,
+      "name": "湖北多次拆下的件的调查，历史修理情况",
+      "elementId": 2881,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "46": {
+      "smConceptId": 46,
+      "name": "自己的范式",
+      "elementId": 910,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "48": {
+      "smConceptId": 48,
+      "name": "批判式调取codex",
+      "elementId": 2860,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "49": {
+      "smConceptId": 49,
+      "name": "应对汇报",
+      "elementId": 3929,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "53": {
+      "smConceptId": 53,
+      "name": "雷达的工程调查",
+      "elementId": 1613,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "59": {
+      "smConceptId": 59,
+      "name": "转codex工作流了",
+      "elementId": 2885,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "61": {
+      "smConceptId": 61,
+      "name": "近地警告的工程调查",
+      "elementId": 25,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "64": {
+      "smConceptId": 64,
+      "name": "DFDR 980-4750",
+      "elementId": 3838,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "66": {
+      "smConceptId": 66,
+      "name": "项目的一般性的知识",
+      "elementId": 785,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "68": {
+      "smConceptId": 68,
+      "name": "小平衡机合同",
+      "elementId": 1417,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "69": {
+      "smConceptId": 69,
+      "name": "测试台子",
+      "elementId": 3750,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "72": {
+      "smConceptId": 72,
+      "name": "tricks",
+      "elementId": 2981,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "76": {
+      "smConceptId": 76,
+      "name": "三月份手册改版",
+      "elementId": 1845,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "80": {
+      "smConceptId": 80,
+      "name": "项目体验",
+      "elementId": 1837,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "86": {
+      "smConceptId": 86,
+      "name": "BUS",
+      "elementId": 2909,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "95": {
+      "smConceptId": 95,
+      "name": "第13周的这个周期的想法",
+      "elementId": 771,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "100": {
+      "smConceptId": 100,
+      "name": "健康管理",
+      "elementId": 3363,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "102": {
+      "smConceptId": 102,
+      "name": "维修能力上项",
+      "elementId": 1560,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "106": {
+      "smConceptId": 106,
+      "name": "自己工作的项目",
+      "elementId": 3081,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "109": {
+      "smConceptId": 109,
+      "name": "接下来是PPT的环节了",
+      "elementId": 1035,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "117": {
+      "smConceptId": 117,
+      "name": "待办的管理",
+      "elementId": 1898,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "118": {
+      "smConceptId": 118,
+      "name": "打印机的重叠问题",
+      "elementId": 3709,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "119": {
+      "smConceptId": 119,
+      "name": "mermaid图",
+      "elementId": 1987,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "126": {
+      "smConceptId": 126,
+      "name": "新的workspace mount插件",
+      "elementId": 510,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "128": {
+      "smConceptId": 128,
+      "name": "可靠性会意见",
+      "elementId": 349,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "129": {
+      "smConceptId": 129,
+      "name": "跟631所的",
+      "elementId": 1730,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "130": {
+      "smConceptId": 130,
+      "name": "对于各种标签的认知",
+      "elementId": 589,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "132": {
+      "smConceptId": 132,
+      "name": "电子部件深修",
+      "elementId": 860,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "135": {
+      "smConceptId": 135,
+      "name": "作为补充",
+      "elementId": 3022,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "136": {
+      "smConceptId": 136,
+      "name": "真正对话库当中的卡迁移",
+      "elementId": 167,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "142": {
+      "smConceptId": 142,
+      "name": "会议内容",
+      "elementId": 852,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "144": {
+      "smConceptId": 144,
+      "name": "新增一个状态胶囊插件",
+      "elementId": 3932,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "149": {
+      "smConceptId": 149,
+      "name": "对于外部信息",
+      "elementId": 1995,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "155": {
+      "smConceptId": 155,
+      "name": "自己的系统的使用",
+      "elementId": 1395,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "158": {
+      "smConceptId": 158,
+      "name": "关键词管理系统的使用技巧",
+      "elementId": 3467,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "162": {
+      "smConceptId": 162,
+      "name": "自己的具体的结合实际的形势判断",
+      "elementId": 1482,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "165": {
+      "smConceptId": 165,
+      "name": "SIL和高度表客户化改装工作单下发",
+      "elementId": 1731,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "167": {
+      "smConceptId": 167,
+      "name": "外部信源，或许有用",
+      "elementId": 526,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "169": {
+      "smConceptId": 169,
+      "name": "插件做更新的规则",
+      "elementId": 1770,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "172": {
+      "smConceptId": 172,
+      "name": "整理一下散落各处的概念",
+      "elementId": 481,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "173": {
+      "smConceptId": 173,
+      "name": "持续感的事项",
+      "elementId": 1318,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "174": {
+      "smConceptId": 174,
+      "name": "写作",
+      "elementId": 1585,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "180": {
+      "smConceptId": 180,
+      "name": "LRA",
+      "elementId": 3164,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "186": {
+      "smConceptId": 186,
+      "name": "维修能力",
+      "elementId": 3555,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "187": {
+      "smConceptId": 187,
+      "name": "自己的工作流和系统建设",
+      "elementId": 2816,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "191": {
+      "smConceptId": 191,
+      "name": "跨视图做条目关系关联",
+      "elementId": 2618,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "193": {
+      "smConceptId": 193,
+      "name": "supermemo plan",
+      "elementId": 3672,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "204": {
+      "smConceptId": 204,
+      "name": "自己的日常的想法",
+      "elementId": 2694,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    },
+    "206": {
+      "smConceptId": 206,
+      "name": "workspace使用技巧",
+      "elementId": 2167,
+      "useCount": 1,
+      "created": false,
+      "pulledAt": "2026-04-24T17:13:23.649Z"
+    }
+  },
+  "conceptMappings": {
+    "sm-s1k28s": {
+      "smConceptId": 118,
+      "bindMode": "ensure-existing",
+      "boundAt": "2026-04-21T09:54:04.997Z",
+      "note": ""
+    },
+    "sm-kvzlk6": {
+      "smConceptId": 132,
+      "bindMode": "ensure-existing",
+      "boundAt": "2026-04-21T09:54:07.368Z",
+      "note": ""
+    },
+    "sm-4innn4": {
+      "smConceptId": 130,
+      "bindMode": "ensure-existing",
+      "boundAt": "2026-04-21T09:54:10.646Z",
+      "note": ""
+    }
+  },
+  "notesById": {
+    "a9ade354-25ee-40f7-b190-053d089f7620": {
+      "noteId": "a9ade354-25ee-40f7-b190-053d089f7620",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.030.005G.001- 两份报告当中有效的内容.md",
+      "basename": "ATOM@121.001.007.002.245.030.005G.001- ?????????????????????????????????",
+      "smId": null,
+      "enrolled": false,
+      "status": "removed",
+      "registeredAt": "2026-04-21T05:12:48.094Z",
+      "lastSyncAt": "2026-04-24T17:09:53.166Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1776748351609,
+        "size": 491
+      },
+      "errors": [],
+      "pendingConceptSync": false,
+      "legacyConceptId": null,
+      "needsSmConcept": false
+    },
+    "24fcc0a9-60d2-4df3-a064-1bfd08f1d3b0": {
+      "noteId": "24fcc0a9-60d2-4df3-a064-1bfd08f1d3b0",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.248.001.005A.001A- 还需要了解一下FIN手册结构和使用，波音机队的思路是下载NVM数据，参考NVM码来结合FIM手册来排故.md",
+      "basename": "ATOM@121.001.007.002.248.001.005A.001A- ?????�???????????�???FIN????????????????????????????????????????�?????????????NVM?????????????�?NVM????????????FIM???????????????",
+      "smId": "1483",
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-21T05:14:36.560Z",
+      "lastSyncAt": "2026-04-24T06:28:15.326Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": "2026-04-21T12:39:47.148Z",
+        "lastRequestedGrade": 2,
+        "lastVerdict": "error",
+        "lastResponse": {
+          "error": "“System.MarshalByRefObject”未包含“Title”的定义"
+        }
+      },
+      "contentFingerprint": {
+        "mtime": 1776749184133,
+        "size": 346
+      },
+      "errors": [],
+      "pendingConceptSync": false,
+      "legacyConceptId": null,
+      "needsSmConcept": true
+    },
+    "413939b9-4686-49f8-b050-2028aff1fff2": {
+      "noteId": "413939b9-4686-49f8-b050-2028aff1fff2",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.229.001.005.007.001.002.001.008.002- 做obsidian这端的插件.md",
+      "basename": "ATOM@121.001.007.002.229.001.005.007.001.002.001.008.002- ???obsidian???????????????",
+      "smId": "840",
+      "conceptId": null,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-21T08:43:25.322Z",
+      "lastSyncAt": "2026-04-24T06:28:06.838Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1776769211613,
+        "size": 2213
+      },
+      "errors": [],
+      "pendingConceptSync": false,
+      "legacyConceptId": null,
+      "needsSmConcept": true
+    },
+    "745611cd-b54e-4fe8-a8bb-07c61a9d87a9": {
+      "noteId": "745611cd-b54e-4fe8-a8bb-07c61a9d87a9",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.248.001.005A- 822-1710-002雷达项目的咨询情况.md",
+      "basename": "ATOM@121.001.007.002.248.001.005A- 822-1710-002???????????????????????????",
+      "smId": "3408",
+      "conceptId": null,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-21T08:43:26.522Z",
+      "lastSyncAt": "2026-04-24T06:28:15.200Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": "2026-04-21T11:01:36.164Z",
+        "lastRequestedGrade": 5,
+        "lastVerdict": "error",
+        "lastResponse": {
+          "error": "net::ERR_CONNECTION_REFUSED"
+        }
+      },
+      "contentFingerprint": {
+        "mtime": 1776493100852,
+        "size": 1118
+      },
+      "errors": [],
+      "pendingConceptSync": false,
+      "legacyConceptId": null,
+      "needsSmConcept": true
+    },
+    "813991ab-7df6-48ff-8083-f7be8d4b5f7c": {
+      "noteId": "813991ab-7df6-48ff-8083-f7be8d4b5f7c",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.229.001.005.007.001.002.001.005.001- 首先是一个mermaid图.md",
+      "basename": "ATOM@121.001.007.002.229.001.005.007.001.002.001.005.001- ???????????�???mermaid???",
+      "smId": "425",
+      "conceptId": null,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-21T08:50:05.398Z",
+      "lastSyncAt": "2026-04-24T17:13:37.256Z",
+      "lastErrorAt": "2026-04-24T17:13:55.215Z",
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": "2026-04-24T17:13:55.215Z",
+        "lastRequestedGrade": 0,
+        "lastVerdict": "error",
+        "lastResponse": {
+          "error": "Bridge request timed out after 8000 ms"
+        }
+      },
+      "contentFingerprint": {
+        "mtime": 1776857999947,
+        "size": 2461
+      },
+      "errors": [
+        {
+          "at": "2026-04-24T17:13:55.215Z",
+          "message": "Bridge request timed out after 8000 ms"
+        }
+      ],
+      "pendingConceptSync": false,
+      "legacyConceptId": null,
+      "needsSmConcept": true
+    },
+    "7aefef95-52b2-406c-ae7b-b01653f91bea": {
+      "noteId": "7aefef95-52b2-406c-ae7b-b01653f91bea",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.105.001.003.008.019.001.021- 临卦就又是一个课题.md",
+      "basename": "ATOM@121.001.007.002.105.001.003.008.019.001.021- ?????????????????�?????????",
+      "smId": "3557",
+      "smConceptId": 42,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 42,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-24T17:57:32.983Z",
+      "lastSyncAt": "2026-04-24T17:57:32.983Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777053444916,
+        "size": 1484
+      },
+      "errors": []
+    },
+    "b1c40edc-812d-43f4-bfa5-d3d7c249308c": {
+      "noteId": "b1c40edc-812d-43f4-bfa5-d3d7c249308c",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.033- DFDR做好准备.md",
+      "basename": "ATOM@121.001.007.002.245.033- DFDR????????????",
+      "smId": "2569",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": null,
+      "needsSmConcept": false,
+      "pendingConceptSync": true,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-22T12:41:13.358Z",
+      "lastSyncAt": "2026-04-24T07:32:43.435Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777015962323,
+        "size": 397
+      },
+      "errors": []
+    },
+    "ec1c4192-795b-4cb0-9c76-ae7282ec5bba": {
+      "noteId": "ec1c4192-795b-4cb0-9c76-ae7282ec5bba",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.030.005A- QAR数据.md",
+      "basename": "ATOM@121.001.007.002.245.030.005A- QAR??????",
+      "smId": "2134",
+      "smConceptId": null,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": null,
+      "needsSmConcept": true,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-22T11:33:55.478Z",
+      "lastSyncAt": "2026-04-24T06:28:06.990Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1776857633698,
+        "size": 461
+      },
+      "errors": []
+    },
+    "10347e16-d919-4428-9993-b705ee6a22fb": {
+      "noteId": "10347e16-d919-4428-9993-b705ee6a22fb",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.030.002.003+001.003- 校准过程.md",
+      "basename": "ATOM@121.001.007.002.245.030.002.003+001.003- ????????????",
+      "smId": "3880",
+      "smConceptId": 169,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 69,
+      "needsSmConcept": false,
+      "pendingConceptSync": true,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-22T11:52:44.559Z",
+      "lastSyncAt": "2026-04-24T06:28:06.925Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": "not-readable",
+        "reason": "No public schedule-like property path was readable on this element. This may mean the element is not scheduled, the current element type does not expose schedule data, or the SMA interop layer does not expose it through public properties.",
+        "sources": {
+          "nextReview": null,
+          "interval": null,
+          "repetitions": null,
+          "easiness": null,
+          "lastReview": null
+        },
+        "diagnostics": {
+          "elementRuntimeType": "System.MarshalByRefObject",
+          "readableScheduleLikeProperties": [],
+          "scheduleObjectType": null,
+          "aFactor": null
+        }
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1776858763895,
+        "size": 5331
+      },
+      "errors": []
+    },
+    "c1f4581d-82cf-4463-871f-d2da9212a20d": {
+      "noteId": "c1f4581d-82cf-4463-871f-d2da9212a20d",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.033.001.001+001+001+001+002- 输出一份给supermemo的总结内容.md",
+      "basename": "ATOM@121.001.007.002.245.033.001.001+001+001+001+002- 输出一份给supermemo的总结内容",
+      "smId": null,
+      "smConceptId": 64,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": null,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "register-error",
+      "registeredAt": null,
+      "lastSyncAt": null,
+      "lastErrorAt": "2026-04-24T06:28:15.130Z",
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777010101538,
+        "size": 311
+      },
+      "errors": [
+        {
+          "at": "2026-04-24T06:28:15.130Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T05:55:44.639Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T05:55:09.674Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T05:53:32.652Z",
+          "message": "Bridge request timed out after 8000 ms"
+        }
+      ]
+    },
+    "83e9a81d-6677-44fb-84d7-99b51873ed99": {
+      "noteId": "83e9a81d-6677-44fb-84d7-99b51873ed99",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.033.001.001+001+001+001+002.001- 强调一下短小时部件来了一定要跟航线确定拆件实际情况和逻辑.md",
+      "basename": "ATOM@121.001.007.002.245.033.001.001+001+001+001+002.001- 强调一下短小时部件来了一定要跟航线确定拆件实际情况和逻辑",
+      "smId": null,
+      "smConceptId": 64,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": null,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "register-error",
+      "registeredAt": null,
+      "lastSyncAt": null,
+      "lastErrorAt": "2026-04-24T06:34:30.362Z",
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777012090380,
+        "size": 348
+      },
+      "errors": [
+        {
+          "at": "2026-04-24T06:34:30.362Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T06:34:25.146Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T06:33:59.701Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T06:32:42.055Z",
+          "message": "Bridge request timed out after 8000 ms"
+        },
+        {
+          "at": "2026-04-24T06:28:18.556Z",
+          "message": "Bridge request timed out after 8000 ms"
+        }
+      ]
+    },
+    "13999219-e5e4-4bde-a468-6b1ba7073813": {
+      "noteId": "13999219-e5e4-4bde-a468-6b1ba7073813",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.002.003- 针对CFDS各个位是怎么回事，我需要用工作流重新看一下.md",
+      "basename": "ATOM@121.001.007.002.245.032.002.003- ??????CFDS?????????????�??????????????????�??????????????????????????�???",
+      "smId": "1379",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 180,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-24T07:05:26.171Z",
+      "lastSyncAt": "2026-04-24T07:05:26.171Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777014322163,
+        "size": 5041
+      },
+      "errors": []
+    },
+    "6e6cbd31-b4ec-4f93-a5db-231a79cacb4e": {
+      "noteId": "6e6cbd31-b4ec-4f93-a5db-231a79cacb4e",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.001- 调查履历信息，部件拆下情况.md",
+      "basename": "ATOM@121.001.007.002.245.032.001- ???????????????????????????????????????",
+      "smId": "405",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 180,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-24T07:11:07.758Z",
+      "lastSyncAt": "2026-04-24T07:11:07.758Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777014664106,
+        "size": 493
+      },
+      "errors": []
+    },
+    "990962cc-ce8c-4ce3-b5f2-9e63b6d68a65": {
+      "noteId": "990962cc-ce8c-4ce3-b5f2-9e63b6d68a65",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.002.002.001+001- 之前的报告内容都已经调查OK了，开始写报告.md",
+      "basename": "ATOM@121.001.007.002.245.032.002.002.001+001- ????????????????????????????????????OK????????�????????????",
+      "smId": "2403",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 180,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-24T07:16:21.266Z",
+      "lastSyncAt": "2026-04-24T07:16:21.266Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777014977497,
+        "size": 351
+      },
+      "errors": []
+    },
+    "8a2ce2e9-ffbd-4217-a8de-313e05bc9995": {
+      "noteId": "8a2ce2e9-ffbd-4217-a8de-313e05bc9995",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032A- 测试用.md",
+      "basename": "ATOM@121.001.007.002.245.032A- ?????????",
+      "smId": "2779",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 180,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-24T07:34:58.343Z",
+      "lastSyncAt": "2026-04-24T07:34:58.343Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777016095179,
+        "size": 351
+      },
+      "errors": []
+    },
+    "54a820c0-3225-4498-8dbc-1c1473db8ecd": {
+      "noteId": "54a820c0-3225-4498-8dbc-1c1473db8ecd",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032- 有一个新的LRA工程调查做好准备.md",
+      "basename": "ATOM@121.001.007.002.245.032- ?????�?????????LRA????????????????????????",
+      "smId": "2836",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 180,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": false,
+      "status": "removed",
+      "registeredAt": "2026-04-24T07:47:40.676Z",
+      "lastSyncAt": "2026-04-24T07:47:40.676Z",
+      "lastErrorAt": "2026-04-24T17:04:47.364Z",
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": "2026-04-24T17:04:47.364Z",
+        "lastRequestedGrade": 5,
+        "lastVerdict": "error",
+        "lastResponse": {
+          "error": "“System.MarshalByRefObject”未包含“Title”的定义"
+        }
+      },
+      "contentFingerprint": {
+        "mtime": 1777016856492,
+        "size": 423
+      },
+      "errors": [
+        {
+          "at": "2026-04-24T17:04:47.364Z",
+          "message": "“System.MarshalByRefObject”未包含“Title”的定义"
+        }
+      ]
+    },
+    "acecaf51-f966-46af-957b-e21e656dde80": {
+      "noteId": "acecaf51-f966-46af-957b-e21e656dde80",
+      "path": "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.002.001- 调查拆换记录.md",
+      "basename": "ATOM@121.001.007.002.245.032.002.001- ??????????????????",
+      "smId": "3394",
+      "smConceptId": 180,
+      "legacyConceptId": null,
+      "conceptId": null,
+      "primarySmConceptId": 180,
+      "needsSmConcept": false,
+      "pendingConceptSync": false,
+      "enrolled": true,
+      "status": "active",
+      "registeredAt": "2026-04-24T07:59:30.417Z",
+      "lastSyncAt": "2026-04-24T07:59:30.417Z",
+      "lastErrorAt": null,
+      "schedule": {
+        "nextReview": null,
+        "interval": null,
+        "repetitions": null,
+        "easiness": null,
+        "lastReview": null,
+        "status": null,
+        "reason": null,
+        "sources": null,
+        "diagnostics": null
+      },
+      "reviewProbe": {
+        "lastProbedAt": null,
+        "lastRequestedGrade": null,
+        "lastVerdict": null,
+        "lastResponse": null
+      },
+      "contentFingerprint": {
+        "mtime": 1777017566089,
+        "size": 544
+      },
+      "errors": []
+    }
+  },
+  "pathIndex": {
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.030.005G.001- 两份报告当中有效的内容.md": "a9ade354-25ee-40f7-b190-053d089f7620",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.248.001.005A.001A- 还需要了解一下FIN手册结构和使用，波音机队的思路是下载NVM数据，参考NVM码来结合FIM手册来排故.md": "24fcc0a9-60d2-4df3-a064-1bfd08f1d3b0",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.229.001.005.007.001.002.001.008.002- 做obsidian这端的插件.md": "413939b9-4686-49f8-b050-2028aff1fff2",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.248.001.005A- 822-1710-002雷达项目的咨询情况.md": "745611cd-b54e-4fe8-a8bb-07c61a9d87a9",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.229.001.005.007.001.002.001.005.001- 首先是一个mermaid图.md": "813991ab-7df6-48ff-8083-f7be8d4b5f7c",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.105.001.003.008.019.001.021- 临卦就又是一个课题.md": "7aefef95-52b2-406c-ae7b-b01653f91bea",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.033- DFDR做好准备.md": "b1c40edc-812d-43f4-bfa5-d3d7c249308c",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.030.005A- QAR数据.md": "ec1c4192-795b-4cb0-9c76-ae7282ec5bba",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.030.002.003+001.003- 校准过程.md": "10347e16-d919-4428-9993-b705ee6a22fb",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.033.001.001+001+001+001+002- 输出一份给supermemo的总结内容.md": "c1f4581d-82cf-4463-871f-d2da9212a20d",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.033.001.001+001+001+001+002.001- 强调一下短小时部件来了一定要跟航线确定拆件实际情况和逻辑.md": "83e9a81d-6677-44fb-84d7-99b51873ed99",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.002.003- 针对CFDS各个位是怎么回事，我需要用工作流重新看一下.md": "13999219-e5e4-4bde-a468-6b1ba7073813",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.001- 调查履历信息，部件拆下情况.md": "6e6cbd31-b4ec-4f93-a5db-231a79cacb4e",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.002.002.001+001- 之前的报告内容都已经调查OK了，开始写报告.md": "990962cc-ce8c-4ce3-b5f2-9e63b6d68a65",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032A- 测试用.md": "8a2ce2e9-ffbd-4217-a8de-313e05bc9995",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032- 有一个新的LRA工程调查做好准备.md": "54a820c0-3225-4498-8dbc-1c1473db8ecd",
+    "项目/18-战略视图迭代/18E-GTD夹子/18E1-下一步代办事项清单文件夹/下一步代办的liner chain/ATOM@121.001.007.002.245.032.002.001- 调查拆换记录.md": "acecaf51-f966-46af-957b-e21e656dde80"
+  },
+  "smIndex": {
+    "405": "6e6cbd31-b4ec-4f93-a5db-231a79cacb4e",
+    "425": "813991ab-7df6-48ff-8083-f7be8d4b5f7c",
+    "840": "413939b9-4686-49f8-b050-2028aff1fff2",
+    "1379": "13999219-e5e4-4bde-a468-6b1ba7073813",
+    "1483": "24fcc0a9-60d2-4df3-a064-1bfd08f1d3b0",
+    "2134": "ec1c4192-795b-4cb0-9c76-ae7282ec5bba",
+    "2403": "990962cc-ce8c-4ce3-b5f2-9e63b6d68a65",
+    "2569": "b1c40edc-812d-43f4-bfa5-d3d7c249308c",
+    "2779": "8a2ce2e9-ffbd-4217-a8de-313e05bc9995",
+    "2836": "54a820c0-3225-4498-8dbc-1c1473db8ecd",
+    "3394": "acecaf51-f966-46af-957b-e21e656dde80",
+    "3408": "745611cd-b54e-4fe8-a8bb-07c61a9d87a9",
+    "3557": "7aefef95-52b2-406c-ae7b-b01653f91bea",
+    "3880": "10347e16-d919-4428-9993-b705ee6a22fb"
+  },
+  "ui": {
+    "activeTab": "records",
+    "selectedSmConceptId": 180,
+    "scrollByFilter": {
+      "all": 2337,
+      "sm:64": 0,
+      "sm:180": 900
+    },
+    "recordTreeByFilter": {
+      "all": {
+        "7aefef95-52b2-406c-ae7b-b01653f91bea": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "813991ab-7df6-48ff-8083-f7be8d4b5f7c": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "413939b9-4686-49f8-b050-2028aff1fff2": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "10347e16-d919-4428-9993-b705ee6a22fb": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "ec1c4192-795b-4cb0-9c76-ae7282ec5bba": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "6e6cbd31-b4ec-4f93-a5db-231a79cacb4e": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "acecaf51-f966-46af-957b-e21e656dde80": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "990962cc-ce8c-4ce3-b5f2-9e63b6d68a65": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "13999219-e5e4-4bde-a468-6b1ba7073813": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "8a2ce2e9-ffbd-4217-a8de-313e05bc9995": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "b1c40edc-812d-43f4-bfa5-d3d7c249308c": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "c1f4581d-82cf-4463-871f-d2da9212a20d": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "83e9a81d-6677-44fb-84d7-99b51873ed99": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "745611cd-b54e-4fe8-a8bb-07c61a9d87a9": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "24fcc0a9-60d2-4df3-a064-1bfd08f1d3b0": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        }
+      },
+      "sm:64": {
+        "c1f4581d-82cf-4463-871f-d2da9212a20d": {
+          "parentId": null,
+          "order": 1,
+          "collapsed": false
+        },
+        "83e9a81d-6677-44fb-84d7-99b51873ed99": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        }
+      },
+      "sm:180": {
+        "6e6cbd31-b4ec-4f93-a5db-231a79cacb4e": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "acecaf51-f966-46af-957b-e21e656dde80": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "990962cc-ce8c-4ce3-b5f2-9e63b6d68a65": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "13999219-e5e4-4bde-a468-6b1ba7073813": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "8a2ce2e9-ffbd-4217-a8de-313e05bc9995": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        },
+        "b1c40edc-812d-43f4-bfa5-d3d7c249308c": {
+          "parentId": null,
+          "order": 0,
+          "collapsed": false
+        }
+      }
+    },
+    "smConceptTree": {
+      "1": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "2": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "3": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "12": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "15": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "16": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "18": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "19": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "20": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "23": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "25": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "27": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "35": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "40": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "42": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "44": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "46": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "48": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "49": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "53": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "59": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "61": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "64": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "66": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "68": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "69": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "72": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "76": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "80": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "86": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "95": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "100": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "102": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "106": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "109": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "117": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "118": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "119": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "126": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "128": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "129": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "130": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "132": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "135": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "136": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "142": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "144": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "149": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "155": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "158": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "162": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "165": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "167": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "169": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "172": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "173": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "174": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "180": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "186": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "187": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "191": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "193": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "204": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      },
+      "206": {
+        "parentId": null,
+        "order": 0,
+        "collapsed": false
+      }
+    },
+    "selectedConceptId": null
+  },
+  "reviewSession": {
+    "date": "2026-04-25",
+    "completedByNoteId": {}
+  },
+  "audit": {
+    "lastFullScanAt": "2026-04-24T06:28:15.326Z",
+    "lastHealthCheckAt": "2026-04-24T18:14:16.624Z",
+    "lastSuccessfulSyncAt": "2026-04-24T06:28:15.326Z"
+  }
+}

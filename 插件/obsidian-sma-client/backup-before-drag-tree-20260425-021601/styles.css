@@ -1,0 +1,337 @@
+.obsidian-sma-client-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.obsidian-sma-client-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.obsidian-sma-client-toolbar button {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.obsidian-sma-client-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.obsidian-sma-client-summary-card {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.obsidian-sma-client-summary-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.obsidian-sma-client-summary-value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.obsidian-sma-client-tabbar,
+.obsidian-sma-client-concept-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.obsidian-sma-client-tabbar button,
+.obsidian-sma-client-concept-filter button {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.obsidian-sma-client-tabbar button.is-active,
+.obsidian-sma-client-concept-filter button.is-active {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.obsidian-sma-client-concept-filter button {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02)),
+    color-mix(in srgb, var(--sm-concept-accent, var(--interactive-accent)) 18%, var(--background-secondary));
+}
+
+.obsidian-sma-client-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-height: 0;
+}
+
+.obsidian-sma-client-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.obsidian-sma-client-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.obsidian-sma-client-note {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.obsidian-sma-client-note-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.obsidian-sma-client-note-title {
+  font-weight: 600;
+}
+
+.obsidian-sma-client-note-path {
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.obsidian-sma-client-note-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.obsidian-sma-client-badge {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+}
+
+.obsidian-sma-client-badge.-ok {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.obsidian-sma-client-badge.-warn {
+  color: var(--text-normal);
+  background: rgba(var(--color-yellow-rgb), 0.14);
+  border-color: rgba(var(--color-yellow-rgb), 0.4);
+}
+
+.obsidian-sma-client-badge.-due {
+  color: var(--text-on-accent);
+  background: var(--color-red);
+  border-color: var(--color-red);
+}
+
+.obsidian-sma-client-badge.-probe {
+  color: var(--text-normal);
+  background: rgba(var(--color-cyan-rgb), 0.14);
+  border-color: rgba(var(--color-cyan-rgb), 0.45);
+}
+
+.obsidian-sma-client-badge.-concept {
+  color: var(--text-normal);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02)),
+    color-mix(in srgb, var(--sm-concept-accent, var(--interactive-accent)) 22%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--sm-concept-accent, var(--interactive-accent)) 46%, var(--background-modifier-border));
+}
+
+.obsidian-sma-client-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  font-size: 12px;
+}
+
+.obsidian-sma-client-muted {
+  color: var(--text-muted);
+}
+
+.obsidian-sma-client-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.obsidian-sma-client-actions button {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.obsidian-sma-client-review-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.obsidian-sma-client-review-label {
+  min-width: 78px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.obsidian-sma-client-review-row button {
+  min-width: 30px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  border-radius: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.obsidian-sma-client-review-row select {
+  min-width: 220px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.obsidian-sma-client-concept-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.obsidian-sma-client-concept-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.obsidian-sma-client-concept-form input,
+.obsidian-sma-client-concept-form select,
+.obsidian-sma-client-concept-form textarea {
+  width: 100%;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
+.obsidian-sma-client-concept-form textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.obsidian-sma-client-concept-picker-modal .modal-content {
+  width: min(980px, 92vw);
+}
+
+.obsidian-sma-client-concept-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  max-height: 70vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.obsidian-sma-client-concept-node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: calc(var(--sm-concept-level, 0) * 18px);
+}
+
+.obsidian-sma-client-concept-capsule {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--sm-concept-accent, var(--interactive-accent)) 45%, var(--background-modifier-border));
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02)),
+    color-mix(in srgb, var(--sm-concept-accent, var(--interactive-accent)) 18%, var(--background-secondary));
+}
+
+.obsidian-sma-client-concept-capsule-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.obsidian-sma-client-concept-capsule-title {
+  font-weight: 700;
+}
+
+.obsidian-sma-client-concept-capsule-path {
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.obsidian-sma-client-concept-capsule button {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.obsidian-sma-client-concept-children {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 10px;
+  border-left: 1px dashed var(--background-modifier-border);
+}
+
+.obsidian-sma-client-empty {
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 12px;
+  padding: 18px;
+  color: var(--text-muted);
+}
